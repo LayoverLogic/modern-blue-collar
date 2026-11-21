@@ -5,6 +5,11 @@ const cors    = require('cors');
 const rateLimit = require('express-rate-limit');
 require('./helpers/loadEnv');
 
+// Refuse to boot with an unsafe production config (missing/weak/published
+// JWT_SECRET, DEMO_MODE in production) — RT-6, PLAT-8, RT-23.
+const { assertBootConfig, isProduction } = require('./helpers/security');
+assertBootConfig();
+
 const brand = require('../brand.config');
 const app   = express();
 const server = http.createServer(app);
@@ -134,6 +139,8 @@ app.use('/api/api-keys',        require('./routes/apiKeys'));
 // GOOGLE_CALLBACK_URL=/api/auth/google/callback works
 app.use('/api/auth',            require('./routes/invites'));
 
+const demoMode = () => process.env.DEMO_MODE === 'true' && !isProduction();
+
 // ── Brand config endpoint (read-only, safe for front-end consumption) ──────
 app.get('/api/brand', (_req, res) => {
   res.json({
@@ -144,7 +151,12 @@ app.get('/api/brand', (_req, res) => {
     industryLabel:   brand.industryLabel,
     jobTypes:        brand.jobTypes,
     colors:          brand.colors,
-    demoMode:        process.env.DEMO_MODE === 'true',
+    demoMode:        demoMode(),
+    // Demo sign-in hint for the login page — ONLY in demo mode (never in
+    // production: the server refuses DEMO_MODE there). null otherwise.
+    demoLogin:       demoMode() && process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD
+      ? { email: process.env.ADMIN_EMAIL, password: process.env.ADMIN_PASSWORD }
+      : null,
   });
 });
 

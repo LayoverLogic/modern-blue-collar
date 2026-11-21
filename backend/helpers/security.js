@@ -21,17 +21,7 @@ const jwt    = require('jsonwebtoken');
 const MIN_SECRET_LENGTH = 32;
 
 // Values that have appeared in this repo (examples, docs, tests). Never secret.
-const PUBLISHED_SECRETS = new Set([
-  'change_this_to_a_random_secret_string_min_32_chars',
-  'sandbox_only_jwt_secret_not_for_production_0123456789abcdef',
-  'demo_dev_secret_change_me_to_a_random_32_plus_char_string',
-  '__generate_on_first_run__',
-  'test-secret-key',
-  'secret',
-  'changeme',
-  'change_me',
-  'your_jwt_secret',
-]);
+const { PUBLISHED_SECRETS } = require('./publishedSecrets');
 
 const isProduction = () => process.env.NODE_ENV === 'production';
 

@@ -37,7 +37,26 @@ if (!process.env.ENV_FILE) {
     fs.copyFileSync(path.join(backendDir, '.env.sandbox.example'), envFile);
     console.log('[sandbox] Created backend/.env.sandbox from .env.sandbox.example');
   }
+  fillGeneratedSecrets(envFile);
   process.env.ENV_FILE = '.env.sandbox';
+}
+
+// Replace placeholder / previously-published secrets in the local env file with
+// fresh random values (the example file never carries a usable secret).
+function fillGeneratedSecrets(file) {
+  const { PUBLISHED_SECRETS } = require('../helpers/publishedSecrets');
+  const text = fs.readFileSync(file, 'utf8');
+  let changed = false;
+  const out = text.replace(/^JWT_SECRET=(.*)$/m, (line, value) => {
+    const v = value.trim().replace(/^["']|["']$/g, '');
+    if (v && !PUBLISHED_SECRETS.has(v.toLowerCase())) return line;
+    changed = true;
+    return `JWT_SECRET=${require('crypto').randomBytes(48).toString('hex')}`;
+  });
+  if (changed) {
+    fs.writeFileSync(file, out);
+    console.log(`[sandbox] Generated a random JWT_SECRET in ${path.relative(backendDir, file)}`);
+  }
 }
 require('../helpers/loadEnv');
 const { parseDatabaseUrl } = require('../helpers/databaseUrl');
