@@ -30,3 +30,6 @@ logs/
 # Build artifacts
 dist/
 build/
+
+# UI walk output when run outside the team workspace
+backend/tests/ui/out/
