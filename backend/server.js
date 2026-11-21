@@ -1,3 +1,4 @@
+const path    = require('path');
 const express = require('express');
 const http    = require('http');
 const helmet  = require('helmet');
@@ -11,13 +12,61 @@ const { assertBootConfig, isProduction } = require('./helpers/security');
 assertBootConfig();
 
 const brand = require('../brand.config');
-const app   = express();
+const { requireAuth, userFromToken } = require('./routes/auth');
+const { errorHandler } = require('./helpers/errorHandler');
+
+const app    = express();
 const server = http.createServer(app);
+// Flat query strings (RT-28) — must be set before the first app.use().
+app.set('query parser', 'simple');
+
+// ── Reverse proxy (RT-24) ──────────────────────────────────────────────────
+// Behind a proxy / load balancer set TRUST_PROXY so req.ip (rate limiting,
+// logs) is the client, not the proxy:  1 (one hop — typical), a hop count,
+// "loopback", or a comma-separated list of proxy IPs/CIDRs. Unset = no proxy
+// trusted (X-Forwarded-For ignored). "true" trusts everything — spoofable.
+function parseTrustProxy(raw) {
+  const v = String(raw == null ? '' : raw).trim();
+  if (!v || v === 'false' || v === '0') return false;
+  if (v === 'true') return true;
+  if (/^\d+$/.test(v)) return Number(v);
+  return v.split(',').map((s) => s.trim()).filter(Boolean);
+}
+const trustProxy = parseTrustProxy(process.env.TRUST_PROXY);
+app.set('trust proxy', trustProxy);
+if (trustProxy === true) console.warn('[CONFIG] WARNING: TRUST_PROXY=true trusts any X-Forwarded-For — clients can spoof their IP. Use a hop count (e.g. 1) instead.');
+
+// ── Allowed browser origins (RT-27) ────────────────────────────────────────
+// Same-origin only unless APP_URL and/or CORS_ORIGINS (comma-separated) are set.
+function allowedOrigins() {
+  const list = String(process.env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (process.env.APP_URL) { try { list.push(new URL(process.env.APP_URL).origin); } catch { /* ignore bad APP_URL */ } }
+  return [...new Set(list.map((o) => o.replace(/\/+$/, '')))];
+}
+const ORIGINS = allowedOrigins();
 
 // ── Socket.io — real-time presence ──────────────────────────────────────────
 const { Server } = require('socket.io');
 const io = new Server(server, {
-  cors: { origin: process.env.APP_URL || '*', methods: ['GET', 'POST'] },
+  ...(ORIGINS.length ? { cors: { origin: ORIGINS, methods: ['GET', 'POST'] } } : {}),
+  maxHttpBufferSize: 64 * 1024,
+});
+
+// Handshake auth (RT-14): the client must send its JWT —
+//   io({ auth: { token } })   (or an `Authorization: Bearer` header).
+// The viewer identity comes from that token, never from event payloads.
+io.use((socket, next) => {
+  const hs = socket.handshake || {};
+  const header = hs.headers && typeof hs.headers.authorization === 'string' ? hs.headers.authorization : '';
+  const token = (hs.auth && typeof hs.auth.token === 'string' && hs.auth.token)
+    || (header.startsWith('Bearer ') ? header.slice(7).trim() : '');
+  userFromToken(token)
+    .then((user) => {
+      if (!user) return next(new Error('unauthorized'));
+      socket.data.user = user;
+      next();
+    })
+    .catch(() => next(new Error('unauthorized')));
 });
 
 // In-memory presence: { jobId: { socketId: { userId, firstName, lastName } } }
@@ -38,9 +87,8 @@ function parseJobId(payload) {
   return String(Number(s));
 }
 
-const cleanName = (x) => (typeof x === 'string' ? x.slice(0, 100) : '');
-
 io.on('connection', (socket) => {
+  const me = socket.data.user;
   let currentJobId = null;
 
   function leaveCurrent() {
@@ -53,14 +101,14 @@ io.on('connection', (socket) => {
     currentJobId = null;
   }
 
+  // payload: { jobId } — any `user` field is ignored (identity = token)
   socket.on('viewing-job', safeHandler((payload) => {
     const jobId = parseJobId(payload);
-    const user  = payload && typeof payload.user === 'object' && payload.user ? payload.user : null;
-    if (!jobId || !user) return; // ignore malformed events
+    if (!jobId) return; // ignore malformed events
     leaveCurrent();
     currentJobId = jobId;
     if (!presence[currentJobId]) presence[currentJobId] = {};
-    presence[currentJobId][socket.id] = { userId: Number(user.id) || null, firstName: cleanName(user.firstName), lastName: cleanName(user.lastName) };
+    presence[currentJobId][socket.id] = { userId: me.id, firstName: me.firstName, lastName: me.lastName };
     socket.join(`job:${currentJobId}`);
     io.to(`job:${currentJobId}`).emit('presence-update', { jobId: currentJobId, viewers: presence[currentJobId] });
   }));
@@ -73,18 +121,49 @@ io.on('connection', (socket) => {
 app.set('io', io);
 app.set('presence', presence);
 
-// ── Security headers ────────────────────────────────────────────────────────
-app.use(helmet({ contentSecurityPolicy: false }));
+// ── Security headers (RT-15) ────────────────────────────────────────────────
+// The pages still use inline <script> blocks and inline on* handlers, so
+// script-src keeps 'unsafe-inline' for now (tightening = move scripts to files,
+// then drop it). Everything else is locked down.
+app.use(helmet({
+  contentSecurityPolicy: {
+    useDefaults: false,
+    directives: {
+      defaultSrc:     ["'self'"],
+      scriptSrc:      ["'self'", "'unsafe-inline'"],
+      scriptSrcAttr:  ["'unsafe-inline'"],
+      styleSrc:       ["'self'", "'unsafe-inline'"],
+      imgSrc:         ["'self'", 'data:', 'blob:'],
+      fontSrc:        ["'self'", 'data:'],
+      connectSrc:     ["'self'"],
+      objectSrc:      ["'none'"],
+      frameAncestors: ["'none'"],
+      baseUri:        ["'self'"],
+      formAction:     ["'self'"],
+    },
+  },
+}));
 app.disable('x-powered-by');
 
 const PORT = process.env.PORT || 3001;
 
 app.use(cors({
-  origin: process.env.APP_URL || '*',
+  origin: ORIGINS.length ? ORIGINS : false,
   methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
 }));
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
+
+// ── Query strings are flat strings (RT-28) ──────────────────────────────────
+// No nested objects (?a[not]=x) that could reach Prisma as operators; a
+// repeated key keeps its first value.
+app.use((req, _res, next) => {
+  for (const [k, v] of Object.entries(req.query)) {
+    if (Array.isArray(v)) req.query[k] = typeof v[0] === 'string' ? v[0] : '';
+    else if (typeof v !== 'string') delete req.query[k];
+  }
+  next();
+});
 
 // ── API key authentication (runs before routes, sets req.user if valid) ────
 const { authenticateApiKey } = require('./middleware/apiKeyAuth');
@@ -107,15 +186,16 @@ const authLimiter = rateLimit({
 
 app.use('/api/', apiLimiter);
 app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/google/exchange', authLimiter);
 
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, 'public')));
 
-// ── Presence REST endpoint (for initial page load) ──────────────────────────
-app.get('/api/presence', (req, res) => {
+// ── Presence REST endpoints (initial page load) — signed-in users only ──────
+app.get('/api/presence', requireAuth, (_req, res) => {
   res.json(presence);
 });
 
-app.get('/api/presence/:jobId', (req, res) => {
+app.get('/api/presence/:jobId', requireAuth, (req, res) => {
   const jobId = String(req.params.jobId);
   res.json({ jobId, viewers: presence[jobId] || {} });
 });
@@ -127,6 +207,8 @@ app.use('/api/users',           require('./routes/users'));
 app.use('/api/quotes',          require('./routes/quotes'));
 app.use('/api/invoices',        require('./routes/invoices'));
 app.use('/api/auth',            require('./routes/auth').router);
+// Google sign-in: /api/auth/google, /api/auth/google/callback, /api/auth/google/exchange
+app.use('/api/auth',            require('./routes/googleAuth'));
 app.use('/api/quickbooks',      require('./routes/quickbooks'));
 app.use('/api/sms',             require('./routes/sms'));
 app.use('/api/backup',          require('./routes/backup'));
@@ -135,9 +217,6 @@ app.use('/api/exports',         require('./routes/exports'));
 app.use('/api/invites',         require('./routes/invites'));
 app.use('/api/communications',  require('./routes/communications'));
 app.use('/api/api-keys',        require('./routes/apiKeys'));
-// Google OAuth callback — mount invites router at /api/auth so
-// GOOGLE_CALLBACK_URL=/api/auth/google/callback works
-app.use('/api/auth',            require('./routes/invites'));
 
 const demoMode = () => process.env.DEMO_MODE === 'true' && !isProduction();
 
@@ -170,6 +249,12 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
+// Unknown API routes → JSON 404 (not the static-file 404 page)
+app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found', code: 'NOT_FOUND' }));
+
+// ── Global error handler (RT-17): helpers/errorHandler.js ───────────────────
+app.use(errorHandler);
+
 // ── Nightly backup cron (03:00) ─────────────────────────────────────────────
 try {
   const cron         = require('node-cron');
@@ -185,14 +270,6 @@ try {
 
 server.listen(PORT, () => {
   console.log(`[${brand.companyName}] Server running on port ${PORT} | trade=${brand.tradeType}`);
-});
-
-// ── Global error handler ────────────────────────────────────────────────────
-app.use((err, _req, res, _next) => {
-  console.error('[ERROR]', err.message);
-  res.status(err.status || 500).json({
-    error: process.env.NODE_ENV === 'production' ? 'Internal server error' : err.message,
-  });
 });
 
 module.exports = { app, server };
