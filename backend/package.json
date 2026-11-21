@@ -1,7 +1,7 @@
 {
     "name": "modern-blue-collar-backend",
     "version": "2.0.0",
-    "description": "White-label field service management backend — electrical, plumbing, HVAC, contracting",
+    "description": "White-label field service management backend \u2014 electrical, plumbing, HVAC, contracting",
     "main": "server.js",
     "scripts": {
         "start": "node scripts/migrate-deploy.mjs && node server.js",
@@ -23,7 +23,8 @@
         "test": "node tests/api.test.js",
         "studio": "npx prisma studio",
         "test:platform": "node --test tests/platform.test.js",
-        "test:redteam": "node --test --test-concurrency=1 tests/redteam.test.js"
+        "test:redteam": "node --test --test-concurrency=1 tests/redteam.test.js",
+        "test:backend": "node --test --test-concurrency=1 tests/backend.test.js"
     },
     "dependencies": {
         "@aws-sdk/client-s3": "^3.1024.0",

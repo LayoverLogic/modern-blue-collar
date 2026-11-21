@@ -29,6 +29,10 @@ function prismaCode(err) {
 function mapError(err) {
   if (!err) return { status: 500, body: { error: 'Internal server error' } };
 
+  // body-parser (checked first: its errors also carry expose/status)
+  if (err.type === 'entity.parse.failed') return { status: 400, body: { error: 'Malformed JSON body', code: 'INVALID_JSON' } };
+  if (err.type === 'entity.too.large')    return { status: 413, body: { error: 'Request body too large', code: 'PAYLOAD_TOO_LARGE' } };
+
   if (err.name === 'HttpError' || (err.expose && Number.isInteger(err.status) && err.status < 500)) {
     return { status: err.status, body: { error: err.message, ...(err.extra || {}) } };
   }
@@ -37,10 +41,6 @@ function mapError(err) {
     if (err.code === 'LIMIT_FILE_SIZE') return { status: 413, body: { error: 'File is too large', code: 'FILE_TOO_LARGE' } };
     return { status: 400, body: { error: `Invalid upload (${err.code})`, code: 'INVALID_UPLOAD' } };
   }
-
-  // body-parser
-  if (err.type === 'entity.parse.failed') return { status: 400, body: { error: 'Malformed JSON body', code: 'INVALID_JSON' } };
-  if (err.type === 'entity.too.large')    return { status: 413, body: { error: 'Request body too large', code: 'PAYLOAD_TOO_LARGE' } };
 
   const code = prismaCode(err);
   if (code === 'P2002') return { status: 409, body: { error: 'A record with these values already exists', code: 'DUPLICATE' } };
