@@ -6,12 +6,11 @@
 
 const express           = require('express');
 const router            = express.Router();
-const { PrismaClient }  = require('@prisma/client');
 const { requireAuth }   = require('./auth');
 const { optimisticUpdate } = require('../helpers/optimisticUpdate');
 const brand             = require('../../brand.config');
 
-const prisma = new PrismaClient();
+const prisma = require('../helpers/prisma');
 
 // GET /api/customers
 router.get('/', requireAuth, async (req, res, next) => {

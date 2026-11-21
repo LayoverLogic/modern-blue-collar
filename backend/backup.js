@@ -1,98 +1,110 @@
 /**
  * backup.js
- * Database backup utility — supports PostgreSQL (managed DB) and SQLite (local dev).
+ * Database backup utility for PostgreSQL (and legacy SQLite local dev).
  * Called automatically by node-cron at 03:00 (brand.timezone)
  * and manually via POST /api/backup/run.
  *
- * PostgreSQL (production):
- *   Uses pg_dump to create a SQL dump, then uploads to Wasabi.
- *   Requires pg_dump to be available in PATH (included in most Docker/server setups).
+ * Every backup is first written to the local backup directory:
+ *   BACKUP_DIR   default backend/backups/ (gitignored, dockerignored)
  *
- * SQLite (local dev):
- *   Copies the .db file to backend/backups/.
+ * BACKUP_DRIVER selects where it goes next:
+ *   local   keep it on local disk only (sandbox; no network).
+ *   s3      also upload to an S3-compatible bucket — Wasabi in production,
+ *           MinIO in the Docker demo (WASABI_* vars). Alias: `wasabi`.
+ *   (unset) `s3` when WASABI_BUCKET + keys are set, otherwise `local`
+ *           — i.e. the previous behaviour.
  *
- * Wasabi upload runs after local backup if WASABI_BUCKET is configured.
- * Keeps the 30 most recent local backups (deletes older ones).
+ * PostgreSQL backups use `pg_dump` (must be on PATH: the Docker image installs
+ * postgresql-client; on a Mac `brew install libpq`). The dump is gzipped in
+ * Node (no `gzip` binary needed). If pg_dump is missing or fails the backup
+ * FAILS loudly — it no longer reports success with a marker file.
+ * Keeps the MAX_BACKUPS most recent local backups.
  */
 
 const fs    = require('fs');
 const path  = require('path');
-const { execSync } = require('child_process');
+const zlib  = require('zlib');
+const { pipeline } = require('stream/promises');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const { parseDatabaseUrl } = require('./helpers/databaseUrl');
 
-const BACKUP_DIR  = path.join(__dirname, 'backups');
-const MAX_BACKUPS = 30;
+const execFileAsync = promisify(execFile);
+const MAX_BACKUPS = Number(process.env.BACKUP_KEEP) || 30;
+const BACKUP_FILE_RE = /^backup_[0-9A-Za-z_-]+\.(sql\.gz|sql|db)$/;
+
+function getBackupDir() {
+  return path.resolve(process.env.BACKUP_DIR || path.join(__dirname, 'backups'));
+}
+
+function wasabiConfigured() {
+  return Boolean(process.env.WASABI_BUCKET && process.env.WASABI_ACCESS_KEY && process.env.WASABI_SECRET_KEY);
+}
+
+function getBackupDriver() {
+  const d = (process.env.BACKUP_DRIVER || '').trim().toLowerCase();
+  if (!d) return wasabiConfigured() ? 's3' : 'local';
+  if (d === 'wasabi') return 's3';
+  if (d !== 's3' && d !== 'local') throw new Error(`Unknown BACKUP_DRIVER "${d}" (expected local | s3)`);
+  return d;
+}
 
 async function runBackup() {
   const dbUrl = process.env.DATABASE_URL || '';
-  const isPostgres = dbUrl.startsWith('postgres');
+  const isPostgres = /^postgres(ql)?:/.test(dbUrl);
+  const driver = getBackupDriver();
+  const dir = getBackupDir();
 
-  // Ensure backup dir exists
-  if (!fs.existsSync(BACKUP_DIR)) {
-    fs.mkdirSync(BACKUP_DIR, { recursive: true });
-  }
+  await fs.promises.mkdir(dir, { recursive: true });
 
-  const now   = new Date();
-  const stamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 
-  let destPath;
+  const destPath = isPostgres
+    ? await backupPostgres(stamp, dbUrl, dir)
+    : backupSqlite(stamp, dbUrl, dir);
 
-  if (isPostgres) {
-    destPath = await backupPostgres(stamp, dbUrl);
-  } else {
-    destPath = backupSqlite(stamp, dbUrl);
-  }
+  let remote = null;
+  if (driver === 's3') remote = await uploadToWasabi(destPath, path.basename(destPath));
 
-  // Upload to Wasabi if configured
-  const wasabiResult = await uploadToWasabi(destPath, path.basename(destPath));
+  pruneOldBackups(dir);
 
-  // Prune old local backups
-  pruneOldBackups();
-
-  return { localPath: destPath, wasabi: wasabiResult };
+  const size = fs.statSync(destPath).size;
+  return { driver, localPath: destPath, filename: path.basename(destPath), size, wasabi: remote };
 }
 
 /**
- * PostgreSQL backup via pg_dump
+ * PostgreSQL backup via pg_dump → gzip. Arguments are passed without a shell,
+ * and Prisma-only URL params (`?schema=`) are stripped because libpq rejects them.
  */
-async function backupPostgres(stamp, dbUrl) {
-  const filename = `backup_${stamp}.sql`;
-  const destPath = path.join(BACKUP_DIR, filename);
+async function backupPostgres(stamp, dbUrl, dir) {
+  const { connectionString, schema } = parseDatabaseUrl(dbUrl);
+  const sqlPath = path.join(dir, `backup_${stamp}.sql`);
+  const gzPath  = `${sqlPath}.gz`;
+  const args = [connectionString, '--no-owner', '--no-acl', '--file', sqlPath];
+  if (schema && schema !== 'public') args.push('--schema', schema);
 
   try {
-    // pg_dump uses the DATABASE_URL directly
-    execSync(`pg_dump "${dbUrl}" --no-owner --no-acl > "${destPath}"`, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 120000, // 2 min timeout
-    });
-    console.log(`[BACKUP] PostgreSQL dump saved: ${destPath}`);
-
-    // Compress with gzip if available
-    try {
-      execSync(`gzip -f "${destPath}"`, { stdio: 'pipe', timeout: 60000 });
-      const gzPath = destPath + '.gz';
-      console.log(`[BACKUP] Compressed: ${gzPath}`);
-      return gzPath;
-    } catch {
-      // gzip not available, use uncompressed
-      return destPath;
-    }
+    await execFileAsync(process.env.PG_DUMP_PATH || 'pg_dump', args, { timeout: 120000, maxBuffer: 10 * 1024 * 1024 });
   } catch (err) {
-    // If pg_dump isn't available, fall back to Wasabi-only approach
-    console.warn(`[BACKUP] pg_dump failed: ${err.message}`);
-    console.warn('[BACKUP] If deploying to Digital Ocean, pg_dump may not be in PATH.');
-    console.warn('[BACKUP] Use Digital Ocean managed database built-in backups as primary.');
-
-    // Create a marker file so the API still returns a result
-    const markerPath = path.join(BACKUP_DIR, `backup_${stamp}_pgdump_unavailable.txt`);
-    fs.writeFileSync(markerPath, `pg_dump not available at ${now.toISOString()}\nUse managed database backups from your hosting provider.\n`);
-    return markerPath;
+    try { fs.unlinkSync(sqlPath); } catch { /* nothing written */ }
+    const why = err.code === 'ENOENT'
+      ? 'pg_dump is not installed / not on PATH (install postgresql-client, or set PG_DUMP_PATH)'
+      : (err.stderr || err.message || '').toString().trim().split('\n')[0];
+    const e = new Error(`Backup failed: ${why}`);
+    e.status = 500;
+    throw e;
   }
+
+  await pipeline(fs.createReadStream(sqlPath), zlib.createGzip(), fs.createWriteStream(gzPath));
+  fs.unlinkSync(sqlPath);
+  console.log(`[BACKUP] PostgreSQL dump saved: ${gzPath}`);
+  return gzPath;
 }
 
 /**
- * SQLite backup via file copy (local development)
+ * SQLite backup via file copy (legacy local development only).
  */
-function backupSqlite(stamp, dbUrl) {
+function backupSqlite(stamp, dbUrl, dir) {
   const DB_PATH = path.join(__dirname, 'prisma', 'dev.db');
   const dbPath = dbUrl
     ? dbUrl.replace('file:', '').replace('./', path.join(__dirname, 'prisma/'))
@@ -102,25 +114,21 @@ function backupSqlite(stamp, dbUrl) {
     throw new Error(`SQLite database file not found: ${dbPath}`);
   }
 
-  const filename = `backup_${stamp}.db`;
-  const destPath = path.join(BACKUP_DIR, filename);
+  const destPath = path.join(dir, `backup_${stamp}.db`);
   fs.copyFileSync(dbPath, destPath);
   console.log(`[BACKUP] SQLite saved: ${destPath}`);
   return destPath;
 }
 
 /**
- * Upload backup file to Wasabi (S3-compatible cloud storage).
+ * Upload backup file to Wasabi / any S3-compatible bucket (MinIO in the demo).
  */
 async function uploadToWasabi(filePath, filename) {
-  const bucket    = process.env.WASABI_BUCKET;
-  const accessKey = process.env.WASABI_ACCESS_KEY;
-  const secretKey = process.env.WASABI_SECRET_KEY;
-
-  if (!bucket || !accessKey || !secretKey) {
-    console.log('[BACKUP] Wasabi not configured — skipping cloud upload.');
-    return null;
+  if (!wasabiConfigured()) {
+    console.log('[BACKUP] BACKUP_DRIVER=s3 but WASABI_BUCKET/ACCESS_KEY/SECRET_KEY are not set — skipping upload.');
+    return { error: 'Wasabi/S3 backup target not configured' };
   }
+  const bucket    = process.env.WASABI_BUCKET;
 
   try {
     const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
@@ -132,23 +140,20 @@ async function uploadToWasabi(filePath, filename) {
       region,
       endpoint,
       credentials: {
-        accessKeyId:     accessKey,
-        secretAccessKey: secretKey,
+        accessKeyId:     process.env.WASABI_ACCESS_KEY,
+        secretAccessKey: process.env.WASABI_SECRET_KEY,
       },
       forcePathStyle: true,
     });
 
-    const fileStream = fs.createReadStream(filePath);
     const key = `backups/${filename}`;
-
-    const command = new PutObjectCommand({
+    await client.send(new PutObjectCommand({
       Bucket: bucket,
       Key:    key,
-      Body:   fileStream,
+      Body:   fs.createReadStream(filePath),
+      ContentLength: fs.statSync(filePath).size,
       ContentType: 'application/octet-stream',
-    });
-
-    await client.send(command);
+    }));
     console.log(`[BACKUP] Wasabi uploaded: s3://${bucket}/${key}`);
     return { bucket, key, endpoint };
   } catch (err) {
@@ -157,24 +162,30 @@ async function uploadToWasabi(filePath, filename) {
   }
 }
 
+/** Backups in the local backup directory, newest first. */
+function listBackups(dir = getBackupDir()) {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir)
+    .filter((f) => BACKUP_FILE_RE.test(f))
+    .map((f) => {
+      const stat = fs.statSync(path.join(dir, f));
+      return { filename: f, size: stat.size, created: stat.mtime };
+    })
+    .sort((a, b) => b.created - a.created);
+}
+
 /**
  * Remove old backups, keep only MAX_BACKUPS most recent.
  */
-function pruneOldBackups() {
+function pruneOldBackups(dir = getBackupDir()) {
   try {
-    const files = fs.readdirSync(BACKUP_DIR)
-      .filter(f => f.startsWith('backup_'))
-      .map(f => ({ name: f, mtime: fs.statSync(path.join(BACKUP_DIR, f)).mtime }))
-      .sort((a, b) => b.mtime - a.mtime);
-
-    const toDelete = files.slice(MAX_BACKUPS);
-    for (const { name } of toDelete) {
-      fs.unlinkSync(path.join(BACKUP_DIR, name));
-      console.log(`[BACKUP] Pruned: ${name}`);
+    for (const { filename } of listBackups(dir).slice(MAX_BACKUPS)) {
+      fs.unlinkSync(path.join(dir, filename));
+      console.log(`[BACKUP] Pruned: ${filename}`);
     }
   } catch (err) {
     console.warn(`[BACKUP] Prune error: ${err.message}`);
   }
 }
 
-module.exports = { runBackup };
+module.exports = { runBackup, listBackups, getBackupDir, getBackupDriver, wasabiConfigured };

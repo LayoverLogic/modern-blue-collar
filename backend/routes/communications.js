@@ -5,9 +5,8 @@
  */
 const express          = require('express');
 const router           = express.Router();
-const { PrismaClient } = require('@prisma/client');
 const { requireAuth, requireRole } = require('./auth');
-const prisma           = new PrismaClient();
+const prisma           = require('../helpers/prisma');
 
 // GET /api/communications?customerId=X — timeline for a customer
 router.get('/', requireAuth, async (req, res, next) => {

@@ -13,9 +13,8 @@ const express        = require('express');
 const router         = express.Router();
 const bcrypt         = require('bcryptjs');
 const jwt            = require('jsonwebtoken');
-const { PrismaClient } = require('@prisma/client');
 
-const prisma = new PrismaClient();
+const prisma = require('../helpers/prisma');
 
 const JWT_SECRET  = process.env.JWT_SECRET;
 const JWT_EXPIRES = process.env.JWT_EXPIRES || '8h';

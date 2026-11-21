@@ -6,11 +6,10 @@
      */
      const express          = require('express');
      const router           = express.Router();
-     const { PrismaClient } = require('@prisma/client');
      const { requireAuth, requireRole } = require('./auth');
      const brand            = require('../../brand.config');
 
-     const prisma = new PrismaClient();
+     const prisma = require('../helpers/prisma');
 
      function toCSV(rows, columns) {
        const header = columns.join(',');

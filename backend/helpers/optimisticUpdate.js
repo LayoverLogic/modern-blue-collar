@@ -3,8 +3,7 @@
  * Shared helper for optimistic locking. Checks version before saving.
  * Returns 409 on version mismatch.
  */
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('./prisma');
 
 /**
  * @param {string} model - Prisma model name (e.g. 'job', 'customer', 'quote', 'invoice')

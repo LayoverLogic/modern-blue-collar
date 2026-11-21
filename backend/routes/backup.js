@@ -2,19 +2,25 @@
  * routes/backup.js  — Manual backup trigger endpoint
  * POST /api/backup/run   — trigger backup now (admin+)
  * GET  /api/backup/list  — list existing local backup files (admin+)
+ *
+ * Target is chosen by BACKUP_DRIVER (local | s3) — see backup.js.
+ * There is no download/restore endpoint (restore = `gunzip -c file | psql`).
  */
 const express = require('express');
 const router  = express.Router();
 const { requireAuth, requireRole } = require('./auth');
+const backup  = require('../backup');
 
 router.post('/run', requireAuth, requireRole('super-admin', 'admin'), async (_req, res, next) => {
   try {
-    const { runBackup } = require('../backup');
-    const result = await runBackup();
+    const result = await backup.runBackup();
     res.json({
       success: true,
       message: 'Backup completed successfully.',
+      driver: result.driver,
       local: result.localPath,
+      filename: result.filename,
+      size: result.size,
       wasabi: result.wasabi,
     });
   } catch (err) { next(err); }
@@ -22,18 +28,11 @@ router.post('/run', requireAuth, requireRole('super-admin', 'admin'), async (_re
 
 router.get('/list', requireAuth, requireRole('super-admin', 'admin'), (_req, res, next) => {
   try {
-    const fs   = require('fs');
-    const path = require('path');
-    const dir  = path.join(__dirname, '..', 'backups');
-    if (!fs.existsSync(dir)) return res.json({ backups: [], wasabiConfigured: !!process.env.WASABI_BUCKET });
-    const files = fs.readdirSync(dir)
-      .filter(f => f.endsWith('.db') || f.endsWith('.zip'))
-      .map(f => {
-        const stat = fs.statSync(path.join(dir, f));
-        return { filename: f, size: stat.size, created: stat.mtime };
-      })
-      .sort((a, b) => new Date(b.created) - new Date(a.created));
-    res.json({ backups: files, wasabiConfigured: !!process.env.WASABI_BUCKET });
+    res.json({
+      driver: backup.getBackupDriver(),
+      backups: backup.listBackups(),
+      wasabiConfigured: backup.wasabiConfigured(),
+    });
   } catch (err) { next(err); }
 });
 

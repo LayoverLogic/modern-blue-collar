@@ -4,7 +4,6 @@
  *
  * Usage: npm test
  */
-const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { requireRole } = require('../routes/auth');
@@ -28,7 +27,7 @@ function runMiddleware(mw, user) {
   });
 }
 
-const prisma = new PrismaClient();
+const prisma = require('../helpers/prisma');
 const JWT_SECRET = process.env.JWT_SECRET || 'test-secret-key';
 
 // Helper to generate tokens

@@ -5,10 +5,9 @@
  */
 const express          = require('express');
 const router           = express.Router();
-const { PrismaClient } = require('@prisma/client');
 const { requireAuth, requireRole } = require('./auth');
 const { optimisticUpdate } = require('../helpers/optimisticUpdate');
-const prisma           = new PrismaClient();
+const prisma           = require('../helpers/prisma');
 
 // TODO: make this a per-deployment permission setting rather than a hardcoded
 // role list, so clients can map other roles (e.g. `office`) to billing writes.

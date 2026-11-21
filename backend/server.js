@@ -3,7 +3,7 @@ const http    = require('http');
 const helmet  = require('helmet');
 const cors    = require('cors');
 const rateLimit = require('express-rate-limit');
-require('dotenv').config();
+require('./helpers/loadEnv');
 
 const brand = require('../brand.config');
 const app   = express();

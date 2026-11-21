@@ -14,7 +14,6 @@
 
 const express      = require('express');
 const router       = express.Router();
-const { PrismaClient } = require('@prisma/client');
 const { requireAuth }  = require('./auth');
 const { optimisticUpdate } = require('../helpers/optimisticUpdate');
 const brand        = require('../../brand.config');
@@ -22,7 +21,7 @@ const multer       = require('multer');
 const crypto       = require('crypto');
 const storage      = require('../helpers/storage');
 
-const prisma = new PrismaClient();
+const prisma = require('../helpers/prisma');
 
 // In-memory upload; photo bytes are streamed straight to object storage (MinIO/S3).
 const upload = multer({

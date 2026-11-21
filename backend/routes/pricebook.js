@@ -5,11 +5,10 @@
 
    const express           = require('express');
    const router            = express.Router();
-   const { PrismaClient }  = require('@prisma/client');
    const { requireAuth }   = require('./auth');
    const brand             = require('../../brand.config');
 
-   const prisma = new PrismaClient();
+   const prisma = require('../helpers/prisma');
 
    // GET /api/pricebook — filtered to current trade industry by default
    router.get('/', requireAuth, async (req, res, next) => {

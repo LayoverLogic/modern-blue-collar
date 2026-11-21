@@ -10,11 +10,10 @@
  * Or add items directly via the Pricebook page in the UI.
  */
 
-require('dotenv').config();
-const { PrismaClient } = require('@prisma/client');
+require('./helpers/loadEnv');
 const brand = require('../brand.config');
 
-const prisma = new PrismaClient();
+const prisma = require('./helpers/prisma');
 
 // ── Add your business-specific pricebook items here ─────────────────────────
 // Example format (uncomment and customize):
@@ -109,5 +108,5 @@ async function main() {
 }
 
 main()
-  .catch(console.error)
+  .catch((e) => { console.error(e); process.exitCode = 1; })
   .finally(() => prisma.$disconnect());

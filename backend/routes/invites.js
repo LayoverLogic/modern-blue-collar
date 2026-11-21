@@ -10,17 +10,18 @@
          * so that the Google callback URL works as /api/auth/google/callback.
           */
 
-          require('dotenv').config();
+          require('../helpers/loadEnv');
           const express   = require('express');
           const router    = express.Router();
           const passport  = require('passport');
           const jwt       = require('jsonwebtoken');
           const bcrypt    = require('bcryptjs');
-          const { PrismaClient } = require('@prisma/client');
           const { requireAuth, requireRole } = require('./auth');
+const { sendMail } = require('../helpers/mailer');
+const { integrationStatus, sendDisabled } = require('../helpers/integrations');
           const brand     = require('../../brand.config');
 
-          const prisma = new PrismaClient();
+          const prisma = require('../helpers/prisma');
 
           // ── Configure Passport Google strategy (lazy init) ─────────────────────────────
           let passportConfigured = false;
@@ -62,13 +63,17 @@
                                                                                                                                                                                                                             
                                                                                                                                                                                                                             // GET /api/auth/google
                                                                                                                                                                                                                             router.get('/google', (_req, res, next) => {
-                                                                                                                                                                                                                              if (!process.env.GOOGLE_CLIENT_ID) return res.status(503).json({ error: 'Google OAuth not configured' });
+                                                                                                                                                                                                                              const g = integrationStatus('google');
+  if (!g.enabled) return sendDisabled(res, 'google', g);
                                                                                                                                                                                                                                 ensurePassportGoogle();
                                                                                                                                                                                                                                   passport.authenticate('google', { scope: ['profile', 'email'], session: false })(_req, res, next);
                                                                                                                                                                                                                                   });
                                                                                                                                                                                                                                   
                                                                                                                                                                                                                                   // GET /api/auth/google/callback
                                                                                                                                                                                                                                   router.get('/google/callback', (req, res, next) => {
+  // Never exchange an auth code with Google unless the integration is live.
+  const g = integrationStatus('google');
+  if (!g.enabled) return sendDisabled(res, 'google', g);
                                                                                                                                                                                                                                     ensurePassportGoogle();
                                                                                                                                                                                                                                       passport.authenticate('google', { session: false }, (err, user) => {
                                                                                                                                                                                                                                           if (err || !user) {
@@ -93,23 +98,21 @@
                                                                                                                                                                                                                                                                                                       // Build invite link that starts the Google OAuth flow
                                                                                                                                                                                                                                                                                                           const inviteLink = `${process.env.APP_URL}/api/auth/google`;
                                                                                                                                                                                                                                                                                                           
-                                                                                                                                                                                                                                                                                                              // Send via nodemailer if configured, else return the link
-                                                                                                                                                                                                                                                                                                                  if (process.env.SMTP_HOST) {
-                                                                                                                                                                                                                                                                                                                        const nodemailer = require('nodemailer');
-                                                                                                                                                                                                                                                                                                                              const transport  = nodemailer.createTransport({
-                                                                                                                                                                                                                                                                                                                                      host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT) || 587,
-                                                                                                                                                                                                                                                                                                                                              auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-                                                                                                                                                                                                                                                                                                                                                    });
-                                                                                                                                                                                                                                                                                                                                                          await transport.sendMail({
-                                                                                                                                                                                                                                                                                                                                                                  from:    `"${brand.companyName}" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
-                                                                                                                                                                                                                                                                                                                                                                          to:      email,
-                                                                                                                                                                                                                                                                                                                                                                                  subject: `You've been invited to join ${brand.companyName}`,
-                                                                                                                                                                                                                                                                                                                                                                                          text:    `Click the link to accept your invite: ${inviteLink}`,
-                                                                                                                                                                                                                                                                                                                                                                                                  html:    `<p>You've been invited to join <strong>${brand.companyName}</strong>.</p><p><a href="${inviteLink}">Accept Invite</a></p>`,
-                                                                                                                                                                                                                                                                                                                                                                                                        });
-                                                                                                                                                                                                                                                                                                                                                                                                            }
-                                                                                                                                                                                                                                                                                                                                                                                                            
-                                                                                                                                                                                                                                                                                                                                                                                                                res.json({ success: true, inviteLink, message: `Invite sent to ${email}` });
+                                                                                                                                                                                                                                                                                                              // Deliver via helpers/mailer (SMTP, sandbox outbox, or disabled)
+    const mail = await sendMail({
+      to:      email,
+      subject: `You've been invited to join ${brand.companyName}`,
+      text:    `Click the link to accept your invite: ${inviteLink}`,
+      html:    `<p>You've been invited to join <strong>${brand.companyName}</strong>.</p><p><a href="${inviteLink}">Accept Invite</a></p>`,
+    }, { fromName: brand.companyName });
+
+    res.json({
+      success: true,
+      inviteLink,
+      emailed: mail.delivered,
+      mailDriver: mail.driver,
+      message: mail.delivered ? `Invite sent to ${email}` : `Email is not configured — share this invite link with ${email} manually`,
+    });
                                                                                                                                                                                                                                                                                                                                                                                                                   } catch (err) { next(err); }
                                                                                                                                                                                                                                                                                                                                                                                                                   });
                                                                                                                                                                                                                                                                                                                                                                                                                   

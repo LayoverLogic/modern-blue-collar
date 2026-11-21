@@ -8,11 +8,10 @@
 const express          = require('express');
 const router           = express.Router();
 const bcrypt           = require('bcryptjs');
-const { PrismaClient } = require('@prisma/client');
 const { requireAuth, requireRole } = require('./auth');
 const brand            = require('../../brand.config');
 
-const prisma = new PrismaClient();
+const prisma = require('../helpers/prisma');
 
 // GET /api/users  — admin+
 router.get('/', requireAuth, requireRole('super-admin', 'admin'), async (_req, res, next) => {

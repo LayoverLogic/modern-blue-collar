@@ -12,8 +12,7 @@
  */
 
 const bcrypt           = require('bcryptjs');
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../helpers/prisma');
 
 /**
  * Express middleware — checks X-API-Key header.

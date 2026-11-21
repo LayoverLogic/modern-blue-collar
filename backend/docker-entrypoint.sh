@@ -4,8 +4,8 @@
 # database is reachable by the time this runs.
 set -e
 
-echo "[entrypoint] Applying database migrations (prisma migrate deploy)..."
-npx prisma migrate deploy
+echo "[entrypoint] Applying database migrations (Prisma migrate deploy, WASM schema engine)..."
+node scripts/migrate-deploy.mjs
 
 if [ "$DEMO_MODE" = "true" ]; then
   echo "[entrypoint] DEMO_MODE=true → seeding demo data (idempotent)..."

@@ -67,6 +67,45 @@ docker compose up -d --build
 
 ---
 
+## Running a local sandbox (no Docker, no paid services, no internet)
+
+Needs Node 20.19+ / 22.12+ and a local PostgreSQL role that can create a database.
+
+```bash
+cd backend
+npm install
+npm run sandbox        # first run copies .env.sandbox.example → .env.sandbox,
+                       # creates the DB if missing, migrates, seeds demo data, starts
+```
+
+Open http://localhost:3101 and sign in with **admin@demo.test** / **demo1234**.
+Edit `backend/.env.sandbox` (gitignored) for the DB URL / port, or override with
+real env vars (`PORT=3150 DATABASE_URL=... npm run sandbox`).
+`npm run sandbox:setup` does everything except start the server.
+
+Sandbox drivers (all chosen by env, defaults keep the Docker/production behaviour):
+
+| Concern | Env | Sandbox value | Where it goes |
+|---|---|---|---|
+| Job photos | `STORAGE_DRIVER` | `local` | `backend/storage/` (`LOCAL_STORAGE_DIR`) |
+| Email | `MAIL_DRIVER` | `outbox` | `.eml` + `.json` in `backend/outbox/` (`MAIL_OUTBOX_DIR`) |
+| DB backups | `BACKUP_DRIVER` | `local` | `pg_dump` → `backend/backups/*.sql.gz` (`BACKUP_DIR`) |
+| Twilio / QuickBooks / Google | `SANDBOX_MODE` | `true` | inert: 503 "disabled in sandbox", SMS logged only |
+
+**Prisma 7 note.** The Prisma client is Rust-free (WASM + `pg` driver adapter,
+one shared client in `backend/helpers/prisma.js`). The Prisma 7 CLI still wants
+to download a native schema engine from `binaries.prisma.sh`, so:
+`npm install` runs `scripts/prisma-generate.js` (generate needs no binary), and
+migrations run with `npm run migrate:deploy` (`scripts/migrate-deploy.mjs`, Prisma's
+own schema engine compiled to WASM — same `_prisma_migrations` table as the CLI).
+Creating *new* migrations (`prisma migrate dev`) still needs the native engine,
+i.e. a machine that can reach `binaries.prisma.sh`.
+
+Tests: `npm test` (API suite — **it deletes all customers/jobs in the target DB**)
+and `npm run test:platform` (sandbox drivers, no server needed).
+
+---
+
 ## Supported Trade Types
 
 | Trade | `BRAND_TRADE_TYPE` |

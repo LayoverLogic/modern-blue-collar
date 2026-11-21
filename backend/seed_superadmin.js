@@ -8,11 +8,10 @@
        * If env vars are not set, defaults below are used (change before production!).
         */
 
-        require('dotenv').config();
-        const { PrismaClient } = require('@prisma/client');
+        require('./helpers/loadEnv');
         const bcrypt = require('bcryptjs');
 
-        const prisma = new PrismaClient();
+        const prisma = require('./helpers/prisma');
 
         const EMAIL     = process.env.ADMIN_EMAIL    || 'admin@example.com';
         const PASSWORD  = process.env.ADMIN_PASSWORD || 'changeme123!';
@@ -40,6 +39,6 @@
                                                                           }
 
                                                                           main()
-                                                                            .catch(console.error)
+                                                                            .catch((e) => { console.error(e); process.exitCode = 1; })
                                                                               .finally(() => prisma.$disconnect());
                                                                               

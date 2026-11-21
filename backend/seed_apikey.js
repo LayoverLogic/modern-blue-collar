@@ -10,12 +10,11 @@
  * It cannot be retrieved again (only the hash is stored).
  */
 
-require('dotenv').config();
+require('./helpers/loadEnv');
 const crypto           = require('crypto');
 const bcrypt           = require('bcryptjs');
-const { PrismaClient } = require('@prisma/client');
 
-const prisma = new PrismaClient();
+const prisma = require('./helpers/prisma');
 
 const KEY_NAME = process.env.API_KEY_NAME || 'Default Integration Key';
 
@@ -71,5 +70,5 @@ async function main() {
 }
 
 main()
-  .catch(console.error)
+  .catch((e) => { console.error(e); process.exitCode = 1; })
   .finally(() => prisma.$disconnect());

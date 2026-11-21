@@ -11,6 +11,8 @@
 
 # Runtime / local artifacts
 backend/backups/
+backend/storage/
+backend/outbox/
 **/*.db
 **/*.db-journal
 **/*.log

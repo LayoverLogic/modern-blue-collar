@@ -10,12 +10,11 @@
  * Or add customers, team, and jobs directly via the UI.
  */
 
-require('dotenv').config();
+require('./helpers/loadEnv');
 const bcrypt = require('bcryptjs');
-const { PrismaClient } = require('@prisma/client');
 const brand = require('../brand.config');
 
-const prisma = new PrismaClient();
+const prisma = require('./helpers/prisma');
 
 // ── Add your team members here ──────────────────────────────────────────────
 // Example format (uncomment and customize):
@@ -106,5 +105,5 @@ async function main() {
 }
 
 main()
-  .catch(console.error)
+  .catch((e) => { console.error(e); process.exitCode = 1; })
   .finally(() => prisma.$disconnect());
