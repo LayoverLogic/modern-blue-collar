@@ -766,9 +766,14 @@ test('RT-12a job status is restricted to pending|scheduled|in-progress|completed
 test('RT-12b reopening a completed job clears completedAt', async () => {
   const c = await mkCustomer();
   const j = await mkJob(c.id);
-  await api('PATCH', `/api/jobs/${j.id}`, { token: U.dispatcher.token, body: { status: 'completed' } });
-  await api('PATCH', `/api/jobs/${j.id}`, { token: U.dispatcher.token, body: { status: 'scheduled' } });
+  // version is required on PATCH (RT-9) — send it so the transitions really happen
+  const done = await api('PATCH', `/api/jobs/${j.id}`, { token: U.dispatcher.token, body: { status: 'completed', version: j.version } });
+  assert.equal(done.status, 200, done.text);
+  assert.ok(done.json.completedAt, 'completing a job sets completedAt');
+  const reopened = await api('PATCH', `/api/jobs/${j.id}`, { token: U.dispatcher.token, body: { status: 'scheduled', version: done.json.version } });
+  assert.equal(reopened.status, 200, reopened.text);
   const now = await prisma.job.findUnique({ where: { id: j.id } });
+  assert.equal(now.status, 'scheduled');
   assert.equal(now.completedAt, null, 'job is "scheduled" but still has completedAt');
 });
 

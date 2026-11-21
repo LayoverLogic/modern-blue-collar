@@ -116,7 +116,8 @@ function badKey(key) {
 }
 
 function notFound(key) {
-  const err = new Error(`Stored object not found: ${key}`);
+  const err = new Error('Stored file not found');
+  err.key = key;
   err.name = 'NoSuchKey';
   err.status = 404;
   return err;
@@ -164,7 +165,14 @@ async function putObject(key, body, contentType) {
 /** Returns the raw S3 GetObject response — `.Body` is a readable stream. */
 async function getObject(key) {
   if (getDriver() === 'local') return localGet(key);
-  return getClient().send(new GetObjectCommand({ Bucket: getBucket(), Key: key }));
+  try {
+    return await getClient().send(new GetObjectCommand({ Bucket: getBucket(), Key: key }));
+  } catch (e) {
+    // PLAT-14: a missing object is a 404, not a 500.
+    const status = e && e.$metadata && e.$metadata.httpStatusCode;
+    if (e && (e.name === 'NoSuchKey' || e.Code === 'NoSuchKey' || e.name === 'NotFound' || status === 404)) throw notFound(key);
+    throw e;
+  }
 }
 
 async function deleteObject(key) {

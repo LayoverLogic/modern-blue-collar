@@ -7,20 +7,27 @@
      const express          = require('express');
      const router           = express.Router();
      const { requireAuth, requireRole } = require('./auth');
+     const { ADMIN } = require('../helpers/roles');
      const brand            = require('../../brand.config');
 
      const prisma = require('../helpers/prisma');
 
-     function toCSV(rows, columns) {
-       const header = columns.join(',');
-         const lines  = rows.map(r => columns.map(c => {
-             const v = r[c] == null ? '' : String(r[c]).replace(/"/g, '""');
-                 return `"${v}"`;
-                   }).join(','));
-                     return [header, ...lines].join('\n');
-                     }
+// CSV injection (RT-10): a cell starting with = + - @ TAB or CR is treated as a
+// formula by Excel / Sheets / LibreOffice. Prefix such cells with an apostrophe
+// so they are shown as text. Every cell is quoted; quotes are doubled.
+function csvCell(value) {
+  let v = value == null ? '' : (value instanceof Date ? value.toISOString() : String(value));
+  if (/^[=+\-@\t\r]/.test(v)) v = `'${v}`;
+  return `"${v.replace(/"/g, '""')}"`;
+}
 
-                     router.get('/customers', requireAuth, requireRole('super-admin', 'admin'), async (_req, res, next) => {
+function toCSV(rows, columns) {
+  const header = columns.join(',');
+  const lines  = rows.map((r) => columns.map((c) => csvCell(r[c])).join(','));
+  return [header, ...lines].join('\n');
+}
+
+                     router.get('/customers', requireAuth, requireRole(...ADMIN), async (_req, res, next) => {
                        try {
                            const rows = await prisma.customer.findMany({ orderBy: { lastName: 'asc' } });
                                const csv  = toCSV(rows, ['id', 'firstName', 'lastName', 'email', 'phone', 'address', 'city', 'state', 'zip', 'type', 'createdAt']);
@@ -30,7 +37,7 @@
                                              } catch (e) { next(e); }
                                              });
 
-                                             router.get('/jobs', requireAuth, requireRole('super-admin', 'admin'), async (_req, res, next) => {
+                                             router.get('/jobs', requireAuth, requireRole(...ADMIN), async (_req, res, next) => {
                                                try {
                                                    const rows = await prisma.job.findMany({
                                                          include: { customer: true, technician: true },
@@ -50,7 +57,7 @@
                                                                                                                            } catch (e) { next(e); }
                                                                                                                            });
                                                                                                                            
-                                                                                                                           router.get('/invoices', requireAuth, requireRole('super-admin', 'admin'), async (_req, res, next) => {
+                                                                                                                           router.get('/invoices', requireAuth, requireRole(...ADMIN), async (_req, res, next) => {
                                                                                                                              try {
                                                                                                                                  const rows = await prisma.invoice.findMany({ include: { job: { include: { customer: true } } }, orderBy: { createdAt: 'desc' } });
                                                                                                                                      const flat = rows.map(i => ({
@@ -66,4 +73,5 @@
                                                                                                                                                                              });
                                                                                                                                                                              
                                                                                                                                                                              module.exports = router;
+module.exports.csvCell = csvCell;
                                                                                                                                                                              
