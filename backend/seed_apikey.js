@@ -30,10 +30,11 @@ async function main() {
     process.exit(1);
   }
 
-  // Generate key: mbc_ + 40 random hex chars
+  // Generate key: mbc_ + 40 random hex chars; 16-char lookup prefix
+  // (see middleware/apiKeyAuth.js PREFIX_LENGTH)
   const rawHex   = crypto.randomBytes(20).toString('hex');
   const plainKey  = `mbc_${rawHex}`;
-  const prefix    = plainKey.substring(0, 8);
+  const prefix    = plainKey.substring(0, 16);
   const hashedKey = await bcrypt.hash(plainKey, 12);
 
   // Check for duplicate prefix (extremely unlikely)

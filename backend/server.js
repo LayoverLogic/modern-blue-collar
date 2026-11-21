@@ -18,44 +18,50 @@ const io = new Server(server, {
 // In-memory presence: { jobId: { socketId: { userId, firstName, lastName } } }
 const presence = {};
 
+// Socket event payloads come straight from the network: never trust their shape
+// (RT-2 — one malformed `viewing-job` used to crash the whole process).
+function safeHandler(fn) {
+  return (...args) => {
+    try { fn(...args); } catch (e) { console.warn('[SOCKET] handler error:', e.message); }
+  };
+}
+
+function parseJobId(payload) {
+  const raw = payload && typeof payload === 'object' ? payload.jobId : undefined;
+  const s = typeof raw === 'number' ? String(raw) : raw;
+  if (typeof s !== 'string' || !/^\d{1,15}$/.test(s)) return null;
+  return String(Number(s));
+}
+
+const cleanName = (x) => (typeof x === 'string' ? x.slice(0, 100) : '');
+
 io.on('connection', (socket) => {
   let currentJobId = null;
-  let currentUser  = null;
 
-  socket.on('viewing-job', ({ jobId, user }) => {
-    // Clean up previous room
+  function leaveCurrent() {
     if (currentJobId && presence[currentJobId]) {
       delete presence[currentJobId][socket.id];
       if (Object.keys(presence[currentJobId]).length === 0) delete presence[currentJobId];
-      socket.leave(`job:${currentJobId}`);
       io.to(`job:${currentJobId}`).emit('presence-update', { jobId: currentJobId, viewers: presence[currentJobId] || {} });
     }
-    currentJobId = String(jobId);
-    currentUser  = user;
+    if (currentJobId) socket.leave(`job:${currentJobId}`);
+    currentJobId = null;
+  }
+
+  socket.on('viewing-job', safeHandler((payload) => {
+    const jobId = parseJobId(payload);
+    const user  = payload && typeof payload.user === 'object' && payload.user ? payload.user : null;
+    if (!jobId || !user) return; // ignore malformed events
+    leaveCurrent();
+    currentJobId = jobId;
     if (!presence[currentJobId]) presence[currentJobId] = {};
-    presence[currentJobId][socket.id] = { userId: user.id, firstName: user.firstName, lastName: user.lastName };
+    presence[currentJobId][socket.id] = { userId: Number(user.id) || null, firstName: cleanName(user.firstName), lastName: cleanName(user.lastName) };
     socket.join(`job:${currentJobId}`);
     io.to(`job:${currentJobId}`).emit('presence-update', { jobId: currentJobId, viewers: presence[currentJobId] });
-  });
+  }));
 
-  socket.on('leave-job', () => {
-    if (currentJobId && presence[currentJobId]) {
-      delete presence[currentJobId][socket.id];
-      if (Object.keys(presence[currentJobId]).length === 0) delete presence[currentJobId];
-      io.to(`job:${currentJobId}`).emit('presence-update', { jobId: currentJobId, viewers: presence[currentJobId] || {} });
-      socket.leave(`job:${currentJobId}`);
-    }
-    currentJobId = null;
-    currentUser  = null;
-  });
-
-  socket.on('disconnect', () => {
-    if (currentJobId && presence[currentJobId]) {
-      delete presence[currentJobId][socket.id];
-      if (Object.keys(presence[currentJobId]).length === 0) delete presence[currentJobId];
-      io.to(`job:${currentJobId}`).emit('presence-update', { jobId: currentJobId, viewers: presence[currentJobId] || {} });
-    }
-  });
+  socket.on('leave-job', safeHandler(() => leaveCurrent()));
+  socket.on('disconnect', safeHandler(() => leaveCurrent()));
 });
 
 // Make io accessible to routes
