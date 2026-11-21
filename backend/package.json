@@ -22,7 +22,8 @@
         "seed:all": "node seed_superadmin.js && node seed_pricebook.js && node seed_jobs.js",
         "test": "node tests/api.test.js",
         "studio": "npx prisma studio",
-        "test:platform": "node --test tests/platform.test.js"
+        "test:platform": "node --test tests/platform.test.js",
+        "test:redteam": "node --test --test-concurrency=1 tests/redteam.test.js"
     },
     "dependencies": {
         "@aws-sdk/client-s3": "^3.1024.0",
