@@ -135,11 +135,16 @@ router.get('/', requireAuth, requireRole(...ADMIN), async (_req, res, next) => {
 // GET /api/users/technicians — active technicians (+ admins) for the job
 // assignment dropdown and the schedule: { technicianLabel, technicians:
 // [{ id, firstName, lastName, email, phone, role }] }. Any signed-in user.
-router.get('/technicians', requireAuth, async (_req, res, next) => {
+// Technicians (L3) get only the other technicians' names:
+// [{ id, firstName, lastName, role }] — no admins, no emails / phones.
+router.get('/technicians', requireAuth, async (req, res, next) => {
   try {
+    const office = isOffice(req.user);
     const techs = await prisma.user.findMany({
-      where:  { active: true, role: { in: ['technician', 'admin', 'super-admin'] } },
-      select: { id: true, firstName: true, lastName: true, email: true, phone: true, role: true },
+      where:  { active: true, role: { in: office ? ['technician', 'admin', 'super-admin'] : ['technician'] } },
+      select: office
+        ? { id: true, firstName: true, lastName: true, email: true, phone: true, role: true }
+        : { id: true, firstName: true, lastName: true, role: true },
       orderBy: { firstName: 'asc' },
     });
     // Surface the trade-specific label so the UI can say "Electricians" vs "Plumbers" etc.

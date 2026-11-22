@@ -675,7 +675,7 @@ test('2c photos: list includes uploadedById; a technician may delete only photos
 });
 
 // ── Invites / technicians list ──────────────────────────────────────────────
-test('2c invites require firstName and lastName (400 REQUIRED); /api/users/technicians returns email', async () => {
+test('2c invites require firstName and lastName (400 REQUIRED); /api/users/technicians returns email (office)', async () => {
   const email = `${RUN}-named@backend.test`;
   const noFirst = await api('POST', '/api/invites', { token: U.admin.token, body: { email, lastName: 'Only' } });
   assert.equal(noFirst.status, 400);
@@ -691,7 +691,8 @@ test('2c invites require firstName and lastName (400 REQUIRED); /api/users/techn
   assert.equal(`${row.firstName} ${row.lastName}`, 'Saoirse Nolan');
   assert.equal(row.phone, '+16205550123');
 
-  const t = (await api('GET', '/api/users/technicians', { token: U.tech.token })).json;
+  // office roles get emails (assignment); technicians only names since L3 (test below)
+  const t = (await api('GET', '/api/users/technicians', { token: U.dispatcher.token })).json;
   const me = t.technicians.find((x) => x.id === U.tech.id);
   assert.equal(me.email, U.tech.email);
   assert.ok(!('password' in me));
@@ -1238,4 +1239,36 @@ test('L1 presence honours TECH_VISIBILITY=own: REST and socket only for the tech
   const s = await bootServer({ TECH_VISIBILITY: 'all' });
   assert.equal((await request(s.base, 'GET', `/api/presence/${other.id}`, { token: U.tech.token })).status, 200);
   await s.stop();
+});
+
+test('L2 price book cost is for pricing roles only; L3 technicians get technician names only', async () => {
+  const item = await prisma.priceBookItem.create({ data: { industry: 'Plumbing', category: `BT ${RUN}`, name: `BT cost item ${RUN}`, price: 120, cost: 47.5 } });
+  try {
+    for (const who of ['tech', 'dispatcher']) {
+      const list = await api('GET', `/api/pricebook?category=${encodeURIComponent(item.category)}`, { token: U[who].token });
+      assert.equal(list.status, 200, list.text);
+      const row = list.json.items.find((i) => i.id === item.id);
+      assert.ok(row && row.price === 120, `${who} sees the item and its price`);
+      assert.equal('cost' in row, false, `${who} sees the cost in the list`);
+      const one = await api('GET', `/api/pricebook/${item.id}`, { token: U[who].token });
+      assert.equal(one.status, 200);
+      assert.equal('cost' in one.json, false, `${who} sees the cost on the item`);
+    }
+    for (const who of ['admin', 'sa']) {
+      const one = await api('GET', `/api/pricebook/${item.id}`, { token: U[who].token });
+      assert.equal(one.json.cost, 47.5, `${who} must see the cost`);
+    }
+  } finally { await prisma.priceBookItem.delete({ where: { id: item.id } }).catch(() => {}); }
+
+  const asTech = await api('GET', '/api/users/technicians', { token: U.tech.token });
+  assert.equal(asTech.status, 200);
+  assert.ok(asTech.json.technicians.length >= 2);
+  for (const t of asTech.json.technicians) {
+    assert.equal(t.role, 'technician', 'a technician sees admins in the list');
+    assert.deepEqual(Object.keys(t).sort(), ['firstName', 'id', 'lastName', 'role']);
+  }
+  assert.ok(!asTech.json.technicians.some((t) => t.id === U.admin.id));
+  const asOffice = await api('GET', '/api/users/technicians', { token: U.dispatcher.token });
+  const admin = asOffice.json.technicians.find((t) => t.id === U.admin.id);
+  assert.ok(admin && admin.email === U.admin.email, 'office still gets admins with contact details for assignment');
 });

@@ -5,7 +5,9 @@
  * book). ?industry=<label> filters explicitly. POST stamps brand.industryLabel.
  * taxRateKey (Phase 2b) must be one of the BRAND_TAX_RATES keys (or blank).
  *
- * Reads: anyone signed in. Writes: PRICING roles (admin / super-admin) only —
+ * Reads: anyone signed in; `cost` (what the company pays — its margin) only for
+ * PRICING roles: technicians and dispatchers get items without it (L2).
+ * Writes: PRICING roles (admin / super-admin) only —
  * technicians and dispatchers cannot change prices (RT-8). Fields are
  * whitelisted (no id / createdAt rewrite) and price / cost must be finite
  * amounts >= 0 (RT-11).
@@ -15,6 +17,12 @@ const express = require('express');
 const router  = express.Router();
 const { requireAuth, requireRole } = require('./auth');
 const { PRICING } = require('../helpers/roles');
+/** Item as this user may see it: no `cost` unless they may set prices (L2). */
+const forUser = (user, item) => {
+  if (!item || (user && PRICING.includes(user.role))) return item;
+  const { cost, ...rest } = item; // eslint-disable-line no-unused-vars
+  return rest;
+};
 const { parseId, notFound } = require('../helpers/httpError');
 const v = require('../helpers/validate');
 const brand = require('../../brand.config');
@@ -66,7 +74,7 @@ router.get('/', requireAuth, async (req, res, next) => {
 
     const items = await prisma.priceBookItem.findMany({ where, orderBy: [{ category: 'asc' }, { name: 'asc' }] });
     // `industry` keeps its old meaning for the UI: the label being shown
-    res.json({ industry: where.industry || brand.industryLabel, tradeType: brand.tradeType, items });
+    res.json({ industry: where.industry || brand.industryLabel, tradeType: brand.tradeType, items: items.map((i) => forUser(req.user, i)) });
   } catch (err) { next(err); }
 });
 
@@ -110,7 +118,7 @@ router.get('/:id', requireAuth, async (req, res, next) => {
   try {
     const item = await prisma.priceBookItem.findUnique({ where: { id: parseId(req.params.id) } });
     if (!item) throw notFound('PriceBook item not found');
-    res.json(item);
+    res.json(forUser(req.user, item));
   } catch (err) { next(err); }
 });
 
