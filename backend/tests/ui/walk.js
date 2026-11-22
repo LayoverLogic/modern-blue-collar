@@ -371,9 +371,9 @@ async function flowWalk(browser, ctxInfo, results) {
     await page.click('#btn-new'); await sleep(250);
     if (!(await isVisible(page, '#modal'))) throw new Error('"+ New Customer" did not open the modal');
     await page.type('#f-first', first); await page.type('#f-last', last);
-    await page.type('#f-phone', '555-0142'); await page.type('#f-email', `siobhan${stamp}@example.test`);
-    // Synthetic address in the brand's locale format (IE: town, county, Eircode).
     const ie = ((brand.locale || {}).country || 'US') === 'IE';
+    await page.type('#f-phone', ie ? '087 555 0142' : '620-555-0142'); await page.type('#f-email', `siobhan${stamp}@example.test`);
+    // Synthetic address in the brand's locale format (IE: town, county, Eircode).
     const addr = ie ? ['14 Canal View', 'Naas', 'Co. Kildare', 'W91 C2X7'] : ['12 Main St', 'Hutchinson', 'Reno County', '67501'];
     await page.type('#f-address', addr[0]); await page.type('#f-city', addr[1]); await page.type('#f-state', addr[2]); await page.type('#f-zip', addr[3]);
     await page.click('#modal .btn-primary'); await settle(page, 400);

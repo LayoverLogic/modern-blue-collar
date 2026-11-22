@@ -13,7 +13,7 @@
       const href = 'customer-detail.html?id=' + encodeURIComponent(c.id);
       return '<tr class="clickable" data-href="' + href + '">' +
         '<td data-label="Name"><a class="row-link" href="' + href + '">' + fmt.text(fmt.name(c)) + '</a></td>' +
-        '<td data-label="Phone">' + fmt.text(c.phone) + '</td>' +
+        '<td data-label="Phone">' + fmt.text(fmt.phone(c.phone)) + '</td>' +
         '<td data-label="Email">' + fmt.text(c.email) + '</td>' +
         '<td data-label="Address">' + fmt.text(fmt.address(c)) + '</td>' +
         '<td data-label="Jobs" class="num">' + fmt.esc((c._count && c._count.jobs) || 0) + '</td></tr>';
@@ -24,7 +24,7 @@
     const q = $('search-input').value.trim().toLowerCase();
     const region = $('region-filter').value;
     render(all.filter((c) => {
-      const hay = [fmt.name(c), c.phone, c.email, fmt.address(c)].join(' ').toLowerCase();
+      const hay = [fmt.name(c), c.phone, fmt.phone(c.phone), fmt.phoneDigits(c.phone), c.email, fmt.address(c)].join(' ').toLowerCase();
       return (!q || hay.includes(q)) && (!region || c.state === region);
     }));
   }

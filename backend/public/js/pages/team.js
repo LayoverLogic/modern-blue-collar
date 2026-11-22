@@ -18,7 +18,7 @@
       '<div class="team-card"><div class="name">' + fmt.text(fmt.name(u)) + '</div>' +
       '<div><span class="badge">' + fmt.esc(u.role === 'technician' ? tl : fmt.statusLabel(u.role)) + '</span> ' + fmt.badge(u.active ? 'active' : 'inactive') + '</div>' +
       (u.email ? '<div class="line">' + fmt.esc(u.email) + '</div>' : '') +
-      (u.phone ? '<div class="line">' + fmt.esc(u.phone) + '</div>' : '') +
+      (u.phone ? '<div class="line">' + fmt.esc(fmt.phone(u.phone)) + '</div>' : '') +
       '<div class="line">Jobs completed: ' + fmt.esc(completed[u.id] || 0) + '</div>' +
       '<div class="line">Member since ' + fmt.esc(fmt.date(u.createdAt)) + '</div></div>').join('');
   }

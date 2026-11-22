@@ -85,6 +85,9 @@
       case 'UNSUPPORTED_FILE_TYPE': return 'That file type is not supported. Upload a photo (JPEG, PNG, WebP or HEIC).';
       case 'SESSION_REQUIRED': return 'Please sign in again to do that.';
       case 'INVALID_LOGIN_CODE': return 'That sign-in link has expired. Please sign in again.';
+      case 'INVALID_PHONE': return (label || 'Phone') + ' is not a valid phone number. Use the full number with area code' +
+        (MBC.fmt && MBC.fmt.country() !== 'US' ? ' (or +country code)' : '') + '; no letters or extensions.';
+      case 'NOT_OWNER': return 'You can only delete photos you uploaded yourself.';
       case 'RECIPIENT_NOT_CUSTOMER': return 'That number does not belong to a customer.';
       // Phase 2b documents
       case 'DOCUMENT_LOCKED': return 'This document has been ' + (data.status && data.status !== 'draft' && data.status !== 'unpaid' ? 'marked ' + data.status : 'sent') +

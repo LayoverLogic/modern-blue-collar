@@ -8,6 +8,7 @@
  *   MBC.fmt.parseDate(v)      'YYYY-MM-DD' → LOCAL midnight (never UTC); other values → Date
  *   MBC.fmt.date(v)/time(t)/dateTime(v)/schedule(job)
  *   MBC.fmt.todayISO()        local YYYY-MM-DD
+ *   MBC.fmt.phone(p)          E.164 → national display style for the brand country (tel:/sms: keep E.164)
  *   MBC.fmt.name(x)           display name from company / firstName + lastName / name / email
  *   MBC.fmt.address(c)        one-line address incl. postcode
  *   MBC.fmt.addressLabels()   {address, addressLine2, city, region, postal, required[], …} from the locale block
@@ -184,10 +185,28 @@
     return '<span class="badge badge-' + cls + '">' + esc(statusLabel(s)) + '</span>';
   }
   function phoneDigits(p) { return p ? String(p).replace(/[^0-9+]/g, '') : ''; }
+  // Phones are stored E.164 (+16205550142, +353871234567). Display them in the brand
+  // country's national style; other countries (and older free-text rows) as stored.
+  function phone(p) {
+    if (p == null || p === '') return '';
+    const s = String(p).trim();
+    const m = /^\+(\d{6,15})$/.exec(s);
+    if (!m) return s;
+    const n = m[1];
+    const c = country();
+    if (n.length === 11 && n[0] === '1' && (c === 'US' || c === 'CA')) return '(' + n.slice(1, 4) + ') ' + n.slice(4, 7) + '-' + n.slice(7);
+    if (n.indexOf('353') === 0 && c === 'IE') {
+      const nat = '0' + n.slice(3);
+      if (/^08\d/.test(nat) && nat.length === 10) return nat.slice(0, 3) + ' ' + nat.slice(3, 6) + ' ' + nat.slice(6);
+      if (/^01/.test(nat)) return nat.slice(0, 2) + ' ' + nat.slice(2, nat.length - 4) + ' ' + nat.slice(-4);
+      return nat.slice(0, 3) + ' ' + nat.slice(3, nat.length - 4) + ' ' + nat.slice(-4);
+    }
+    return s;
+  }
 
   MBC.fmt = {
     DASH, esc, text, num, money, parseDate, isoDate, todayISO, addDays, date, dateLong, dateTime, time,
-    schedule, name, address, addressLabels, statusLabel, badge, phoneDigits, locale, currency,
+    schedule, name, address, addressLabels, statusLabel, badge, phoneDigits, phone, locale, currency,
     timeZone, tax, percent, dateShort, country,
   };
 })();

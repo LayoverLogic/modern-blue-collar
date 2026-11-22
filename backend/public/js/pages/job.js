@@ -41,7 +41,7 @@
     if (document.activeElement !== $('job-notes')) $('job-notes').value = job.notes || '';
 
     $('c-name').textContent = fmt.name(c) || fmt.DASH;
-    $('c-phone').textContent = c.phone || fmt.DASH;
+    $('c-phone').textContent = fmt.phone(c.phone) || fmt.DASH;
     $('c-email').textContent = c.email || fmt.DASH;
     $('c-address').textContent = fmt.address(c) || fmt.DASH;
     if (c.id) $('c-link').href = 'customer-detail.html?id=' + encodeURIComponent(c.id);
@@ -250,11 +250,15 @@
         return 'Rescheduled from ' + schedText(f) + ' to ' + schedText(t);
       }
       case 'note': return t.notes ? 'Notes updated' : 'Notes cleared';
-      case 'updated': { const k = Object.keys(t).map((x) => FIELD_NAMES[x] || x); return 'Updated ' + (k.length ? k.join(', ') : 'details'); }
+      case 'updated': {
+        // Document status change (Phase 2c): to/from { quoteId|invoiceId, number, status }.
+        const kind = t.quoteId != null ? 'quote' : (t.invoiceId != null ? 'invoice' : null);
+        if (kind) return D().label(kind) + ' ' + (t.number || '#' + t[kind + 'Id']) + (f.status && t.status ? ': ' + fmt.statusLabel(f.status) + ' → ' + fmt.statusLabel(t.status) : ' updated');
+        const k = Object.keys(t).map((x) => FIELD_NAMES[x] || x); return 'Updated ' + (k.length ? k.join(', ') : 'details'); }
       case 'photo_added': return 'Photo added' + (t.originalName ? ': ' + t.originalName : '');
       case 'photo_removed': return 'Photo removed' + (f.originalName ? ': ' + f.originalName : '');
       case 'quote_created': return docRefText('quote', t) + ' created';
-      case 'invoice_created': return docRefText('invoice', t) + ' created' + (t.fromQuote ? ' from quote ' + (t.fromQuote.number || '') : '');
+      case 'invoice_created': return docRefText('invoice', t) + ' created' + (t.fromQuoteNumber || t.fromQuote ? ' from quote ' + (t.fromQuoteNumber || (t.fromQuote && t.fromQuote.number) || '') : '');
       case 'deleted': return 'Job deleted';
       default: return String(a.type || 'Change').replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
     }

@@ -16,7 +16,9 @@
 
   function weekStartDay() {
     const b = MBC.brand.current || {};
-    if (b.weekStart != null) return Number(b.weekStart) % 7;
+    const ws = b.weekStart != null ? b.weekStart : (b.locale && b.locale.weekStart);
+    if (typeof ws === 'string' && /^(sun|mon|sat)/i.test(ws)) return { sun: 0, mon: 1, sat: 6 }[ws.slice(0, 3).toLowerCase()];
+    if (ws != null && Number.isFinite(Number(ws))) return Number(ws) % 7;
     return ['US', 'CA'].includes(fmt.addressLabels().country) ? 0 : 1;
   }
   const d = (iso) => fmt.parseDate(iso);

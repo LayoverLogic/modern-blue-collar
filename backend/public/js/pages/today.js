@@ -40,7 +40,7 @@
       return '<article class="today-card" data-job="' + fmt.esc(j.id) + '">' +
         '<div class="today-head"><span class="when">' + fmt.esc(j.scheduledTime ? fmt.time(j.scheduledTime) : 'Any time') + '</span>' + fmt.badge(j.status) + '</div>' +
         '<div class="title"><a href="job.html?id=' + encodeURIComponent(j.id) + '">#' + fmt.esc(j.id) + ' ' + fmt.esc(j.title || j.type || 'Job') + '</a></div>' +
-        '<div class="who">' + fmt.text(fmt.name(c)) + (c.phone ? ' · ' + fmt.esc(c.phone) : '') + '</div>' +
+        '<div class="who">' + fmt.text(fmt.name(c)) + (c.phone ? ' · ' + fmt.esc(fmt.phone(c.phone)) : '') + '</div>' +
         '<div class="addr">' + fmt.text(fmt.address(c)) + '</div>' +
         (!auth.isTech() ? '<div class="addr">' + fmt.esc(MBC.brand.techLabel) + ': ' + fmt.esc(fmt.name(j.technician) || 'Unassigned') + '</div>' : '') +
         '<div class="big-actions">' + MBC.field.actionsHtml(j, auth.isTech() ? me : (j.technician || me)) +

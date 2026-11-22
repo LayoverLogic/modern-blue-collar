@@ -309,7 +309,7 @@ label.check { display: flex; gap: 0.5rem; align-items: center; font-weight: 500;
   .action-bar select { width: 100%; }
   .modal { padding: 1.1rem; }
   .modal-footer .btn { flex: 1; }
-  .photo-thumb .del { width: 36px; height: 36px; }
+  .photo-thumb .del { width: 44px; height: 44px; }
   .doc-grid { grid-template-columns: 1fr; gap: 0.75rem; }
   .de-add { grid-template-columns: 1fr; }
   .de-head { display: none; }

@@ -44,7 +44,7 @@
     txt('p-seller-name', s.companyName || (MBC.brand.current.companyName || ''));
     const sl = [];
     if (s.address) String(s.address).split(/\n/).forEach((x) => sl.push(x));
-    if (s.phone) sl.push(s.phone);
+    if (s.phone) sl.push(fmt.phone(s.phone));
     if (s.email) sl.push(s.email);
     if (s.taxNumber) sl.push((s.taxLabel ? s.taxLabel + ' no. ' : 'Tax no. ') + s.taxNumber);
     $('p-seller-lines').innerHTML = sl.map((x) => div('', x)).join('');
@@ -74,7 +74,7 @@
     if (c.company && c.company !== c.name) cl.push(c.company);
     (c.addressLines || []).forEach((x) => cl.push(x));
     if (c.email) cl.push(c.email);
-    if (c.phone) cl.push(c.phone);
+    if (c.phone) cl.push(fmt.phone(c.phone));
     if (c.taxNumber) cl.push((p.taxLabel ? p.taxLabel + ' no. ' : 'Tax no. ') + c.taxNumber);
     $('p-customer').innerHTML = div('p-name', c.name || fmt.name(doc.customer) || '—') + cl.map((x) => div('', x)).join('');
     $('p-job-box').hidden = !p.jobTitle;

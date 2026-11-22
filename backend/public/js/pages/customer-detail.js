@@ -15,7 +15,7 @@
     $('customer-name').textContent = name;
     MBC.brand.apply(MBC.brand.current, name);
     $('e-first').value = c.firstName || ''; $('e-last').value = c.lastName || '';
-    $('e-phone').value = c.phone || ''; $('e-email').value = c.email || '';
+    $('e-phone').value = fmt.phone(c.phone) || ''; $('e-email').value = c.email || '';
     $('e-address').value = c.address || ''; $('e-address2').value = c.addressLine2 || ''; $('e-city').value = c.city || '';
     $('e-state').value = c.state || ''; $('e-zip').value = c.zip || ''; $('e-notes').value = c.notes || '';
     const digits = fmt.phoneDigits(c.phone);
