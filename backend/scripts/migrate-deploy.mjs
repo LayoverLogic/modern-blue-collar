@@ -24,6 +24,7 @@
  *
  * Options: --quiet  only print the summary line
  *          --migrations-dir <dir>  read migrations from <dir> (tests only)
+ *          --split-only <file>     print the statements of <file> as JSON and exit (tests)
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -38,6 +39,102 @@ require(path.join(backendDir, 'helpers', 'loadEnv.js'));
 const { parseDatabaseUrl } = require(path.join(backendDir, 'helpers', 'databaseUrl.js'));
 
 function log(...a) { if (!quiet) console.log('[migrate]', ...a); }
+
+// ── PLAT-15: statement splitter ─────────────────────────────────────────────
+// Splits a PostgreSQL script on top-level ';' only. Understands 'strings' (''
+// escapes), E'strings' (\' escapes), "identifiers" ("" escapes), $$ and $tag$
+// dollar quoting ($1 is a parameter, not a quote), -- comments and nested
+// /* */ comments. Pieces that are only comments/whitespace are dropped.
+// Kept inside this file on purpose so the script still works when copied on
+// its own. Test it with:  node scripts/migrate-deploy.mjs --split-only <file.sql>
+function splitSqlStatements(sql) {
+  const out = [];
+  let start = 0;
+  let i = 0;
+  let meaningful = false; // current piece has something other than comments/space
+  const n = sql.length;
+
+  const push = (end) => {
+    const piece = sql.slice(start, end).trim();
+    if (piece && meaningful) out.push(piece);
+    meaningful = false;
+  };
+
+  while (i < n) {
+    const c = sql[i];
+    const next = sql[i + 1];
+
+    if (c === '-' && next === '-') { // line comment
+      const nl = sql.indexOf('\n', i + 2);
+      i = nl === -1 ? n : nl + 1;
+      continue;
+    }
+    if (c === '/' && next === '*') { // block comment (nests in PostgreSQL)
+      let depth = 1;
+      i += 2;
+      while (i < n && depth > 0) {
+        if (sql[i] === '/' && sql[i + 1] === '*') { depth += 1; i += 2; } else if (sql[i] === '*' && sql[i + 1] === '/') { depth -= 1; i += 2; } else i += 1;
+      }
+      continue;
+    }
+    if (c === "'") { // string literal; E'...' allows backslash escapes
+      const prev = sql[i - 1];
+      const escapeString = (prev === 'E' || prev === 'e') && !/[A-Za-z0-9_$]/.test(sql[i - 2] || '');
+      meaningful = true;
+      i += 1;
+      while (i < n) {
+        if (escapeString && sql[i] === '\\') { i += 2; continue; }
+        if (sql[i] === "'") {
+          if (sql[i + 1] === "'") { i += 2; continue; }
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      continue;
+    }
+    if (c === '"') { // quoted identifier
+      meaningful = true;
+      i += 1;
+      while (i < n) {
+        if (sql[i] === '"') {
+          if (sql[i + 1] === '"') { i += 2; continue; }
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      continue;
+    }
+    if (c === '$') { // dollar quoting: $$ or $tag$ (tag cannot start with a digit; $1 is a parameter)
+      const m = /^\$([A-Za-z_\u0080-￿][A-Za-z0-9_\u0080-￿]*)?\$/.exec(sql.slice(i, i + 256));
+      const prevIsIdent = /[A-Za-z0-9_]/.test(sql[i - 1] || '');
+      if (m && !prevIsIdent) {
+        const tag = m[0];
+        const close = sql.indexOf(tag, i + tag.length);
+        meaningful = true;
+        i = close === -1 ? n : close + tag.length;
+        continue;
+      }
+    }
+    if (c === ';') {
+      push(i);
+      start = i + 1;
+      i += 1;
+      continue;
+    }
+    if (!/\s/.test(c)) meaningful = true;
+    i += 1;
+  }
+  push(n);
+  return out;
+}
+
+if (process.argv.includes('--split-only')) {
+  const file = process.argv[process.argv.indexOf('--split-only') + 1];
+  console.log(JSON.stringify(splitSqlStatements(fs.readFileSync(file, 'utf8'))));
+  process.exit(0);
+}
 
 // ── Version guard: the WASM engine must match the CLI's engine commit ─────────
 const bgPath = require.resolve('@prisma/schema-engine-wasm/schema_engine_bg');
@@ -69,10 +166,8 @@ const { PrismaPg } = require('@prisma/adapter-pg');
 const { bindMigrationAwareSqlAdapterFactory } = require('@prisma/driver-adapter-utils');
 const { connectionString, schema: dbSchema } = parseDatabaseUrl(process.env.DATABASE_URL);
 // PLAT-15: adapter-pg's executeScript() splits migrations on every ';' (breaks
-// function bodies, ';' in strings or comments). Replace it with a splitter that
-// understands quotes, dollar-quoting and comments (scripts/sql-split.cjs).
-// Each statement still runs on its own, exactly as before.
-const { splitSqlStatements } = require(path.join(backendDir, 'scripts', 'sql-split.cjs'));
+// function bodies, ';' in strings or comments). Replace it with
+// splitSqlStatements() above. Each statement still runs on its own, as before.
 const pgFactory = new PrismaPg({ connectionString }, dbSchema !== 'public' ? { schema: dbSchema } : undefined);
 const originalConnect = pgFactory.connect.bind(pgFactory);
 pgFactory.connect = async () => {

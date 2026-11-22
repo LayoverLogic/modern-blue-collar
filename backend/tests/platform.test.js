@@ -629,7 +629,15 @@ test('backup: BACKUP_DRIVER=s3 without a bucket fails loudly', { skip: !hasDb &&
 
 // ── PLAT-15: migration statement splitting ─────────────────────────────────
 test('sql-split: splits on top-level ; only (quotes, E-strings, identifiers, $$, $tag$, comments)', () => {
-  const { splitSqlStatements } = require('../scripts/sql-split.cjs');
+  const splitDir = fs.mkdtempSync(path.join(tmp, 'split-'));
+  let nSplit = 0;
+  const splitSqlStatements = (text) => {
+    const f = path.join(splitDir, `${(nSplit += 1)}.sql`);
+    fs.writeFileSync(f, text);
+    const r = spawnSync(process.execPath, [MIGRATE, '--split-only', f], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return JSON.parse(r.stdout);
+  };
   const sql = `
 -- comment with ; in it
 CREATE TABLE "a;b" (id int, note text DEFAULT 'x;y', e text DEFAULT E'it\\'s;');
