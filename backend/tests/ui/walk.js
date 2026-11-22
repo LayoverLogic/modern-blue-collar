@@ -21,6 +21,13 @@
  *      invite + add a team member, export CSV from three pages, technician on
  *      mobile: Today view with Navigate / Call / Text / On My Way, open the job,
  *      change status, upload a photo; dispatcher nav has no admin items.
+ *   2b. Integrations walk (admin, Settings): download the import template, dry-run a
+ *      small generic CSV (new rows, a duplicate of a seeded customer, a bad phone, an
+ *      XSS payload) → counts + gate-3 equation, decide the duplicate, report zip,
+ *      commit with expectSha256, undo; export everything (zip manifest lists the
+ *      tables); Xero CSV (date check, unmapped-tax warning); quotes CSV; QuickBooks
+ *      in sandbox (Connect / Sync payments / Push to QuickBooks say "no request was
+ *      sent"). Screenshots settings-data, import-dry-run, quickbooks.
  *   3. XSS: stores `<img src=x onerror=...>`-style payloads in a customer, job,
  *      quote, communication and pricebook item (via the API), opens every page
  *      that shows them and asserts nothing executed / no payload element exists.
@@ -57,6 +64,7 @@
  *
  * Options (env): UI_ROLES=admin,technician  UI_VIEWPORTS=desktop,mobile
  *                UI_PAGES=index,dispatch    UI_SKIP_AUDIT=1  UI_SKIP_FLOW=1  UI_SKIP_XSS=1  UI_SKIP_FINAL=1
+ *                UI_SKIP_INTEGRATIONS=1 (skip the Settings import / export / QuickBooks walk)
  *                UI_REPORT_ONLY=1   UI_KEEP_DATA=1 (keep the customer/job/quote/invoice/users the flow created)
  *                UI_SHOT_SUFFIX=-ie  (appended to final screenshot names)
  *                UI_FINAL_ONLY=invoice,invoice-print  (take only these final screenshots)
@@ -370,6 +378,7 @@ async function flowWalk(browser, ctxInfo, results) {
   try {
     await page.click('#btn-new'); await sleep(250);
     if (!(await isVisible(page, '#modal'))) throw new Error('"+ New Customer" did not open the modal');
+    await page.type('#f-company', `Walsh Plumbing ${stamp}`);
     await page.type('#f-first', first); await page.type('#f-last', last);
     const ie = ((brand.locale || {}).country || 'US') === 'IE';
     await page.type('#f-phone', ie ? '087 555 0142' : '620-555-0142'); await page.type('#f-email', `siobhan${stamp}@example.test`);
@@ -379,7 +388,10 @@ async function flowWalk(browser, ctxInfo, results) {
     await page.click('#modal .btn-primary'); await settle(page, 400);
     const err = await visibleText(page, '#modal-error');
     const row = await page.$$eval('#customers-tbody tr', (rs, n) => rs.some((r) => r.innerText.includes(n)), last);
-    step('2. Create customer (Customers > + New Customer)', !err && row, err ? `modal error: "${err}"` : `created; row shown: ${row}; address ${addr.join(', ')}`, { screenshot: await shot(page, 'flow-02-create-customer') });
+    // Company set → the company is the display name, the person shows underneath.
+    const named = await page.$$eval('#customers-tbody tr', (rs, n) => { const r = rs.find((x) => x.innerText.includes(n)); return r ? { name: r.querySelector('a.row-link').innerText, contact: (r.querySelector('.contact-line') || {}).innerText || '' } : null; }, last);
+    const nameOk = !!named && named.name === `Walsh Plumbing ${stamp}` && named.contact === `${first} ${last}`;
+    step('2. Create customer with a company (Customers > + New Customer)', !err && row && nameOk, err ? `modal error: "${err}"` : `created; row shown: ${row}; name "${named && named.name}" / contact "${named && named.contact}"; address ${addr.join(', ')}`, { screenshot: await shot(page, 'flow-02-create-customer') });
   } catch (e) { step('2. Create customer', false, e.message, { screenshot: await shot(page, 'flow-02-create-customer') }); }
 
   // Create job.
@@ -668,6 +680,234 @@ async function flowWalk(browser, ctxInfo, results) {
   }
 }
 
+// ── 2b. Integrations (admin): Settings → Data import / exports, QuickBooks ───
+// Import: a small generic CSV (2 new rows, 1 duplicate of a seeded customer, 1 bad
+// phone, 1 XSS payload) → dry run → decide the duplicate → commit → undo. Export
+// everything: the zip's manifest lists the tables. Xero CSV with the unmapped-tax
+// warning. QuickBooks in sandbox: every button says "no request was sent".
+async function integrationsWalk(browser, ctxInfo, results) {
+  await startServer();
+  const steps = results.flow;
+  const step = (name, ok, detail, extra = {}) => { const status = ok === true ? 'pass' : (ok === null ? 'skip' : 'fail'); steps.push({ step: name, status, detail, ...extra }); console.log(`  [${status}] ${name} — ${detail}`); };
+  const stamp = Date.now().toString().slice(-5);
+  const { token: at } = await apiLogin(USERS.admin);
+  const S = await newPage(browser, 'desktop'); const slog = newLog(); instrument(S.page, slog); const page = S.page;
+  await page.goto(BASE + '/api/health'); await page.evaluate((tk) => localStorage.setItem('token', tk), at);
+  // Keep every Blob the page saves (the real fetch + save path still runs).
+  const trapSaves = () => page.evaluate(() => {
+    window.__saved = [];
+    const orig = window.MBC.api.saveBlob;
+    window.MBC.api.saveBlob = (b, n) => { window.__saved.push({ b, n }); return orig(b, n); };
+  });
+  const lastSaved = () => page.evaluate(async () => {
+    const x = window.__saved[window.__saved.length - 1]; if (!x) return null;
+    const buf = new Uint8Array(await x.b.arrayBuffer());
+    let bin = ''; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+    return { name: x.n, size: buf.length, b64: btoa(bin) };
+  });
+  const tileVal = (sel, k) => page.$eval(`${sel} [data-count="${k}"] .value`, (e) => Number(e.textContent)).catch(() => null);
+
+  await page.goto(BASE + '/settings.html'); await settle(page);
+  await trapSaves();
+  const tabs = await page.$$eval('.tabs .tab', (ts) => ts.map((t) => t.textContent.trim()));
+  step('I1. Settings opens (admin) with Data + QuickBooks tabs', tabs.join(',') === 'Data,QuickBooks' && await isVisible(page, '#import-card'), `tabs ${tabs.join(', ')}`);
+
+  // Template download.
+  try {
+    const resP = page.waitForResponse((r) => r.url().includes('/api/imports/templates/customers.csv'), { timeout: 8000 });
+    await page.click('#btn-template');
+    const r = await resP; await sleep(200);
+    const saved = await lastSaved();
+    const head = saved ? Buffer.from(saved.b64, 'base64').toString('utf8').split('\n')[0] : '';
+    step('I2. Download the import template', r.status() === 200 && /^source_id,company,first_name/.test(head), `${r.status()} ${saved && saved.name}: "${head.slice(0, 60)}"`);
+  } catch (e) { step('I2. Download the import template', false, e.message); }
+
+  // Build the CSV: a duplicate of a seeded customer (same email + phone → auto_merge).
+  const custs = (await api(at, 'GET', '/api/customers')).body || [];
+  const dup = custs.find((c) => c.email && c.phone && c.zip && c.firstName && c.lastName && !c.company && !c.sourceSystem) || null;
+  const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const ie = ((ctxInfo.brand.locale || {}).country || 'US') === 'IE';
+  const addr = ie ? ['1 Canal View', 'Naas', 'Co. Kildare', 'W91 C2X7', 'IE', '087 555 01'] : ['1 Test Rd', 'Hutchinson', 'KS', '67501', 'US', '620-555-01'];
+  const last = `Importwalk${stamp}`;
+  const xss = '<img src=x onerror="window.__xss=(window.__xss||[]).concat(99)">';
+  const csvRows = [
+    'source_id,company,first_name,last_name,email,phone,phone_alt,line1,line2,city,region,postcode,country,type,tax_number,notes,created_at,lifetime_value,service_address,archived',
+    `W${stamp}-1,,Aoife,${last},aoife.${stamp}@example.test,${addr[5]}11,,${addr[0]},,${addr[1]},${addr[2]},${addr[3]},${addr[4]},residential,,,2024-01-02,,,false`,
+    `W${stamp}-2,${last} Builders,Ciaran,${last},builders.${stamp}@example.test,${addr[5]}12,,${addr[0]},,${addr[1]},${addr[2]},${addr[3]},${addr[4]},commercial,,"${xss.replace(/"/g, '""')}",2024-01-03,,,false`,
+    `W${stamp}-3,,Bad,Phone${stamp},bad.${stamp}@example.test,12345,,${addr[0]},,${addr[1]},${addr[2]},${addr[3]},${addr[4]},residential,,,2024-01-03,,,false`,
+  ];
+  if (dup) csvRows.push([`W${stamp}-4`, '', dup.firstName, dup.lastName, dup.email, dup.phone, '', dup.address || '9 Elm', '', dup.city || addr[1], dup.state || addr[2], dup.zip, dup.country || addr[4], 'residential', '', '', '2024-01-04', '', '', 'false'].map(q).join(','));
+  const csvFile = path.join(os.tmpdir(), `mbc-ui-walk-import-${stamp}.csv`);
+  fs.writeFileSync(csvFile, csvRows.join('\n') + '\n');
+  const expectRows = csvRows.length - 1;
+  let committed = false;
+  try {
+    await page.select('#imp-source', 'generic');
+    await (await page.$('#imp-file')).uploadFile(csvFile);
+    await page.click('#btn-dry-run'); await settle(page, 400);
+    if (!(await isVisible(page, '#dry-run'))) throw new Error('dry-run results not shown: ' + await visibleText(page, '#import-error'));
+    const c = {};
+    for (const k of ['sourceRows', 'created', 'excluded', 'errored', 'unexplained']) c[k] = await tileVal('#dr-counts', k);
+    const gate = await visibleText(page, '#dr-gate3');
+    const mergeRows = await page.$$eval('#dr-merge tbody tr', (rs) => rs.length);
+    const excRows = await page.$$eval('#dr-exceptions tbody tr', (rs) => rs.map((r) => r.innerText.replace(/\s+/g, ' ')));
+    const spot = await page.$$eval('#dr-spot tbody tr', (rs) => rs.length);
+    const banner = await visibleText(page, '#dr-banner');
+    const xssRun = await page.evaluate(() => ({ executed: window.__xss || null, injected: document.querySelectorAll('img[src="x"]').length }));
+    const ok = c.sourceRows === expectRows && c.created === 2 && c.errored === 1 && c.unexplained === 0 && c.excluded === (dup ? 1 : 0) &&
+      /Counts add up/.test(gate) && /sourceRows \(\d+\) = created \(\d+\)/.test(gate) && mergeRows === (dup ? 1 : 0) &&
+      excRows.some((r) => /invalid phone/i.test(r)) && spot > 0 && /nothing has been written/i.test(banner) && !xssRun.executed && !xssRun.injected;
+    step('I3. Import dry run: counts, gate-3 equation, duplicate, exceptions, spot check (nothing written, payload inert)', ok,
+      `counts ${JSON.stringify(c)}; gate "${gate.replace(/\s+/g, ' ')}"; merge rows ${mergeRows}; exceptions ${excRows.length}; spot ${spot}; xss ${JSON.stringify(xssRun)}`);
+    const before = (await api(at, 'GET', '/api/customers')).body.filter((x) => x.lastName === last).length;
+    step('I3b. Dry run wrote nothing', before === 0, `${before} customer(s) named ${last}`);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({ path: path.join(FINAL, 'import-dry-run' + SHOT_SUFFIX + '.png'), fullPage: true });
+
+    // Decide the duplicate → merge, re-check.
+    if (dup) {
+      await page.select('#dr-merge tbody select.merge-decision', 'merge');
+      await page.click('#btn-apply-decisions'); await settle(page, 400);
+      const merged = await tileVal('#dr-counts', 'merged');
+      const pending = await visibleText(page, '#dr-pending');
+      step('I4. Decide the duplicate ("Same customer: merge") and re-check', merged === 1 && /0 still to decide/.test(pending), `merged ${merged}; "${pending}"`);
+    } else step('I4. Decide the duplicate', null, 'no seeded customer with email + E.164 phone to duplicate');
+
+    // Report zip.
+    const zr = page.waitForResponse((r) => r.url().includes('/api/imports/customers') && r.url().includes('format=zip'), { timeout: 10000 });
+    await page.click('#btn-report-zip');
+    const zres = await zr; await sleep(300);
+    const zsaved = await lastSaved();
+    let zfiles = [];
+    try { zfiles = Object.keys(require('fflate').unzipSync(Buffer.from(zsaved.b64, 'base64'))); } catch { /* not a zip */ }
+    step('I5. Download the dry-run report (.zip)', zres.status() === 200 && ['report.json', 'report.md', 'exceptions.csv', 'merge-candidates.csv', 'spot-check.csv'].every((f) => zfiles.includes(f)), `${zres.status()} ${zsaved && zsaved.name}: ${zfiles.join(', ')}`);
+
+    // Commit with expectSha256.
+    const label = await visibleText(page, '#btn-commit');
+    const cr = page.waitForResponse((r) => r.url().includes('/api/imports/customers') && r.url().includes('dryRun=false'), { timeout: 15000 });
+    await page.click('#btn-commit'); await sleep(250);
+    await page.click('#btn-commit-confirm');
+    const cres = await cr; await settle(page, 400);
+    const sha = /expectSha256=([0-9a-f]{64})/.test(cres.url());
+    const ib = await visibleText(page, '#ir-banner');
+    const created = await tileVal('#ir-counts', 'created');
+    const nowRows = (await api(at, 'GET', '/api/customers')).body.filter((x) => x.lastName === last).length;
+    committed = cres.status() === 200 && /Import complete/.test(ib);
+    step('I6. Commit the import (expectSha256 = dry run checksum)', committed && sha && created === 2 && nowRows === 2 && /Import \d+ customer/.test(label),
+      `${cres.status()} sha256 sent: ${sha}; button "${label}"; banner "${ib.slice(0, 80)}"; created ${created}; API rows ${nowRows}`);
+    const undoInfo = await visibleText(page, '#undo-last');
+    // Undo last import.
+    const ur = page.waitForResponse((r) => r.url().includes('/api/imports/customers/undo'), { timeout: 15000 });
+    await page.click('#btn-undo-last');
+    const ures = await ur; await settle(page, 300);
+    const us = await visibleText(page, '#undo-summary');
+    const after = (await api(at, 'GET', '/api/customers')).body.filter((x) => x.lastName === last).length;
+    const restoredDup = dup ? (await api(at, 'GET', `/api/customers/${dup.id}`)).body : null;
+    const dupOk = !dup || (restoredDup && restoredDup.sourceSystem == null);
+    step('I7. Undo last import', ures.status() === 200 && /2 removed/.test(us) && (!dup || /1 restored/.test(us)) && after === 0 && dupOk && /Undo last import/.test(undoInfo),
+      `${ures.status()} "${us}"; customers left ${after}; duplicate restored ${dupOk}`, { screenshot: await shot(page, 'flow-I7-undo') });
+    committed = after !== 0;
+  } catch (e) { step('I3-7. Import wizard', false, e.message, { screenshot: await shot(page, 'flow-I3-import-error') }); }
+  if (committed) { // the undo did not run: remove what the commit created
+    for (const c of ((await api(at, 'GET', '/api/customers')).body || []).filter((x) => x.lastName === last)) await api(at, 'DELETE', `/api/customers/${c.id}`);
+  }
+  fs.rmSync(csvFile, { force: true });
+
+  // Export everything.
+  try {
+    const er = page.waitForResponse((r) => r.url().includes('/api/exports/all'), { timeout: 20000 });
+    await page.click('#btn-export-all');
+    const eres = await er;
+    await page.waitForFunction(() => /Saved|failed/.test((document.getElementById('export-all-status') || {}).innerText || ''), { timeout: 20000 });
+    const st = await visibleText(page, '#export-all-status');
+    const saved = await lastSaved();
+    const files = require('fflate').unzipSync(Buffer.from(saved.b64, 'base64'));
+    const manifest = JSON.parse(Buffer.from(files['manifest.json']).toString('utf8'));
+    const tables = manifest.files.filter((f) => f.table && !f.photoId).map((f) => f.path);
+    const need = ['customers.csv', 'jobs.csv', 'quotes.csv', 'invoices.csv', 'invoice_lines.csv', 'pricebook.csv', 'users.csv'];
+    const ok = eres.status() === 200 && /\.zip$/.test(saved.name) && manifest.format === 'mbc-exit-export' && need.every((f) => tables.includes(f) && files[f]) &&
+      !!files.SHA256SUMS && manifest.excluded.some((x) => x.table === 'ApiKey') && /Saved/.test(st);
+    step('I8. Export everything → zip whose manifest lists the tables', ok, `${eres.status()} ${saved.name} ${saved.size} B; ${tables.length} tables (${tables.slice(0, 8).join(', ')}…); excluded ${manifest.excluded.map((x) => x.table).join(', ')}; status "${st.slice(0, 80)}"`);
+  } catch (e) { step('I8. Export everything', false, e.message); }
+
+  // Xero: validation, then a real export with the unmapped-tax warning.
+  let fixtureInv = null, fixtureJob = null;
+  try {
+    const rates = ((ctxInfo.brand.locale || {}).taxRates || []).map((r) => r.key);
+    const c0 = custs[0];
+    fixtureJob = (await api(at, 'POST', '/api/jobs', { customerId: c0.id, title: `Xero export check ${stamp}` })).body;
+    fixtureInv = (await api(at, 'POST', '/api/invoices', { jobId: fixtureJob.id, dueDate: localISO(new Date(Date.now() + 864e6)), lines: [{ description: 'Xero check labour', quantity: 1, unitPrice: 120, taxRateKey: rates[1] || rates[0] || null }] })).body;
+    await page.$eval('#xero-from', (e) => { e.value = '2031-01-02'; });
+    await page.$eval('#xero-to', (e) => { e.value = '2031-01-01'; });
+    await page.click('#btn-xero'); await sleep(200);
+    const verr = await visibleText(page, '#xero-error');
+    await page.$eval('#xero-from', (e, d) => { e.value = d; }, TODAY.slice(0, 4) + '-01-01');
+    await page.$eval('#xero-to', (e, d) => { e.value = d; }, TODAY);
+    const xr = page.waitForResponse((r) => r.url().includes('/api/exports/xero-invoices'), { timeout: 10000 });
+    await page.click('#btn-xero');
+    const xres = await xr; await settle(page, 300);
+    const hdr = xres.headers();
+    const sum = await visibleText(page, '#xero-summary');
+    const unm = (hdr['x-mbc-xero-unmapped-tax'] || '').split(',').filter(Boolean);
+    const warn = await visibleText(page, '#xero-unmapped');
+    const saved = await lastSaved();
+    const csv = Buffer.from(saved.b64, 'base64').toString('utf8');
+    const ok = /must be on or before/.test(verr) && xres.status() === 200 && /^\*ContactName,/.test(csv) && csv.includes(fixtureInv.number) &&
+      sum.includes(`${hdr['x-mbc-xero-invoices']} invoice`) && unm.length > 0 && unm.every((k) => warn.includes(k));
+    step('I9. Xero CSV: date-range check, download, unmapped-tax warning from X-MBC-Xero-Unmapped-Tax', ok,
+      `validation "${verr}"; ${xres.status()} invoices ${hdr['x-mbc-xero-invoices']} lines ${hdr['x-mbc-xero-lines']}; unmapped [${unm.join(',')}]; warning "${warn.replace(/\s+/g, ' ').slice(0, 120)}"`);
+  } catch (e) { step('I9. Xero export', false, e.message); }
+
+  // A list export (quotes).
+  try {
+    const qr = page.waitForResponse((r) => r.url().includes('/api/exports/quotes'), { timeout: 8000 });
+    await page.click('#list-exports [data-export="quotes"]');
+    const qres = await qr; await sleep(200);
+    const saved = await lastSaved();
+    const head = Buffer.from(saved.b64, 'base64').toString('utf8').replace(/^﻿/, '').split('\n')[0];
+    step('I10. Export the quotes list (CSV)', qres.status() === 200 && /csv/.test(qres.headers()['content-type'] || '') && /^"?id"?,"?number"?/.test(head), `${qres.status()} ${saved.name}: ${head.slice(0, 60)}`);
+  } catch (e) { step('I10. Quotes export', false, e.message); }
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.goto(BASE + '/settings.html'); await settle(page);
+  await page.screenshot({ path: path.join(FINAL, 'settings-data' + SHOT_SUFFIX + '.png'), fullPage: true });
+
+  // QuickBooks tab (sandbox: disabled, nothing sent).
+  try {
+    const status = (await api(at, 'GET', '/api/quickbooks/status')).body || {};
+    await page.click('#tab-btn-quickbooks'); await settle(page, 300);
+    const notice = await visibleText(page, '#qbo-disabled');
+    const state = await visibleText(page, '#qbo-state');
+    if (status.enabled) step('I11. QuickBooks disabled state', null, 'QuickBooks is enabled on this server');
+    else {
+      await page.click('#btn-qbo-connect'); await settle(page, 300);
+      const m1 = await visibleText(page, '#qbo-message');
+      const urlAfter = page.url();
+      await page.click('#btn-qbo-sync'); await settle(page, 300);
+      const m2 = await visibleText(page, '#qbo-message');
+      const ok = /disabled in (sandbox|demo)|not set up/i.test(notice) && /Not connected/.test(state) && /no request was sent/i.test(m1) && /no request was sent/i.test(m2) && /settings\.html/.test(urlAfter);
+      step('I11. QuickBooks (sandbox): status, Connect and Sync payments say "no request was sent"', ok, `notice "${notice.slice(0, 90)}"; connect "${m1}"; sync "${m2}"`);
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await page.screenshot({ path: path.join(FINAL, 'quickbooks' + SHOT_SUFFIX + '.png'), fullPage: true });
+    }
+    // Invoice card: link badge + Push to QuickBooks.
+    if (fixtureJob) {
+      await page.goto(`${BASE}/job.html?id=${fixtureJob.id}`); await settle(page);
+      const badge = await visibleText(page, '#qbo-badge');
+      const hasPush = !!(await page.$('#btn-qbo-push'));
+      if (hasPush) { await page.click('#btn-qbo-push'); await settle(page, 400); }
+      const msg = await visibleText(page, '#qbo-msg');
+      const ok = /Not in QuickBooks/.test(badge) && hasPush && (status.enabled ? !!msg : /no request was sent/i.test(msg));
+      step('I12. Invoice card: QuickBooks badge + "Push to QuickBooks" (sandbox → nothing sent)', ok, `badge "${badge}"; push button ${hasPush}; message "${msg}"`, { screenshot: await shot(page, 'flow-I12-qbo-invoice') });
+    }
+  } catch (e) { step('I11-12. QuickBooks', false, e.message); }
+  if (fixtureInv) await api(at, 'DELETE', `/api/invoices/${fixtureInv.id}`);
+  if (fixtureJob) await api(at, 'DELETE', `/api/jobs/${fixtureJob.id}`);
+  // The sandbox QuickBooks 503s are expected (and shown in the page); Chrome logs each as a resource error.
+  const bad = [...slog.pageErrors, ...slog.console.filter((m) => !/status of 503/.test(m))];
+  step('I13. No JS/console errors during the integrations walk', bad.length === 0, bad.slice(0, 4).join(' | ') || 'none');
+  await S.ctx.close();
+}
+
 // ── 3. XSS: stored payloads must render as text everywhere ────────────────────
 async function xssCheck(browser, ctxInfo, results) {
   await startServer();
@@ -825,6 +1065,7 @@ async function cleanupFlow(results) {
     browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', '--no-first-run'] });
     if (!process.env.UI_SKIP_AUDIT) { console.log('Page audit'); await pageAudit(browser, ctxInfo, results); }
     if (!process.env.UI_SKIP_FLOW) { console.log('Main flow'); await flowWalk(browser, ctxInfo, results); }
+    if (!process.env.UI_SKIP_INTEGRATIONS) { fs.mkdirSync(FINAL, { recursive: true }); console.log('Integrations (Settings: import, exports, QuickBooks)'); await integrationsWalk(browser, ctxInfo, results); }
     if (!process.env.UI_SKIP_XSS) { console.log('XSS'); await xssCheck(browser, ctxInfo, results); }
     if (!process.env.UI_SKIP_FINAL) { console.log('Final screenshots'); await finalShots(browser, ctxInfo, results); }
     if (!process.env.UI_KEEP_DATA) await cleanupFlow(results);

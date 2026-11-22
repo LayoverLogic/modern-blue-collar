@@ -5,6 +5,8 @@
  *   await MBC.api.post('/api/customers', body)     (also patch / put / del)
  *   await MBC.api.upload(url, formData)
  *   await MBC.api.download('/api/exports/jobs', 'jobs.csv')
+ *   await MBC.api.fetchBlob('POST', url, formData, { onProgress(bytes, total) })  → { blob, filename, headers }
+ *   MBC.api.saveBlob(blob, 'name.zip')              save a Blob as a download
  *
  * Errors throw MBC.ApiError with .status and .message set to a FRIENDLY text:
  * never raw server / Prisma output.  401 → token cleared, back to the login page.
@@ -98,8 +100,25 @@
       case 'QUOTE_DECLINED': return 'This quote was declined, so it cannot be turned into an invoice.';
       case 'UNKNOWN_PRICEBOOK_ITEM': return (label || 'A line') + ' refers to a pricebook item that no longer exists. Remove it and add it again.';
       case 'UNKNOWN_JOB': return 'That job no longer exists. Reload the page.';
+      // Phase 2c integrations: imports, exports, QuickBooks
+      case 'IMPORT_RUNNING': return 'Another import is running right now. Wait for it to finish, then try again.';
+      case 'FILE_CHANGED': return 'The file is not the one the dry run checked. Run a new dry run before importing.';
+      case 'INVALID_CSV': return 'That file could not be read as a CSV. Save it as "CSV UTF-8" and try again.' + (safeServerText(serverMsg) ? ' (' + safeServerText(serverMsg) + ')' : '');
+      case 'TOO_MANY_ROWS': return 'That file has too many rows for one import. Split it into smaller files.';
+      case 'INVALID_JSON': return (label || 'A value') + ' is not valid JSON.';
+      case 'EXPORT_RUNNING': return 'An export is already running. Wait a moment and try again.';
+      case 'QBO_NOT_CONNECTED': return 'QuickBooks is not connected. Connect it in Settings → QuickBooks first.';
+      case 'QBO_REAUTH_REQUIRED': return 'The QuickBooks connection has expired or was revoked. Reconnect QuickBooks in Settings.';
+      case 'QBO_INVOICE_VOID': return 'Void invoices are not pushed to QuickBooks.';
+      case 'QBO_TAX_CODE_UNMAPPED': return 'Nothing was pushed: no QuickBooks tax code is set for ' + (Array.isArray(data.keys) && data.keys.length ? data.keys.join(', ') : 'this invoice\'s tax rates') + '. Ask your administrator to set QBO_TAX_CODES.';
+      case 'QBO_THROTTLED': return 'QuickBooks is busy (rate limit). Try again in a minute.';
+      case 'QBO_UNREACHABLE': return 'QuickBooks could not be reached. Try again later.';
+      case 'QBO_TOKEN_FAILED': return 'QuickBooks refused the sign-in token. Try again, or reconnect QuickBooks in Settings.';
+      case 'QBO_API_ERROR': return 'QuickBooks rejected the request' + (data.qboCode ? ' (code ' + String(data.qboCode).slice(0, 20) + ')' : '') + '.' + (safeServerText(serverMsg) ? ' ' + safeServerText(serverMsg) : '');
       default: break;
     }
+    // Integration switched off (SANDBOX_MODE / DEMO_MODE / no credentials): 503 and nothing was sent.
+    if (status === 503 && data.integration) return disabledText(data);
     const safe = safeServerText(serverMsg);
     switch (status) {
       case 0: return 'Could not reach the server. Check your connection and try again.';
@@ -114,6 +133,14 @@
       case 501: case 503: return safe || 'This feature is not set up on this system yet.';
       default: return status >= 500 ? 'Something went wrong on the server. Please try again.' : (safe || 'Request failed.');
     }
+  }
+
+  const INTEGRATION_NAMES = { quickbooks: 'QuickBooks', twilio: 'Text messaging', google: 'Google sign-in', gmail: 'Gmail' };
+  function disabledText(data) {
+    const n = INTEGRATION_NAMES[data.integration] || 'This integration';
+    if (data.sandbox || data.reason === 'sandbox') return n + ' is disabled in sandbox — no request was sent.';
+    if (data.demo || data.reason === 'demo') return n + ' is disabled in demo mode — no request was sent.';
+    return n + ' is not set up on this system (no credentials) — no request was sent.';
   }
 
   function token() { return localStorage.getItem('token'); }
@@ -146,19 +173,48 @@
     return data;
   }
 
-  async function download(url, filename) {
-    const res = await request('GET', url, undefined, { raw: true });
-    const blob = await res.blob();
+  function filenameFrom(res, fallback) {
     const cd = res.headers.get('content-disposition') || '';
     const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="?([^";]+)"?/i);
-    const name = m ? decodeURIComponent(m[1]) : filename;
+    let name = '';
+    if (m) { try { name = decodeURIComponent(m[1]); } catch (e) { name = m[1]; } }
+    return name || fallback || 'export.csv';
+  }
+  function saveBlob(blob, name) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = name || filename || 'export.csv';
+    a.download = name;
     document.body.appendChild(a);
     a.click();
-    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
     return name;
+  }
+  // Fetch a file (GET, or POST with a body) as a Blob. opts.onProgress(bytesSoFar, totalOrNull)
+  // is called while the body streams in (exports are streamed, so the total is often unknown).
+  // → { blob, filename, headers }
+  async function fetchBlob(method, url, body, opts) {
+    opts = opts || {};
+    const res = await request(method, url, body, Object.assign({}, opts, { raw: true }));
+    const total = Number(res.headers.get('content-length')) || null;
+    let blob;
+    if (opts.onProgress && res.body && res.body.getReader) {
+      const reader = res.body.getReader();
+      const parts = [];
+      let got = 0;
+      for (;;) {
+        const r = await reader.read();
+        if (r.done) break;
+        parts.push(r.value); got += r.value.length;
+        opts.onProgress(got, total);
+      }
+      blob = new Blob(parts, { type: res.headers.get('content-type') || 'application/octet-stream' });
+    } else blob = await res.blob();
+    return { blob, filename: filenameFrom(res, opts.filename), headers: res.headers };
+  }
+  async function download(url, filename, opts) {
+    const r = await fetchBlob('GET', url, undefined, Object.assign({ filename }, opts || {}));
+    MBC.api.saveBlob(r.blob, r.filename);
+    return r.filename;
   }
 
   MBC.ApiError = ApiError;
@@ -170,8 +226,8 @@
     put: (u, b, o) => request('PUT', u, b, o),
     del: (u, o) => request('DELETE', u, undefined, o),
     upload: (u, fd, o) => request('POST', u, fd, o),
-    download,
-    friendly,
+    download, fetchBlob, saveBlob,
+    friendly, disabledText,
   };
 
   let me = null;

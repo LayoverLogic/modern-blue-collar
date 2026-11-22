@@ -9,7 +9,9 @@
  *   MBC.fmt.date(v)/time(t)/dateTime(v)/schedule(job)
  *   MBC.fmt.todayISO()        local YYYY-MM-DD
  *   MBC.fmt.phone(p)          E.164 → national display style for the brand country (tel:/sms: keep E.164)
- *   MBC.fmt.name(x)           display name from company / firstName + lastName / name / email
+ *   MBC.fmt.name(x)           display name: company if set, else firstName + lastName (then name / email)
+ *   MBC.fmt.contactName(x)    firstName + lastName only;  contactLine(x): the person when a company is shown
+ *   MBC.fmt.bytes(n)          1536 → "1.5 KB"
  *   MBC.fmt.address(c)        one-line address incl. postcode
  *   MBC.fmt.addressLabels()   {address, addressLine2, city, region, postal, required[], …} from the locale block
  *
@@ -140,12 +142,30 @@
     return job.scheduledTime ? day + ', ' + time(job.scheduledTime) : day;
   }
 
+  // Display name: the company when set, else first + last name (then name / email / #id).
   function name(x) {
     if (!x) return '';
     if (typeof x === 'string') return x;
-    const person = [x.firstName, x.lastName].filter(Boolean).join(' ').trim();
-    if (x.company && person) return x.company + ' (' + person + ')';
-    return x.company || person || x.name || x.email || (x.id != null ? 'User #' + x.id : '');
+    const company = typeof x.company === 'string' ? x.company.trim() : '';
+    return company || contactName(x) || x.name || x.email || (x.id != null ? 'User #' + x.id : '');
+  }
+  // The person's own name (first + last), regardless of company.
+  function contactName(x) {
+    if (!x || typeof x !== 'object') return '';
+    return [x.firstName, x.lastName].filter(Boolean).join(' ').trim();
+  }
+  // Secondary line under a company name: the contact person, when both are set.
+  function contactLine(x) {
+    const company = x && typeof x.company === 'string' ? x.company.trim() : '';
+    const person = contactName(x);
+    return company && person ? person : '';
+  }
+  // 1536 → "1.5 KB"
+  function bytes(n) {
+    const v = num(n); if (v == null) return DASH;
+    if (v < 1024) return v + ' B';
+    if (v < 1024 * 1024) return (v / 1024).toFixed(1) + ' KB';
+    return (v / 1024 / 1024).toFixed(1) + ' MB';
   }
 
   // Labels / rules for address fields from the locale block (fallback: COUNTRY table).
@@ -207,6 +227,6 @@
   MBC.fmt = {
     DASH, esc, text, num, money, parseDate, isoDate, todayISO, addDays, date, dateLong, dateTime, time,
     schedule, name, address, addressLabels, statusLabel, badge, phoneDigits, phone, locale, currency,
-    timeZone, tax, percent, dateShort, country,
+    timeZone, tax, percent, dateShort, country, contactName, contactLine, bytes,
   };
 })();

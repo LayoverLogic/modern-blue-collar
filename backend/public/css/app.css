@@ -43,7 +43,7 @@ a { color: var(--color-primary-dark); }
 .nav-brand .brand-name { overflow: hidden; text-overflow: ellipsis; }
 .trade-badge { font-size: 0.68rem; background: var(--color-accent); color: var(--color-on-accent); padding: 2px 8px; border-radius: 99px; font-weight: 700; letter-spacing: 0.02em; white-space: nowrap; }
 .nav-links { display: flex; gap: 0.1rem; flex: 1; flex-wrap: wrap; justify-content: center; }
-.nav-links a { color: var(--color-nav-text); opacity: 0.72; text-decoration: none; font-size: 0.86rem; padding: 0.4rem 0.5rem; border-radius: 6px; white-space: nowrap; }
+.nav-links a { color: var(--color-nav-text); opacity: 0.72; text-decoration: none; font-size: 0.84rem; padding: 0.4rem 0.4rem; border-radius: 6px; white-space: nowrap; }
 .nav-links a:hover { opacity: 1; }
 .nav-links a.active { opacity: 1; background: rgba(255,255,255,0.12); font-weight: 600; }
 .nav-right { display: flex; align-items: center; gap: 0.75rem; margin-left: auto; }
@@ -359,3 +359,47 @@ label.check { display: flex; gap: 0.5rem; align-items: center; font-weight: 500;
 .today-head { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
 .today-card .title a { color: var(--text); text-decoration: none; }
 .today-card .title a:hover { text-decoration: underline; }
+
+/* ── Settings: import wizard, exports, QuickBooks (js/pages/settings.js) ──── */
+code { font-family: ui-monospace, monospace; font-size: 0.85em; background: #f1f5f9; border-radius: 4px; padding: 0 4px; overflow-wrap: anywhere; }
+.steps { list-style: none; display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; counter-reset: step; }
+.steps li { counter-increment: step; font-size: 0.85rem; color: var(--muted); padding: 0.3rem 0.75rem 0.3rem 0.4rem; border-radius: 99px; background: #f1f5f9; display: flex; align-items: center; gap: 0.4rem; }
+.steps li::before { content: counter(step); display: inline-flex; align-items: center; justify-content: center; width: 1.5rem; height: 1.5rem; border-radius: 50%; background: #cbd5e1; color: #fff; font-weight: 700; font-size: 0.75rem; }
+.steps li.active { color: var(--text); font-weight: 600; background: #e2e8f0; }
+.steps li.active::before { background: var(--color-primary); color: var(--color-on-primary); }
+.steps li.done::before { background: var(--ok); }
+.count-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 0.6rem; margin: 0.75rem 0; }
+.count-tile { border: 1px solid var(--line); border-radius: 8px; padding: 0.55rem 0.75rem; background: #fff; }
+.count-tile .label { font-size: 0.75rem; color: var(--muted); }
+.count-tile .value { font-size: 1.45rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.count-tile .sub { font-size: 0.72rem; color: var(--muted); }
+.count-tile.total { border-color: var(--color-primary); }
+.count-tile.warn { border-color: #fca5a5; background: #fef2f2; }
+.gate3 { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
+.card h4 { font-size: 0.95rem; }
+.table-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; margin-top: 0.5rem; }
+.table-scroll th, .table-scroll td { padding: 0.5rem 0.75rem; vertical-align: top; }
+td.wrap { overflow-wrap: anywhere; min-width: 160px; }
+.notes-list { padding-left: 1.2rem; margin-top: 0.4rem; }
+.notes-list li { margin: 0.15rem 0; }
+.undo-box { border-top: 1px solid var(--line); margin-top: 1.25rem; padding-top: 1rem; }
+.form-group-end { display: flex; align-items: flex-end; }
+.export-buttons { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+details.more { margin: 0.25rem 0 0.75rem; }
+details.more summary { cursor: pointer; font-weight: 600; font-size: 0.88rem; min-height: var(--tap); display: flex; align-items: center; }
+fieldset.checks { border: none; display: flex; flex-wrap: wrap; gap: 0 1.25rem; margin-bottom: 0.5rem; }
+fieldset.checks legend { font-size: 0.82rem; font-weight: 600; color: #374151; margin-bottom: 0.1rem; }
+fieldset.checks label.check { margin: 0.3rem 0; }
+.qbo-line { margin-top: 0.75rem; padding-top: 0.6rem; border-top: 1px dashed var(--line); font-size: 0.85rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.qbo-line .qbo-msg { flex: 1 1 100%; }
+@media (max-width: 900px) {
+  .table-scroll { border: none; }
+  .table-scroll table.responsive td { text-align: left; }
+  .table-scroll table.responsive td::before { min-width: 6.5rem; }
+  .count-grid { grid-template-columns: repeat(2, 1fr); }
+  .export-buttons .btn { flex: 1 1 calc(50% - 0.5rem); }
+  label.check { min-height: 44px; }
+  .form-group-end .btn { width: 100%; }
+}
+details.more summary::before { content: '\25B8'; margin-right: 0.4rem; }
+details.more[open] summary::before { content: '\25BE'; }

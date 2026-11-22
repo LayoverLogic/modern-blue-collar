@@ -15,7 +15,7 @@
   <a href="customers.html" class="back-link">&larr; Back to Customers</a>
   <div id="customer-content" hidden>
     <div class="page-header">
-      <h2 id="customer-name">Customer</h2>
+      <div><h2 id="customer-name">Customer</h2><div class="muted small" id="customer-contact" hidden></div></div>
       <div class="action-bar">
         <a class="btn" id="btn-new-job" href="dispatch.html">+ New Job</a>
         <a class="btn btn-outline" id="btn-call" href="#">Call</a>
@@ -27,6 +27,7 @@
       <div>
         <form class="card pad" id="edit-form" novalidate>
           <h3>Contact Info</h3>
+          <div class="form-group"><label for="e-company">Company</label><input type="text" id="e-company" autocomplete="organization" placeholder="Leave blank for a household" /></div>
           <div class="form-row">
             <div class="form-group"><label for="e-first">First name</label><input type="text" id="e-first" /></div>
             <div class="form-group"><label for="e-last">Last name</label><input type="text" id="e-last" /></div>

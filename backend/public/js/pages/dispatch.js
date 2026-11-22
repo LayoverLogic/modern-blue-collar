@@ -52,7 +52,7 @@
       techs.map((t) => '<option value="' + fmt.esc(t.id) + '">' + fmt.esc(fmt.name(t)) + '</option>').join('');
     $('f-tech').innerHTML = '<option value="">Unassigned</option>' + techs.map((t) => '<option value="' + fmt.esc(t.id) + '">' + fmt.esc(fmt.name(t)) + '</option>').join('');
     $('f-customer').innerHTML = '<option value="">Select customer&hellip;</option>' +
-      custs.map((c) => '<option value="' + fmt.esc(c.id) + '">' + fmt.esc(fmt.name(c)) + (c.city ? ' – ' + fmt.esc(c.city) : '') + '</option>').join('');
+      custs.map((c) => '<option value="' + fmt.esc(c.id) + '">' + fmt.esc(fmt.name(c)) + (fmt.contactLine(c) ? ' (' + fmt.esc(fmt.contactLine(c)) + ')' : '') + (c.city ? ' – ' + fmt.esc(c.city) : '') + '</option>').join('');
   }
 
   function openNew(customerId) {

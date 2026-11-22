@@ -1,4 +1,4 @@
-/* customers.html — list, search, create, export. */
+/* customers.html — list, search, create, export. Name = company when set, else first + last (fmt.name). */
 (function () {
   'use strict';
   const { fmt, api, ui } = window.MBC;
@@ -12,7 +12,8 @@
     tb.innerHTML = list.map((c) => {
       const href = 'customer-detail.html?id=' + encodeURIComponent(c.id);
       return '<tr class="clickable" data-href="' + href + '">' +
-        '<td data-label="Name"><a class="row-link" href="' + href + '">' + fmt.text(fmt.name(c)) + '</a></td>' +
+        '<td data-label="Name"><a class="row-link" href="' + href + '">' + fmt.text(fmt.name(c)) + '</a>' +
+          (fmt.contactLine(c) ? '<div class="muted small contact-line">' + fmt.esc(fmt.contactLine(c)) + '</div>' : '') + '</td>' +
         '<td data-label="Phone">' + fmt.text(fmt.phone(c.phone)) + '</td>' +
         '<td data-label="Email">' + fmt.text(c.email) + '</td>' +
         '<td data-label="Address">' + fmt.text(fmt.address(c)) + '</td>' +
@@ -24,7 +25,7 @@
     const q = $('search-input').value.trim().toLowerCase();
     const region = $('region-filter').value;
     render(all.filter((c) => {
-      const hay = [fmt.name(c), c.phone, fmt.phone(c.phone), fmt.phoneDigits(c.phone), c.email, fmt.address(c)].join(' ').toLowerCase();
+      const hay = [fmt.name(c), fmt.contactName(c), c.company, c.phone, fmt.phone(c.phone), fmt.phoneDigits(c.phone), c.email, fmt.address(c)].join(' ').toLowerCase();
       return (!q || hay.includes(q)) && (!region || c.state === region);
     }));
   }
@@ -45,10 +46,10 @@
     const v = (id) => $(id).value.trim();
     const addr = addrForm.read();
     const body = {
-      firstName: v('f-first'), lastName: v('f-last'), phone: v('f-phone'), email: v('f-email') || undefined,
+      firstName: v('f-first'), lastName: v('f-last'), company: v('f-company') || undefined, phone: v('f-phone'), email: v('f-email') || undefined,
       address: addr.address, addressLine2: addr.addressLine2 || undefined, city: addr.city || undefined,
       state: addr.state || undefined, zip: addr.zip || undefined,
-      type: $('f-type').value, notes: v('f-notes') || undefined,
+      type: v('f-company') && $('f-type').value === 'residential' ? 'commercial' : $('f-type').value, notes: v('f-notes') || undefined,
     };
     const bad = addrForm.check(addr);
     if (bad === 'BAD_POSTCODE') { ui.formError('modal-error', addrForm.postcodeMessage()); return; }

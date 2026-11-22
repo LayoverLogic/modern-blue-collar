@@ -13,6 +13,9 @@
     customer = c;
     const name = fmt.name(c) || 'Customer #' + c.id;
     $('customer-name').textContent = name;
+    $('customer-contact').textContent = fmt.contactLine(c) ? 'Contact: ' + fmt.contactLine(c) : '';
+    $('customer-contact').hidden = !fmt.contactLine(c);
+    $('e-company').value = c.company || '';
     MBC.brand.apply(MBC.brand.current, name);
     $('e-first').value = c.firstName || ''; $('e-last').value = c.lastName || '';
     $('e-phone').value = fmt.phone(c.phone) || ''; $('e-email').value = c.email || '';
@@ -60,7 +63,7 @@
     e.preventDefault();
     const v = (k) => $(k).value.trim();
     const body = {
-      firstName: v('e-first'), lastName: v('e-last'), phone: v('e-phone'), email: v('e-email') || null,
+      firstName: v('e-first'), lastName: v('e-last'), company: v('e-company') || null, phone: v('e-phone'), email: v('e-email') || null,
       address: v('e-address'), addressLine2: v('e-address2') || null, city: v('e-city') || null, state: v('e-state') || null, zip: v('e-zip') || null, notes: v('e-notes') || null,
       version: customer.version,
     };

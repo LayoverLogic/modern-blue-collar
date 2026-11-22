@@ -17,6 +17,7 @@
   let docs = { quote: null, invoice: null }; // full documents (GET /api/quotes|invoices/:id)
   let editing = null;                          // { type, doc } while the editor is open
   let emailing = null;                         // 'quote' | 'invoice' while the email modal is open
+  const qbo = { status: null, link: null, msg: null, busy: false }; // QuickBooks (admin): GET /api/quickbooks/status + /invoice/:id
 
   function fail(msg) { $('loading-msg').hidden = true; $('job-content').hidden = true; $('error-msg').textContent = msg; $('error-msg').hidden = false; }
 
@@ -41,6 +42,8 @@
     if (document.activeElement !== $('job-notes')) $('job-notes').value = job.notes || '';
 
     $('c-name').textContent = fmt.name(c) || fmt.DASH;
+    $('c-contact').textContent = fmt.contactLine(c);
+    $('row-contact').hidden = !fmt.contactLine(c);
     $('c-phone').textContent = fmt.phone(c.phone) || fmt.DASH;
     $('c-email').textContent = c.email || fmt.DASH;
     $('c-address').textContent = fmt.address(c) || fmt.DASH;
@@ -100,7 +103,48 @@
       if (type === 'invoice' && d.status !== 'paid' && d.status !== 'void') html += '<button class="btn btn-outline btn-sm" type="button" id="btn-mark-paid">Mark paid</button>';
     }
     html += '</div>';
+    if (admin && type === 'invoice') html += qboLine(d);
     return html;
+  }
+
+  // ── QuickBooks link badge + "Push to QuickBooks" (admin) ────────────────────
+  function qboLine(d) {
+    const st = qbo.status;
+    if (!st) return '';
+    const link = qbo.link && String(qbo.link.invoiceId) === String(d.id) ? qbo.link : null;
+    let html = '<div class="qbo-line" id="qbo-line">';
+    if (link && link.linked) {
+      html += '<span class="badge badge-active" id="qbo-badge">In QuickBooks #' + fmt.esc(link.qboId) + '</span>' +
+        '<span class="muted small">synced ' + fmt.esc(fmt.dateTime(link.syncedAt)) + (link.balance != null ? ' · balance ' + fmt.esc(fmt.money(link.balance, d.currency)) : '') + '</span>';
+    } else html += '<span class="badge" id="qbo-badge">Not in QuickBooks</span>';
+    if (d.status !== 'void') {
+      if (st.enabled && !st.connected) html += '<a class="btn btn-outline btn-sm" href="settings.html#quickbooks">Connect QuickBooks</a>';
+      else html += '<button class="btn btn-outline btn-sm" type="button" id="btn-qbo-push"' + (qbo.busy ? ' disabled' : '') + '>' + (qbo.busy ? 'Pushing…' : (link && link.linked ? 'Update in QuickBooks' : 'Push to QuickBooks')) + '</button>';
+    }
+    const warnings = (link && link.warnings) || [];
+    if (warnings.length) html += '<ul class="notes-list small qbo-msg" id="qbo-warnings">' + warnings.map((w) => '<li>' + fmt.esc(typeof w === 'string' ? w : (w && w.message) || '') + '</li>').join('') + '</ul>';
+    if (qbo.msg) html += '<div class="qbo-msg notice ' + qbo.msg.kind + ' small" id="qbo-msg">' + fmt.esc(qbo.msg.text) + '</div>';
+    else if (!st.enabled) html += '<div class="qbo-msg muted small">' + fmt.esc(api.disabledText({ integration: 'quickbooks', reason: st.disabledReason }).replace(' — no request was sent.', ': pushing sends nothing to Intuit.')) + '</div>';
+    return html + '</div>';
+  }
+  async function loadQboLink() {
+    if (!auth.isAdmin()) return;
+    if (!qbo.status) qbo.status = await api.get('/api/quickbooks/status').catch(() => null);
+    const inv = docs.invoice;
+    qbo.link = inv && qbo.status ? await api.get('/api/quickbooks/invoice/' + encodeURIComponent(inv.id)).catch(() => null) : null;
+  }
+  async function pushQbo() {
+    const inv = docs.invoice; if (!inv || qbo.busy) return;
+    qbo.busy = true; qbo.msg = null; renderBilling();
+    try {
+      const r = await api.post('/api/quickbooks/sync-invoice/' + encodeURIComponent(inv.id), {});
+      const verb = r.action === 'created' ? 'added to' : (r.action === 'updated' ? 'updated in' : 'already up to date in');
+      qbo.msg = { kind: (r.warnings || []).length ? 'warn' : 'ok', text: D().ref(inv, 'invoice') + ' ' + verb + ' QuickBooks' + (r.qbo && r.qbo.id ? ' (#' + r.qbo.id + ')' : '') + '.' +
+        ((r.warnings || []).length ? ' Check: ' + r.warnings.map((w) => (typeof w === 'string' ? w : (w && w.message) || '')).join(' ') : '') };
+      await loadQboLink();
+    } catch (e) {
+      qbo.msg = { kind: e.status === 503 ? 'warn' : 'error', text: e.message };
+    } finally { qbo.busy = false; renderBilling(); }
   }
   function renderBilling() {
     $('quote-card').innerHTML = docCard('quote');
@@ -115,6 +159,7 @@
   async function loadDocs() {
     const get = (type, ref) => (ref ? api.get('/api/' + type + 's/' + encodeURIComponent(ref.id)).catch(() => Object.assign({ lines: [] }, ref)) : Promise.resolve(null));
     [docs.quote, docs.invoice] = await Promise.all([get('quote', job.quote), get('invoice', job.invoice)]);
+    await loadQboLink();
     renderBilling();
   }
 
@@ -437,6 +482,7 @@
           else if (id === 'btn-email-quote') openEmail('quote');
           else if (id === 'btn-email-invoice') openEmail('invoice');
           else if (id === 'btn-mark-paid') setStatus('invoice', 'paid');
+          else if (id === 'btn-qbo-push') pushQbo();
         });
         $('billing-card').addEventListener('change', (e) => { const t = e.target.getAttribute('data-status'); if (t) setStatus(t, e.target.value); });
         $('convert-form').addEventListener('submit', confirmConvert);

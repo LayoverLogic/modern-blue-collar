@@ -3,7 +3,7 @@
  *
  *   Technician:            Today, Schedule
  *   Dispatcher / office:   Today, Dashboard, Customers, Dispatch, Schedule, Communications, Pricebook
- *   Admin / super-admin:   everything, incl. Team, Quotes & Invoices, API Keys
+ *   Admin / super-admin:   everything, incl. Team, Quotes & Invoices, API Keys, Settings (data import / export, QuickBooks)
  *
  * Under 900px the links collapse behind a menu button (hamburger).
  */
@@ -23,6 +23,7 @@
     { key: 'pricebook', href: 'pricebook.html', label: 'Pricebook', roles: 'staff' },
     { key: 'billing', href: 'quote-invoice.html', label: 'Quotes & Invoices', roles: 'admin' },
     { key: 'api-keys', href: 'api-keys.html', label: 'API Keys', roles: 'admin' },
+    { key: 'settings', href: 'settings.html', label: 'Settings', roles: 'admin' },
   ];
 
   function allowed(item, user) {

@@ -96,6 +96,14 @@
     // Google sign-in returns a one-time ?auth_code= (60 s, single use) that is
     // exchanged for a session token; the code is stripped from the URL first.
     const params = new URLSearchParams(location.search);
+    // QuickBooks OAuth returns to /?qbo=connected | /?qbo=error&reason=… → show it on Settings.
+    if (params.get('qbo')) {
+      const q = new URLSearchParams();
+      q.set('qbo', params.get('qbo'));
+      if (params.get('reason')) q.set('reason', params.get('reason'));
+      location.replace('settings.html?' + q.toString() + '#quickbooks');
+      return;
+    }
     const authCode = params.get('auth_code');
     let authError = params.get('auth_error');
     if (authCode || authError) history.replaceState({}, '', 'index.html');
