@@ -34,7 +34,7 @@
     <div class="form-group"><label for="f-name">Name / label *</label><input type="text" id="f-name" placeholder="e.g. Accounting sync" required /></div>
     <div class="form-row">
       <div class="form-group"><label for="f-scopes">Scopes</label>
-        <select id="f-scopes"><option value="read,write">Read &amp; write</option><option value="read">Read only</option></select></div>
+        <select id="f-scopes"><option value="read,write">Read &amp; write</option><option value="read">Read only</option><option value="read,export">Read + full export (exit zip)</option><option value="read,write,export">Read, write &amp; full export</option></select></div>
       <div class="form-group"><label for="f-expires">Expires (optional)</label><input type="date" id="f-expires" /></div>
     </div>
     <div id="modal-error" class="form-error" hidden></div>
