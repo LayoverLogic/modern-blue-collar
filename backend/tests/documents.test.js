@@ -859,3 +859,50 @@ test('Google sign-in requires a positive email_verified', async () => {
   assert.match((await resolveGoogleUser(p({ _json: { email_verified: false } }))).error, /not verified/);
   assert.equal((await resolveGoogleUser(p({ _json: { email_verified: true } }))).user.email, U.admin.email);
 });
+
+// ── GAP-16 reverse charge only where it exists ──────────────────────────────
+test('GAP-16 reverse charge: offered (and accepted) only for VAT / BRAND_REVERSE_CHARGE; US sales tax refuses it', async () => {
+  const { buildLocale } = require('../helpers/locale');
+  assert.equal(buildLocale({}).reverseChargeAvailable, false, 'US, no tax');
+  assert.equal(buildLocale({ BRAND_TAX_RATES: 'sales:8.5' }).reverseChargeAvailable, false, 'US sales tax');
+  assert.equal(buildLocale({ BRAND_COUNTRY: 'IE' }).reverseChargeAvailable, true, 'IE VAT');
+  assert.equal(buildLocale({ BRAND_COUNTRY: 'IE', BRAND_TAX_RATES: '' }).reverseChargeAvailable, false, 'IE without rates');
+  assert.equal(buildLocale({ BRAND_COUNTRY: 'IE', BRAND_REVERSE_CHARGE: 'false' }).reverseChargeAvailable, false);
+  assert.equal(buildLocale({ BRAND_TAX_RATES: 'sales:8.5', BRAND_REVERSE_CHARGE: 'true' }).reverseChargeAvailable, true);
+  assert.equal(buildLocale({ BRAND_TAX_RATES: 'sales:8.5', BRAND_RCT_NOTE: 'Reverse charge applies.' }).reverseChargeAvailable, true);
+  assert.throws(() => buildLocale({ BRAND_REVERSE_CHARGE: 'true' }), /needs tax rates/);
+  assert.throws(() => buildLocale({ BRAND_COUNTRY: 'IE', BRAND_REVERSE_CHARGE: 'maybe' }), /true or false/);
+
+  const ieBrand = (await IE.api('GET', '/api/brand')).json;
+  assert.equal(ieBrand.locale.reverseChargeAvailable, true);
+  const salesTax = await bootServer({ BRAND_TAX_RATES: 'sales:8.5' });
+  try {
+    const b = (await salesTax.api('GET', '/api/brand')).json;
+    assert.equal(b.locale.taxEnabled, true);
+    assert.equal(b.locale.reverseChargeAvailable, false, 'US sales tax must not offer reverse charge');
+    const job = await freshJob();
+    const line = { description: 'Service call', quantity: 1, unitPrice: 100 };
+    for (const kind of ['quotes', 'invoices']) {
+      const r = await salesTax.api('POST', `/api/${kind}`, { token: U.admin.token, body: { jobId: job.id, lines: [line], reverseCharge: true } });
+      assert.equal(r.status, 400, `${kind}: ${r.text}`);
+      assert.equal(r.json.code, 'REVERSE_CHARGE_UNAVAILABLE');
+    }
+    const q = await salesTax.api('POST', '/api/quotes', { token: U.admin.token, body: { jobId: job.id, lines: [line], reverseCharge: false } });
+    assert.equal(q.status, 201, q.text);
+    assert.equal(q.json.taxTotal, 8.5);
+    const on = await salesTax.api('PATCH', `/api/quotes/${q.json.id}`, { token: U.admin.token, body: { version: q.json.version, reverseCharge: true } });
+    assert.equal(on.status, 400); assert.equal(on.json.code, 'REVERSE_CHARGE_UNAVAILABLE');
+    // a document that already is reverse charge (older data) can be saved as is or switched off
+    await prisma.quote.update({ where: { id: q.json.id }, data: { reverseCharge: true } });
+    const echo = await salesTax.api('PATCH', `/api/quotes/${q.json.id}`, { token: U.admin.token, body: { version: q.json.version, reverseCharge: true, notes: 'kept' } });
+    assert.equal(echo.status, 200, echo.text);
+    const off = await salesTax.api('PATCH', `/api/quotes/${q.json.id}`, { token: U.admin.token, body: { version: echo.json.version, reverseCharge: false } });
+    assert.equal(off.status, 200, off.text);
+    assert.equal(off.json.taxTotal, 8.5);
+  } finally { await salesTax.stop(); }
+  // IE: still works
+  const job = await freshJob();
+  const rc = await IE.api('POST', '/api/invoices', { token: U.admin.token, body: { jobId: job.id, lines: [{ description: 'Heat pump install', quantity: 1, unitPrice: 1000 }], reverseCharge: true } });
+  assert.equal(rc.status, 201, rc.text);
+  assert.equal(rc.json.taxTotal, 0);
+});

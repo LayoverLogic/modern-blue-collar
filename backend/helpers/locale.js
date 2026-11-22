@@ -13,6 +13,13 @@
  *   BRAND_TAX_NUMBER       the company's own tax / VAT registration number (printed)
  *   BRAND_QUOTE_PREFIX     document number prefix, default "Q-"   (Q-0001)
  *   BRAND_INVOICE_PREFIX   document number prefix, default "INV-" (INV-0001)
+ *   BRAND_REVERSE_CHARGE   true | false — offer the reverse-charge option on quotes /
+ *                          invoices (GAP-16). Default: on for VAT countries (IE) when
+ *                          tax rates are configured, or when BRAND_RCT_NOTE is set;
+ *                          off for US sales tax. true without tax rates is an error.
+ *                          When off, reverseCharge=true is refused (400
+ *                          REVERSE_CHARGE_UNAVAILABLE) and /api/brand says
+ *                          locale.reverseChargeAvailable=false (the UI hides the box).
  *   BRAND_RCT_NOTE         wording printed on reverse-charge documents. The default
  *                          is a PLACEHOLDER that must be confirmed by an accountant
  *                          — MBC does not claim it is compliant wording.
@@ -46,6 +53,8 @@ const COUNTRIES = {
     weekStart: 'sunday',
     taxLabel: 'Sales tax',
     defaultTaxRates: '',
+    // US sales tax has no reverse charge (GAP-16)
+    reverseCharge: false,
     addressLabels: {
       address: 'Street address', addressLine2: 'Apt, suite, unit', city: 'City', state: 'State', zip: 'ZIP code', country: 'Country',
     },
@@ -65,6 +74,8 @@ const COUNTRIES = {
     weekStart: 'monday',
     taxLabel: 'VAT',
     defaultTaxRates: 'standard:23,reduced:13.5,zero:0',
+    // VAT reverse charge / RCT (construction services)
+    reverseCharge: true,
     addressLabels: {
       address: 'Address line 1', addressLine2: 'Address line 2', city: 'Town / City', state: 'County', zip: 'Eircode', country: 'Country',
     },
@@ -139,6 +150,17 @@ function buildLocale(env = {}, brand = {}) {
   const rctNote = clean(env.BRAND_RCT_NOTE);
   const explicitState = clean(env.BRAND_DEFAULT_STATE);
 
+  // Reverse charge (GAP-16): only where it exists (VAT) or was asked for.
+  const rcRaw = clean(env.BRAND_REVERSE_CHARGE).toLowerCase();
+  if (rcRaw && !['true', 'false', '1', '0', 'yes', 'no'].includes(rcRaw)) {
+    throw new BrandConfigError(`BRAND_REVERSE_CHARGE="${rcRaw}" — use true or false.`);
+  }
+  const rcExplicit = rcRaw ? ['true', '1', 'yes'].includes(rcRaw) : null;
+  if (rcExplicit && !taxRates.length) {
+    throw new BrandConfigError('BRAND_REVERSE_CHARGE=true needs tax rates (BRAND_TAX_RATES) — there is no tax to reverse-charge.');
+  }
+  const reverseChargeAvailable = taxRates.length > 0 && (rcExplicit !== null ? rcExplicit : (!!def.reverseCharge || !!rctNote));
+
   return {
     country: def.country,
     countryName: def.countryName,
@@ -164,6 +186,7 @@ function buildLocale(env = {}, brand = {}) {
     taxDefault,
     quotePrefix: prefix(env, 'BRAND_QUOTE_PREFIX', 'Q-'),
     invoicePrefix: prefix(env, 'BRAND_INVOICE_PREFIX', 'INV-'),
+    reverseChargeAvailable,
     reverseChargeNote: rctNote || RCT_PLACEHOLDER,
     reverseChargeNoteIsPlaceholder: !rctNote,
   };
@@ -188,6 +211,7 @@ function publicLocale(l) {
     taxNumber: l.taxNumber,
     taxRates: l.taxRates,
     taxDefault: l.taxDefault,
+    reverseChargeAvailable: l.reverseChargeAvailable,
     reverseChargeNote: l.reverseChargeNote,
     reverseChargeNoteIsPlaceholder: l.reverseChargeNoteIsPlaceholder,
   };

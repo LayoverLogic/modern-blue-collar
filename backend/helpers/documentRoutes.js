@@ -12,6 +12,9 @@
  *   amount         legacy single total (used only when no lines are sent):
  *                  subtotal = amount, taxTotal = 0.
  *   reverseCharge, status, notes, issuedAt, dueDate (invoice)
+ *                  reverseCharge=true only when locale.reverseChargeAvailable (VAT / BRAND_REVERSE_CHARGE);
+ *                  otherwise 400 REVERSE_CHARGE_UNAVAILABLE (GAP-16). An existing reverse-charge
+ *                  document may still be saved with it (or have it turned off).
  *   version        required on PATCH / PUT (optimistic locking, RT-9)
  * number / currency / sentAt / paidAt are set by the server only.
  * Sent / paid (locked) documents only accept status changes → 409 DOCUMENT_LOCKED.
@@ -81,6 +84,12 @@ function mountDocumentRoutes(router, cfg) {
     });
   }
 
+  function assertReverseChargeAllowed(d, current, locale) {
+    if (d.reverseCharge !== true || (current && current.reverseCharge) || locale.reverseChargeAvailable) return;
+    throw badRequest(`Reverse charge is not available for this company (${locale.taxEnabled ? `${locale.taxLabel} has no reverse charge` : 'no tax rates configured'}; set BRAND_REVERSE_CHARGE=true where it applies)`,
+      { code: 'REVERSE_CHARGE_UNAVAILABLE', field: 'reverseCharge' });
+  }
+
   const legacyAmount = (value, required) => v.money(value, 'amount', { required, min: 0, exclusive: type === 'invoice' });
 
   // ── GET / ──────────────────────────────────────────────────────────────
@@ -118,6 +127,7 @@ function mountDocumentRoutes(router, cfg) {
       const jobId = parseId(body.jobId, 'jobId');
       const d = scalarFields(body, { create: true });
       const locale = getLocale();
+      assertReverseChargeAllowed(d, null, locale);
 
       let lines = [];
       if (Array.isArray(body.lines) && body.lines.length) {
@@ -155,6 +165,7 @@ function mountDocumentRoutes(router, cfg) {
       const current = await prisma[model].findUnique({ where: { id }, include: { lines: LINES } });
       if (!current) throw notFound(`${label} not found`);
       const d = scalarFields(body);
+      assertReverseChargeAllowed(d, current, getLocale());
       const hasLines = current.lines.length > 0;
       let newLines = null; // null = keep, [] = remove all, [...] = replace
 
