@@ -13,9 +13,14 @@
  *   wrappers, demo:check PASS on fresh data and FAIL on deliberately broken
  *   records, and the API checks against a booted server.
  *
- * The database (default mbc_wl_test) is created + migrated if missing and is
- * wiped by the seeding tests — never point TEST_DATABASE_URL at real data
- * (seed:demo refuses names without demo/sandbox/test/wl anyway).
+ * Database isolation: the suite never writes to TEST_DATABASE_URL itself. It
+ * derives its own database from it — same server, name + "_wl" (e.g.
+ * mbc_backend_test → mbc_backend_test_wl; default base mbc_wl_test) — drops any
+ * leftover of that name, creates + migrates it, seeds/wipes it freely, and
+ * drops it at the end. So npm test, test:redteam, test:backend and
+ * test:whitelabel can share one TEST_DATABASE_URL and run in any order. The
+ * role in the URL needs CREATEDB. Set WL_KEEP_DB=1 to keep the derived
+ * database for inspection. The API test boots the server on a free port.
  * Client-name denylist: backend/demo/denylist.local.txt when present (gitignored);
  * the tests always add their own synthetic terms as well.
  */
@@ -29,7 +34,25 @@ const os = require('os');
 const path = require('path');
 
 const BACKEND = path.join(__dirname, '..');
-const TEST_DB = process.env.TEST_DATABASE_URL || 'postgresql://mbc:mbc_sandbox@localhost:5432/mbc_wl_test?schema=public';
+const BASE_DB = process.env.TEST_DATABASE_URL || 'postgresql://mbc:mbc_sandbox@localhost:5432/mbc_wl_test?schema=public';
+
+/** The suite's own database: BASE_DB's name + "_wl" (≤ 63 bytes), same server/credentials. */
+function deriveDatabase(base, suffix = '_wl') {
+  const u = new URL(base);
+  const name = decodeURIComponent(u.pathname.slice(1)).slice(0, 63 - suffix.length) + suffix;
+  u.pathname = '/' + encodeURIComponent(name);
+  return { url: u.toString(), name };
+}
+const { url: TEST_DB, name: TEST_DB_NAME } = deriveDatabase(BASE_DB);
+async function adminQuery(sql) {
+  const { Client } = require('pg');
+  const u = new URL(TEST_DB);
+  u.pathname = '/postgres'; u.search = '';
+  const c = new Client({ connectionString: u.toString() });
+  await c.connect();
+  try { return await c.query(sql); } finally { await c.end(); }
+}
+const quoteIdent = (s) => `"${s.replace(/"/g, '""')}"`;
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mbc-wl-test-'));
 
 const bv = require('../helpers/brandValidate');
@@ -293,16 +316,10 @@ let dbOk = false;
 let prisma;
 test.before(async () => {
   try {
-    const { Client } = require('pg');
-    const u = new URL(TEST_DB);
-    const db = decodeURIComponent(u.pathname.slice(1));
     guard.assertDemoDatabase(TEST_DB, { nodeEnv: 'development' });
-    u.pathname = '/postgres'; u.search = '';
-    const c = new Client({ connectionString: u.toString() });
-    await c.connect();
-    const { rowCount } = await c.query('SELECT 1 FROM pg_database WHERE datname=$1', [db]);
-    if (!rowCount) await c.query(`CREATE DATABASE "${db.replace(/"/g, '""')}"`);
-    await c.end();
+    // fresh private database every run (a leftover from a killed run is dropped)
+    await adminQuery(`DROP DATABASE IF EXISTS ${quoteIdent(TEST_DB_NAME)} WITH (FORCE)`);
+    await adminQuery(`CREATE DATABASE ${quoteIdent(TEST_DB_NAME)}`);
     const m = run('scripts/migrate-deploy.mjs', ['--quiet']);
     if (m.code !== 0) throw new Error(m.out);
     process.env.DATABASE_URL = TEST_DB;
@@ -316,7 +333,22 @@ test.before(async () => {
     console.error(`[whitelabel] database tests skipped: ${e.message.split('\n')[0]}`);
   }
 });
-test.after(async () => { if (prisma) await prisma.$disconnect(); });
+test.after(async () => {
+  if (prisma) await prisma.$disconnect();
+  if (dbOk && process.env.WL_KEEP_DB !== '1') {
+    await adminQuery(`DROP DATABASE IF EXISTS ${quoteIdent(TEST_DB_NAME)} WITH (FORCE)`)
+      .catch((e) => console.error(`[whitelabel] could not drop ${TEST_DB_NAME}: ${e.message}`));
+  }
+});
+
+async function freePort() {
+  const net = require('net');
+  return new Promise((resolve, reject) => {
+    const s = net.createServer();
+    s.once('error', reject);
+    s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); });
+  });
+}
 
 const dbTest = (name, fn) => test(name, async (t) => { if (!dbOk) return t.skip('PostgreSQL not reachable'); await fn(t); });
 
@@ -443,18 +475,20 @@ dbTest('guards: non-demo database and production are refused before connecting',
 });
 
 dbTest('demo:check API pass: /api/brand exposes colors.primaryDark; list endpoints have display fields', async () => {
-  const env = baseEnv({ BRAND_TRADE_TYPE: 'contracting', PORT: '3135', DEMO_MODE: 'true' });
+  const port = await freePort();
+  const base = `http://localhost:${port}`;
+  const env = baseEnv({ BRAND_TRADE_TYPE: 'contracting', PORT: String(port), DEMO_MODE: 'true' });
   assert.equal(run('scripts/seed-demo.js', ['--reset'], env).code, 0);
   const srv = spawn(process.execPath, ['server.js'], { cwd: BACKEND, env, stdio: 'ignore' });
   try {
     for (let i = 0; i < 50; i++) {
-      try { if ((await fetch('http://localhost:3135/api/health')).ok) break; } catch { /* booting */ }
+      try { if ((await fetch(`${base}/api/health`)).ok) break; } catch { /* booting */ }
       await new Promise((r) => setTimeout(r, 200));
     }
-    const brand = await (await fetch('http://localhost:3135/api/brand')).json();
+    const brand = await (await fetch(`${base}/api/brand`)).json();
     assert.equal(brand.tradeType, 'contracting');
     assert.equal(brand.colors.primaryDark, bv.darken(bv.TRADE_PALETTES.contracting.primary));
-    const r = run('scripts/demo-check.js', ['--port', '3135'], env);
+    const r = run('scripts/demo-check.js', ['--port', String(port)], env);
     assert.equal(r.code, 0, r.out);
     for (const p of ['api.brand ', 'api.login', 'api.jobs', 'api.customers', 'api.quotes', 'api.invoices', 'api.pricebook', 'api.users']) {
       assert.match(r.out, new RegExp(`PASS\\s+${p.replace('.', '\\.')}`), p);
