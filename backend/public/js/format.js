@@ -4,6 +4,8 @@
  *   MBC.fmt.esc(v)            HTML-escape anything before it goes into innerHTML
  *   MBC.fmt.money(n, cur?)    Intl currency: cur (a document's snapshot) → brand locale.currency → USD
  *   MBC.fmt.tax()             {enabled, label, rates[{key, rate}], defaultKey, reverseChargeNote…} from /api/brand locale
+ *   MBC.fmt.reverseChargeAvailable()  true only where the brand allows reverse charge (VAT + RCT; never US sales tax)
+ *   MBC.fmt.datePattern()     'DD/MM/YYYY' / 'MM/DD/YYYY' (brand); formatDateInput(iso) / parseDateInput(text) → iso | null
  *   MBC.fmt.timeZone()        brand time zone (timestamps are shown in it; calendar dates never shift)
  *   MBC.fmt.parseDate(v)      'YYYY-MM-DD' → LOCAL midnight (never UTC); other values → Date
  *   MBC.fmt.date(v)/time(t)/dateTime(v)/schedule(job)
@@ -67,6 +69,18 @@
       rates: rates.map((r) => ({ key: String(r.key), rate: Number(r.rate) })), defaultKey: l.taxDefault || null,
       reverseChargeNote: l.reverseChargeNote || '', reverseChargeNoteIsPlaceholder: !!l.reverseChargeNoteIsPlaceholder,
     };
+  }
+
+  // GAP-16: may a document be marked reverse charge (no tax; the customer accounts for it)?
+  // Newer servers say so in the locale block (reverseChargeAvailable, or reverseCharge.available);
+  // older ones do not: then only VAT brands (tax on, outside the US) — never US sales tax.
+  function reverseChargeAvailable() {
+    const l = loc(); const b = brand();
+    const flag = [l.reverseChargeAvailable, l.reverseCharge && typeof l.reverseCharge === 'object' ? l.reverseCharge.available : undefined,
+      typeof l.reverseCharge === 'boolean' ? l.reverseCharge : undefined, b.reverseChargeAvailable].find((v) => typeof v === 'boolean');
+    if (typeof flag === 'boolean') return flag && tax().enabled;
+    const t = tax();
+    return t.enabled && country() !== 'US' && (/\bVAT\b/i.test(t.label) || ['IE', 'GB', 'UK'].includes(country()));
   }
 
   const esc = (v) => (v == null ? '' : String(v))
@@ -155,6 +169,49 @@
     return job.scheduledTime ? day + ', ' + time(job.scheduledTime) : day;
   }
 
+  // ── Typed dates in the BRAND convention (js/ui.js date fields) ───────────────
+  // Order of day / month / year for a locale ('mdy', 'dmy', 'ymd').
+  function dateOrder(lc) {
+    try {
+      return new Intl.DateTimeFormat(lc || locale(), { year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(2026, 10, 25))
+        .filter((p) => p.type === 'day' || p.type === 'month' || p.type === 'year').map((p) => p.type[0]).join('');
+    } catch (e) { return 'mdy'; }
+  }
+  // 'DD/MM/YYYY' (IE) / 'MM/DD/YYYY' (US): the locale's dateFormat, else derived from its number locale.
+  function datePattern() {
+    const f = String(loc().dateFormat || '').toUpperCase();
+    if (/^(DD|MM|YYYY)([\/.-])(DD|MM|YYYY)\2(DD|MM|YYYY)$/.test(f)) return f;
+    const o = dateOrder();
+    const sep = o === 'ymd' ? '-' : '/';
+    return o.split('').map((c) => ({ d: 'DD', m: 'MM', y: 'YYYY' })[c]).join(sep);
+  }
+  function formatDateInput(v) {
+    const m = DATE_ONLY.exec(String(v || ''));
+    if (!m) return '';
+    return datePattern().replace('YYYY', m[1]).replace('MM', m[2]).replace('DD', m[3]);
+  }
+  // Text typed in the brand order → 'YYYY-MM-DD', or null when it is not a real date.
+  // Also accepts ISO (2026-11-25), any of / . - or spaces as separators and 2-digit years (→ 20xx).
+  function parseDateInput(text) {
+    const t = String(text == null ? '' : text).trim();
+    if (!t) return null;
+    let y, mo, d;
+    const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(t);
+    if (iso) { y = +iso[1]; mo = +iso[2]; d = +iso[3]; }
+    else {
+      const parts = t.split(/[\/.\-\s]+/);
+      if (parts.length !== 3 || !parts.every((x) => /^\d{1,4}$/.test(x))) return null;
+      const order = datePattern().replace(/[^DMY]/g, '').replace('DD', 'd').replace('MM', 'm').replace('YYYY', 'y');
+      const val = {}; order.split('').forEach((k, i) => { val[k] = parts[i]; });
+      if (!val.y || val.y.length === 3 || val.y.length === 1) return null;
+      y = val.y.length === 2 ? 2000 + Number(val.y) : Number(val.y); mo = Number(val.m); d = Number(val.d);
+    }
+    if (!(y >= 1900 && y <= 2200 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31)) return null;
+    const dt = new Date(Date.UTC(y, mo - 1, d));
+    if (dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+    return y + '-' + String(mo).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+  }
+
   // Display name: the company when set, else first + last name (then name / email / #id).
   function name(x) {
     if (!x) return '';
@@ -240,6 +297,7 @@
   MBC.fmt = {
     DASH, esc, text, num, money, parseDate, isoDate, todayISO, addDays, date, dateLong, dateTime, time,
     schedule, name, address, addressLabels, statusLabel, badge, phoneDigits, phone, locale, currency,
-    timeZone, tax, percent, dateShort, country, contactName, contactLine, bytes, zonedISO,
+    timeZone, tax, percent, dateShort, country, contactName, contactLine, bytes, zonedISO, reverseChargeAvailable,
+    dateOrder, formatDateInput, parseDateInput, datePattern,
   };
 })();

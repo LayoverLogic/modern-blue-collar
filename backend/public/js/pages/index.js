@@ -70,7 +70,7 @@
         '<td data-label="Job">' + fmt.text(j.title) + '<div class="muted small">' + fmt.esc(j.type || '') + '</div></td>' +
         '<td data-label="' + fmt.esc(MBC.brand.techLabel) + '">' + fmt.text(fmt.name(j.technician)) + '</td>' +
         '<td data-label="Status">' + fmt.badge(j.status) + '</td>' +
-        '<td data-label="Scheduled">' + fmt.esc(fmt.schedule(j)) + '</td>' +
+        '<td data-label="Scheduled" class="nowrap">' + fmt.esc(fmt.schedule(j)) + '</td>' +
       '</tr>').join('');
   }
 

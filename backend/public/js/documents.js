@@ -87,18 +87,23 @@
     const cur = doc.currency;
     const lines = doc.lines || [];
     const withTax = hasTax(doc);
-    const head = '<thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th>' +
-      (withTax ? '<th class="num">' + esc(fmt.tax().label) + '</th>' : '') + '<th class="num">Amount</th></tr></thead>';
+    // Short "Tax" header (the column only holds a rate); the full label ("Sales tax", "VAT")
+    // is in the title / accessible name and in each cell's data-label on phones.
+    const taxLabel = fmt.tax().label;
+    const taxHead = taxLabel.length > 4 ? '<th class="num" title="' + esc(taxLabel) + '"><span aria-hidden="true">Tax</span><span class="sr-only">' + esc(taxLabel) + '</span></th>'
+      : '<th class="num">' + esc(taxLabel) + '</th>';
+    const head = '<thead><tr><th class="desc">Description</th><th class="num">Qty</th><th class="num">Unit price</th>' +
+      (withTax ? taxHead : '') + '<th class="num">Amount</th></tr></thead>';
     let body;
     if (lines.length) {
-      body = lines.map((l) => '<tr><td data-label="Description">' + esc(l.description) + '</td>' +
+      body = lines.map((l) => '<tr><td data-label="Description" class="desc">' + esc(l.description) + '</td>' +
         '<td data-label="Qty" class="num">' + esc(fmt.num(l.quantity)) + '</td>' +
         '<td data-label="Unit price" class="num">' + esc(fmt.money(l.unitPrice, cur)) + '</td>' +
         (withTax ? '<td data-label="' + esc(fmt.tax().label) + '" class="num">' + esc(l.taxRateKey || Number(l.taxRate) ? fmt.percent(l.taxRate) : '—') + '</td>' : '') +
         '<td data-label="Amount" class="num">' + esc(fmt.money(l.lineTotal, cur)) + '</td></tr>').join('');
     } else {
       // Older single-amount document: one line from its notes.
-      body = '<tr><td data-label="Description">' + esc(doc.notes || (opts.jobTitle || 'Work as agreed')) + '</td><td data-label="Qty" class="num">1</td>' +
+      body = '<tr><td data-label="Description" class="desc">' + esc(doc.notes || (opts.jobTitle || 'Work as agreed')) + '</td><td data-label="Qty" class="num">1</td>' +
         '<td data-label="Unit price" class="num">' + esc(fmt.money(doc.amount, cur)) + '</td>' + (withTax ? '<td class="num" data-label="' + esc(fmt.tax().label) + '">—</td>' : '') +
         '<td data-label="Amount" class="num">' + esc(fmt.money(doc.amount, cur)) + '</td></tr>';
     }
@@ -140,6 +145,9 @@
   function editor(host, opts) {
     const type = opts.type;
     const tax = fmt.tax();
+    // GAP-16: the reverse-charge box only where the brand says reverse charge applies (VAT with
+    // RCT) — never for US sales tax. A saved reverse-charge document keeps its box so it can be undone.
+    const rcBox = tax.enabled && (fmt.reverseChargeAvailable() || !!(opts.doc && opts.doc.reverseCharge));
     const cur = opts.currency || (opts.doc && opts.doc.currency) || fmt.currency();
     const pricebook = opts.pricebook || [];
     let lines = (opts.doc && opts.doc.lines || []).map((l) => ({
@@ -177,7 +185,7 @@
           '<div class="doc-total"><span>' + esc(label(type)) + ' total</span><span id="de-total"></span></div>' +
           '<p class="muted small">Preview — the saved totals are calculated by the server.</p>' +
         '</div>' +
-        (tax.enabled ? '<label class="check"><input type="checkbox" id="de-reverse"' + (opts.doc && opts.doc.reverseCharge ? ' checked' : '') + '> Reverse charge (no ' + esc(tax.label) + ' charged; the customer accounts for it)</label>' : '') +
+        (rcBox ? '<label class="check"><input type="checkbox" id="de-reverse"' + (opts.doc && opts.doc.reverseCharge ? ' checked' : '') + '> Reverse charge (no ' + esc(tax.label) + ' charged; the customer accounts for it)</label>' : '') +
         (type === 'invoice' ? '<div class="form-group"><label for="de-due">Due date</label><input type="date" id="de-due"></div>' : '') +
         '<div class="form-group"><label for="de-notes">Notes for the customer</label><textarea id="de-notes" placeholder="Optional"></textarea></div>' +
         '<div id="de-error" class="form-error" hidden></div>' +
@@ -206,7 +214,7 @@
       renderTotals();
     }
     function renderTotals() {
-      const t = totals(lines, { reverseCharge: tax.enabled && $('de-reverse') && $('de-reverse').checked });
+      const t = totals(lines, { reverseCharge: rcBox && $('de-reverse') && $('de-reverse').checked });
       t.lines.forEach((r, i) => { const el = host.querySelector('[data-amount="' + i + '"]'); if (el) el.textContent = r.lineTotal == null ? '—' : fmt.money(r.lineTotal, cur); });
       $('de-subtotal').textContent = fmt.money(t.subtotal, cur);
       $('de-tax').innerHTML = tax.enabled ? t.breakdown.filter((g) => g.rate > 0 || g.tax).map((g) =>
@@ -252,11 +260,11 @@
         if (l.pricebookItemId) line.pricebookItemId = Number(l.pricebookItemId);
         out.push(line);
       }
-      const t = totals(lines, { reverseCharge: tax.enabled && $('de-reverse') && $('de-reverse').checked });
+      const t = totals(lines, { reverseCharge: rcBox && $('de-reverse') && $('de-reverse').checked });
       if (type === 'invoice' && !(t.total > 0)) return { error: 'An invoice total must be more than 0.' };
       if (t.total < 0) return { error: 'The total cannot be negative.' };
       const b = { lines: out, notes: $('de-notes').value.trim() || null };
-      if (tax.enabled) b.reverseCharge = !!$('de-reverse').checked;
+      if (rcBox) b.reverseCharge = !!$('de-reverse').checked;
       if (type === 'invoice') b.dueDate = $('de-due').value || null;
       return { body: b };
     }
@@ -292,7 +300,7 @@
     });
     $('de-item').addEventListener('change', () => { if ($('de-item').value) add($('de-item').value); });
     renderLines();
-    return { get lines() { return lines; }, error, totals: () => totals(lines, { reverseCharge: tax.enabled && $('de-reverse') && $('de-reverse').checked }) };
+    return { get lines() { return lines; }, error, totals: () => totals(lines, { reverseCharge: rcBox && $('de-reverse') && $('de-reverse').checked }) };
   }
 
   MBC.docs = { totals, linesHtml, totalsHtml, editor, label, ref, taxName, hasTax, scaled };

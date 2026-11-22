@@ -15,9 +15,9 @@
         '<td data-label="#"><a class="row-link" href="' + href + '">#' + fmt.esc(j.id) + '</a></td>' +
         '<td data-label="Customer">' + fmt.text(fmt.name(j.customer)) + '</td>' +
         '<td data-label="Job">' + fmt.text(j.title) + '<div class="muted small">' + fmt.esc(j.type || '') + '</div></td>' +
-        '<td data-label="' + fmt.esc(MBC.brand.techLabel) + '">' + (j.technician ? fmt.esc(fmt.name(j.technician)) : '<span class="muted">Unassigned</span>') + '</td>' +
+        '<td data-label="' + fmt.esc(MBC.brand.techLabel) + '" class="nowrap">' + (j.technician ? fmt.esc(fmt.name(j.technician)) : '<span class="muted">Unassigned</span>') + '</td>' +
         '<td data-label="Status">' + fmt.badge(j.status) + '</td>' +
-        '<td data-label="Scheduled">' + fmt.esc(fmt.schedule(j)) + '</td>' +
+        '<td data-label="Scheduled" class="nowrap">' + fmt.esc(fmt.schedule(j)) + '</td>' +
         '<td data-label="Priority">' + (j.priority && j.priority !== 'normal' ? fmt.badge(j.priority) : '<span class="muted">Normal</span>') + '</td></tr>';
     }).join('');
   }

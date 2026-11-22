@@ -78,23 +78,86 @@
       return '<div class="count-tile' + cls + '" data-count="' + esc(k) + '"><div class="label">' + esc(label) + '</div><div class="value">' + esc(v) + '</div>' + sub + '</div>';
     }).join('');
   }
-  // "sourceRows = created + updated + …" → each name followed by its number.
+  // Plain-words check that every row is accounted for: "12 rows in the file = 9 new + 0 updated + …".
+  // (The technical equation and the rule codes are in the downloadable report.)
+  const EQ_WORDS = { sourceRows: 'rows in the file', created: 'new', updated: 'updated', merged: 'merged', excluded: 'left out', errored: 'with problems', unexplained: 'unexplained' };
   function gate3Html(r) {
     const g = r.gate3 || {};
     const c = r.counts || {};
     const eq = String(g.equation || 'sourceRows = created + updated + merged + excluded + errored');
-    const filled = eq.replace(/[A-Za-z]+/g, (w) => (w in c ? w + ' (' + Number(c[w]) + ')' : w));
-    return '<span class="badge ' + (g.holds ? 'badge-active' : 'badge-overdue') + '" id="gate3-badge">' + (g.holds ? 'Counts add up' : 'Counts do NOT add up') + '</span> ' +
-      '<span class="small">Gate 3: <code id="gate3-eq">' + esc(filled) + '</code></span>';
+    const words = eq.replace(/[A-Za-z]+/g, (w) => (w in EQ_WORDS ? Number(c[w] || 0) + ' ' + EQ_WORDS[w] : w));
+    return '<span class="badge ' + (g.holds ? 'badge-active' : 'badge-overdue') + '" id="gate3-badge">' + (g.holds ? 'Every row is accounted for' : 'Rows do not add up') + '</span> ' +
+      '<span class="small" id="gate3-eq">' + esc(words) + '</span>';
   }
 
+  // ── End-user wording for importer rule codes (helpers/importer.js) ──────────
+  // The server's "detail" text is written for whoever runs a migration (it names playbook
+  // sections, option keys and record refs). On screen each row gets a plain reason + detail;
+  // anything not listed falls back to the server text with that jargon removed.
   const RULE_TEXT = {
     auto_merge: 'Very likely the same customer', review: 'Possibly the same customer',
   };
   const OUTCOME_TEXT = { created: 'New', updated: 'Updated', merged: 'Merged', excluded: 'Left out', errored: 'Problem' };
+  const quoted = (d) => { const m = /"([^"]*)"/.exec(String(d || '')); return m ? m[1] : ''; };
+  function fieldWord(f) {
+    const L = fmt.addressLabels();
+    return ({ firstName: 'first name', lastName: 'last name', company: 'company name', email: 'email', phone: 'phone number', address: L.address.toLowerCase(),
+      addressLine2: L.addressLine2.toLowerCase(), city: L.city.toLowerCase(), state: L.region.toLowerCase(), zip: L.postal, notes: 'notes',
+      createdAt: 'created date', lifetimeValue: 'lifetime value', type: 'customer type' })[f] || String(f || 'value').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+  }
+  // Plain "why these look alike" for a possible duplicate.
+  function matchWhy(why) {
+    const pc = fmt.addressLabels().postal;
+    const w = String(why || '');
+    if (/same email/.test(w)) return 'Same email, and the same phone number or ' + pc;
+    if (/same phone and same postcode/.test(w)) return 'Same phone number and ' + pc;
+    if (/same display name and same postcode/.test(w)) return 'Same name and ' + pc;
+    return plainText(w);
+  }
+  // Strip migration jargon from any leftover server text.
+  function plainText(t) {
+    return String(t || '')
+      .replace(/\s*\(§[^)]*\)/g, '').replace(/§\s*[\d.]+(\s*rule\s*\d+)?/g, '')
+      .replace(/\s*\(?options\.\w+\s*=\s*"?[\w-]*"?[^)]*\)?/g, '')
+      .replace(/\s*[—-]?\s*needs client approval at Gate \d/gi, '').replace(/\bGate \d\b/g, 'review')
+      .replace(/\b(customer|row):(\d+)/g, (m, k, n) => (k === 'row' ? 'row ' + n : 'an existing customer'))
+      .replace(/decide in merge-candidates\.csv and re-run/g, 'choose what to do under Possible duplicates above, then re-check')
+      .replace(/\(IntegrationLink\)/g, '').replace(/mapping\.typeMap/g, 'the import settings')
+      .replace(/\s{2,}/g, ' ').trim();
+  }
+  function plainException(e) {
+    const pc = fmt.addressLabels().postal;
+    const v = quoted(e.detail);
+    switch (e.rule) {
+      case 'missing_name': return ['No name', 'The row has no first, last, full or company name.'];
+      case 'missing_phone': return ['No phone number', 'Add a phone number in the file, or under Options choose to import rows with the phone left blank.'];
+      case 'invalid_phone': return ['Phone number not valid', plainText(e.detail)];
+      case 'invalid_email': return ['Email not valid', v ? '"' + v + '" is not a valid email address.' : 'The email address is not valid.'];
+      case 'unknown_type': return ['Unknown customer type', v ? 'The type "' + v + '" is not one this system knows (residential or commercial).' : 'The customer type is not recognised.'];
+      case 'invalid_postcode': return [pc + ' not valid', plainText(e.detail)];
+      case 'address_required': return ['Address incomplete', plainText(e.detail)];
+      case 'invalid_date': return ['Date not valid', plainText(e.detail)];
+      case 'date_format_required': return ['Date format unclear', (v ? '"' + v + '" could be day/month or month/day. ' : '') + 'Use YYYY-MM-DD dates in the file, or ask us to set the date format for this import.'];
+      case 'invalid_amount': return ['Amount not valid', plainText(e.detail)];
+      case 'too_long': return ['Too long', 'The ' + fieldWord(e.field) + ' is longer than this system allows.'];
+      case 'archived_out_of_scope': return ['Archived', 'Marked archived in the file, and you chose to leave archived customers out.'];
+      case 'pending_merge_decision': return ['Waiting for your decision', 'Looks like a customer you already have. Choose what to do under Possible duplicates above, then re-check.'];
+      case 'decision_exclude': return ['Left out by you', 'You chose to leave this row out.'];
+      case 'duplicate_source_id_conflict': return ['Same ID as another row', 'Another row in the file has the same ID with a different name.'];
+      case 'same_source_id_extra_row': return ['Extra address', 'Same customer as an earlier row; this address is added to that customer’s notes.'];
+      case 'merge_without_target': case 'merge_target_missing': case 'merge_target_not_loaded':
+        return ['Could not merge', 'The customer to merge into could not be found. Choose another option and re-check.'];
+      default: return [String(e.rule || '').replace(/_/g, ' '), plainText(e.detail)];
+    }
+  }
   function who(x) {
     if (!x) return '';
     return [x.name, x.email, x.phone ? fmt.phone(x.phone) : '', x.address, x.postcode].filter(Boolean).map((v) => esc(v)).join('<br>');
+  }
+  // "customer:19" → a link to that customer (the ref itself is never shown).
+  function existingLink(c) {
+    const m = c && /^customer:(\d+)$/.exec(String(c.ref || ''));
+    return m ? '<a class="small" href="customer-detail.html?id=' + esc(m[1]) + '" target="_blank" rel="noopener">View this customer</a>' : '';
   }
   function renderMerge(r) {
     const list = r.mergeCandidates || [];
@@ -107,9 +170,9 @@
       const id = 'dec-' + i;
       return '<tr data-key="' + esc(m.key) + '">' +
         '<td data-label="Row">' + esc(m.row) + '<div class="muted small">' + esc(m.key) + '</div></td>' +
-        '<td data-label="Match"><span class="badge ' + (m.rule === 'auto_merge' ? 'badge-approved' : 'badge-sent') + '">' + esc(RULE_TEXT[m.rule] || m.rule) + '</span><div class="muted small">' + esc(m.why) + '</div></td>' +
+        '<td data-label="Match"><span class="badge ' + (m.rule === 'auto_merge' ? 'badge-approved' : 'badge-sent') + '">' + esc(RULE_TEXT[m.rule] || 'Possibly the same customer') + '</span><div class="muted small">' + esc(matchWhy(m.why)) + '</div></td>' +
         '<td data-label="In the file">' + who(m.source) + '</td>' +
-        '<td data-label="Existing">' + who(m.candidate) + '<div class="muted small">' + esc(m.candidate && m.candidate.ref) + '</div></td>' +
+        '<td data-label="Existing">' + who(m.candidate) + '<div>' + existingLink(m.candidate) + '</div></td>' +
         '<td data-label="Decision"><label for="' + id + '" class="sr-only">Decision for row ' + esc(m.row) + '</label><select id="' + id + '" class="merge-decision" data-key="' + esc(m.key) + '">' +
           opts.map((o) => '<option value="' + o[0] + '"' + (o[0] === cur ? ' selected' : '') + '>' + esc(o[1]) + '</option>').join('') + '</select></td></tr>';
     }).join('');
@@ -118,19 +181,24 @@
   function renderExceptions(r) {
     const list = r.exceptions || [];
     $('dr-exceptions-wrap').hidden = !list.length;
-    $('dr-exc-count').textContent = list.length ? '(' + list.length + (list.length > EXC_MAX ? ', first ' + EXC_MAX + ' shown — the report zip has them all' : '') + ')' : '';
-    $('dr-exceptions').querySelector('tbody').innerHTML = list.slice(0, EXC_MAX).map((e) =>
-      '<tr><td data-label="Row">' + esc(e.row) + (e.line ? '<div class="muted small">line ' + esc(e.line) + '</div>' : '') + '</td>' +
-      '<td data-label="Source ID">' + fmt.text(e.source_id) + '</td>' +
-      '<td data-label="Outcome">' + esc(OUTCOME_TEXT[e.outcome] || e.outcome) + '</td>' +
-      '<td data-label="Reason">' + esc(String(e.rule || '').replace(/_/g, ' ')) + (e.field ? '<div class="muted small">' + esc(e.field) + '</div>' : '') + '</td>' +
-      '<td data-label="Detail" class="wrap">' + fmt.text(e.detail) + '</td></tr>').join('');
+    $('dr-exc-count').textContent = list.length ? '(' + list.length + (list.length > EXC_MAX ? ', first ' + EXC_MAX + ' shown — the report has them all' : '') + ')' : '';
+    $('dr-exceptions').querySelector('tbody').innerHTML = list.slice(0, EXC_MAX).map((e) => {
+      const [reason, detail] = plainException(e);
+      return '<tr data-rule="' + esc(e.rule) + '"><td data-label="Row">' + esc(e.row) + (e.line ? '<div class="muted small">line ' + esc(e.line) + '</div>' : '') + '</td>' +
+        '<td data-label="ID in the file">' + fmt.text(e.source_id) + '</td>' +
+        '<td data-label="Outcome">' + esc(OUTCOME_TEXT[e.outcome] || e.outcome) + '</td>' +
+        '<td data-label="Reason">' + esc(reason) + '</td>' +
+        '<td data-label="Detail" class="wrap">' + fmt.text(detail) + '</td></tr>';
+    }).join('');
   }
   function valuesHtml(obj, keys) {
     const ks = keys || Object.keys(obj || {});
+    // Saved fields get their screen names (keys given); the file's own column names stay as they are.
+    const lab = (k) => (keys ? fieldWord(k).replace(/^./, (c) => c.toUpperCase()) : k);
     return ks.filter((k) => obj && obj[k] != null && obj[k] !== '').slice(0, 8)
-      .map((k) => '<div><span class="muted">' + esc(k) + ':</span> ' + esc(k === 'phone' ? fmt.phone(obj[k]) : obj[k]) + '</div>').join('') || fmt.DASH;
+      .map((k) => '<div><span class="muted">' + esc(lab(k)) + ':</span> ' + esc(k === 'phone' ? fmt.phone(obj[k]) : obj[k]) + '</div>').join('') || fmt.DASH;
   }
+  const STRATUM_TEXT = { top_by_lifetime_value: 'Top customer', commercial: 'Commercial', multiple_sites: 'Several addresses', random: 'Random pick', merged: 'Merged', updated: 'Updated', errored: 'Problem', excluded: 'Left out', created: 'New' };
   const MBC_KEYS = ['company', 'firstName', 'lastName', 'email', 'phone', 'address', 'city', 'state', 'zip', 'type'];
   function renderSpot(r) {
     const s = r.spotCheck || {};
@@ -138,12 +206,16 @@
     $('dr-spot-wrap').hidden = !list.length;
     $('dr-spot-count').textContent = list.length ? '(' + list.length + ' rows)' : '';
     $('dr-spot').querySelector('tbody').innerHTML = list.map((x) =>
-      '<tr><td data-label="#">' + esc(x.sample) + '<div class="muted small">' + esc(x.stratum) + '</div></td>' +
+      '<tr><td data-label="#">' + esc(x.sample) + '<div class="muted small">' + esc(STRATUM_TEXT[x.stratum] || String(x.stratum || '').replace(/_/g, ' ')) + '</div></td>' +
       '<td data-label="Row">' + esc(x.row) + '<div class="muted small">' + esc(x.sourceId) + '</div></td>' +
       '<td data-label="Outcome">' + esc(OUTCOME_TEXT[x.outcome] || x.outcome) + '</td>' +
       '<td data-label="In the file" class="wrap small">' + valuesHtml(x.sourceValues) + '</td>' +
       '<td data-label="Saved as" class="wrap small">' + valuesHtml(x.mbcValues, MBC_KEYS) + '</td></tr>').join('');
-    $('dr-spot-notes').innerHTML = (s.notes || []).map((n) => '<li>' + esc(n) + '</li>').join('');
+    $('dr-spot-notes').innerHTML = (s.notes || []).map((n) => '<li>' + esc(plainSpotNote(n)) + '</li>').join('');
+  }
+  function plainSpotNote(n) {
+    if (/no lifetime value column/.test(n)) return 'The file has no lifetime value column, so the "top customers" in this sample are picked at random.';
+    return plainText(n);
   }
   function writesOf(c) { return Number(c.created || 0) + Number(c.updated || 0) - Number(c.updatedUnchanged || 0) + Number(c.merged || 0); }
 
@@ -158,7 +230,7 @@
     if (r.derivedSourceIds) notes.push('This file has no ID column, so IDs were made from row values. Re-importing an edited file may then add duplicates.');
     if ((r.unmappedColumns || []).length) notes.push('Columns not used: ' + r.unmappedColumns.join(', ') + '.');
     $('dr-banner').innerHTML = '<strong>Dry run — nothing has been written.</strong> ' + esc(f.name || 'file') + ' · ' + esc(f.rows) + ' row(s) · ' +
-      esc(fmt.bytes(f.bytes)) + ' · checksum <code>' + esc(String(f.sha256 || '').slice(0, 12)) + '…</code>' +
+      esc(fmt.bytes(f.bytes)) +
       notes.map((n) => '<div class="mt-s">' + esc(n) + '</div>').join('');
     $('dr-counts').innerHTML = countsHtml(r.counts || {});
     $('dr-gate3').innerHTML = gate3Html(r);
@@ -168,7 +240,7 @@
     const ok = r.gate3 && r.gate3.holds && !Number(c.unexplained);
     $('btn-commit').disabled = !ok || n === 0;
     $('btn-commit').textContent = n ? 'Import ' + n + ' customer' + (n === 1 ? '' : 's') : 'Nothing to import';
-    ui.formError('commit-error', !ok ? 'The counts do not add up, so importing is blocked. Download the report and check it.' : null);
+    ui.formError('commit-error', !ok ? 'Some rows are not accounted for, so importing is blocked. Download the report and send it to us.' : null);
   }
 
   async function runDryRun(e) {
@@ -247,8 +319,8 @@
     const banner = $('ir-banner');
     banner.className = 'notice ' + (ok ? 'ok' : 'error');
     banner.innerHTML = ok
-      ? '<strong>Import complete.</strong> Run <code>' + esc(r.runId) + '</code>. Download the report and keep it with the source file.'
-      : '<strong>The import stopped part-way.</strong> Batches that failed were rolled back; see below. Run <code>' + esc(r.runId) + '</code>.';
+      ? '<strong>Import complete.</strong> Download the report and keep it with the file you imported (reference <span class="nowrap">' + esc(r.runId) + '</span>).'
+      : '<strong>The import stopped part-way.</strong> Batches that failed were rolled back; see below (reference <span class="nowrap">' + esc(r.runId) + '</span>).';
     $('ir-counts').innerHTML = countsHtml(r.counts || {});
     $('ir-gate3').innerHTML = gate3Html(r);
     $('ir-batches').innerHTML = (r.batches || []).map((b) => '<li>Batch ' + esc(b.batch) + ': ' + esc(b.rows) + ' row(s) — ' + esc(String(b.status).replace(/_/g, ' ')) + '</li>').join('');

@@ -9,6 +9,8 @@
  *   MBC.ui.$(id)                                    document.getElementById
  *   MBC.ui.addressForm(prefix)                      locale labels / required marks on an address form;
  *                                                   returns { read(), check(body) → error text | null }
+ *   MBC.ui.dateFields(root)                         date inputs in the brand date order when the browser's
+ *                                                   order differs (run by MBC.page; later inputs via a MutationObserver)
  */
 (function () {
   'use strict';
@@ -65,10 +67,116 @@
     location.href = tr.getAttribute('data-href');
   });
 
+  // ── Date fields in the BRAND date order ────────────────────────────────────
+  // A native <input type="date"> shows the BROWSER's order (an Irish office on a US laptop
+  // sees 11/25/2026). When the browser's order differs from the brand's, every date input is
+  // given a text box in the brand format (DD/MM/YYYY or MM/DD/YYYY, typed and parsed by
+  // MBC.fmt.parseDateInput) and a calendar button that opens the native picker. The original
+  // input stays in the DOM with its id, value ('YYYY-MM-DD') and change / input events, so page
+  // code and tests keep using it unchanged; setting its .value updates the text box.
+  // localStorage 'mbc.dateFields' = 'text' | 'native' forces either behaviour.
+  const NATIVE_VALUE = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+  const CAL_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><rect x="3" y="5" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 10h18M8 3v4M16 3v4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>';
+  function dateFieldsWanted() {
+    let force = null;
+    try { force = localStorage.getItem('mbc.dateFields'); } catch (e) { /* storage blocked */ }
+    if (force === 'text') return true;
+    if (force === 'native') return false;
+    const browser = MBC.fmt.dateOrder((navigator.languages && navigator.languages[0]) || navigator.language || 'en-US');
+    const brandOrder = MBC.fmt.datePattern().replace(/[^DMY]/g, '').replace('DD', 'd').replace('MM', 'm').replace('YYYY', 'y');
+    return browser !== brandOrder;
+  }
+  let dateSeq = 0;
+  function enhanceDate(input) {
+    if (input.dataset.dateField || input.type !== 'date') return;
+    input.dataset.dateField = '1';
+    const pattern = MBC.fmt.datePattern();
+    const wrap = document.createElement('span');
+    wrap.className = 'date-field';
+    const text = document.createElement('input');
+    text.type = 'text';
+    text.id = (input.id || 'date-' + (++dateSeq)) + '-text';
+    text.className = 'date-text';
+    text.inputMode = 'numeric';
+    text.autocomplete = 'off';
+    text.placeholder = pattern;
+    text.title = 'Date as ' + pattern;
+    text.required = input.required;
+    const lab = input.id ? document.querySelector('label[for="' + (window.CSS && CSS.escape ? CSS.escape(input.id) : input.id) + '"]') : null;
+    const name = (lab && lab.textContent.trim()) || input.getAttribute('aria-label') || 'Date';
+    if (lab) lab.htmlFor = text.id; else text.setAttribute('aria-label', name);
+    const hint = document.createElement('span');
+    hint.className = 'sr-only'; hint.id = text.id + '-hint'; hint.textContent = 'Format ' + pattern;
+    text.setAttribute('aria-describedby', hint.id);
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'date-pick';
+    btn.setAttribute('aria-label', 'Choose ' + name.replace(/\s*\*$/, '').toLowerCase() + ' from a calendar');
+    btn.innerHTML = CAL_SVG;
+    input.parentNode.insertBefore(wrap, input);
+    wrap.append(text, btn, input, hint);
+    input.classList.add('date-native');
+    input.tabIndex = -1;
+    input.setAttribute('aria-hidden', 'true');
+
+    const get = () => NATIVE_VALUE.get.call(input);
+    const sync = () => { text.value = MBC.fmt.formatDateInput(get()); text.removeAttribute('aria-invalid'); };
+    Object.defineProperty(input, 'value', {
+      configurable: true,
+      get() { return get(); },
+      set(v) { NATIVE_VALUE.set.call(input, v); sync(); },
+    });
+    function commit() {
+      const raw = text.value.trim();
+      const iso = raw ? MBC.fmt.parseDateInput(raw) : '';
+      if (iso === null) {
+        text.setAttribute('aria-invalid', 'true');
+        toast('Type the date as ' + pattern + '.', 'error');
+        sync(); // back to the last good date
+        return;
+      }
+      if (iso === get()) { sync(); return; }
+      NATIVE_VALUE.set.call(input, iso);
+      sync();
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    text.addEventListener('change', commit);
+    text.addEventListener('keydown', (e) => { if (e.key === 'Enter') commit(); });
+    input.addEventListener('input', sync);
+    input.addEventListener('change', sync);
+    input.focus = () => text.focus(); // page code focusing the date (e.g. after an error) lands on the text box
+    const pick = () => {
+      try { if (input.showPicker) { input.showPicker(); return; } } catch (e) { /* not allowed here */ }
+      text.focus();
+    };
+    btn.addEventListener('click', pick);
+    // The invisible native input lies over the button for pointer / touch, so a tap opens the
+    // platform picker even where showPicker() is missing.
+    input.addEventListener('click', (e) => { if (input.showPicker) { e.preventDefault(); pick(); } });
+    if (input.form) input.form.addEventListener('reset', () => setTimeout(sync, 0));
+    sync();
+  }
+  let dateObserver = null;
+  function dateFields(root) {
+    if (!MBC.fmt || !dateFieldsWanted()) return;
+    (root || document).querySelectorAll('input[type="date"]').forEach(enhanceDate);
+    if (!dateObserver && window.MutationObserver && document.body) {
+      dateObserver = new MutationObserver((muts) => {
+        for (const m of muts) m.addedNodes.forEach((n) => {
+          if (n.nodeType !== 1) return;
+          if (n.matches && n.matches('input[type="date"]')) enhanceDate(n);
+          else if (n.querySelectorAll) n.querySelectorAll('input[type="date"]').forEach(enhanceDate);
+        });
+      });
+      dateObserver.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+
   async function page(opts) {
     opts = opts || {};
     document.body.dataset.title = opts.title || '';
     await MBC.brand.load(opts.title);
+    try { dateFields(document); } catch (e) { console.warn(e); }
     try {
       const user = await MBC.auth.requireUser(opts.roles || 'all');
       if (!user) return;
@@ -148,6 +256,6 @@
     ta.remove();
   }
 
-  MBC.ui = { $, toast, addressForm, openModal, closeModal, formError, errMsg, on, applyRoleVisibility, passwordProblem, PASSWORD_MIN, copyButton };
+  MBC.ui = { $, toast, addressForm, openModal, closeModal, formError, errMsg, on, applyRoleVisibility, passwordProblem, PASSWORD_MIN, copyButton, dateFields, dateFieldsWanted };
   MBC.page = page;
 })();

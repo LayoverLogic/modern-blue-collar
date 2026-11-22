@@ -1,7 +1,8 @@
 /*
  * js/brand.js — one loadBrand for every page. Load it in <head> (no defer):
  * it immediately re-applies the last brand seen (localStorage) so there is no
- * flash of default colours, then MBC.brand.load() fetches /api/brand.
+ * flash of default colours, then MBC.brand.load() fetches /api/brand (with the
+ * session token when signed in).
  *
  * Reads (all optional, tolerates absence):
  *   companyName, companySlogan, industryLabel, tradeType, technicianLabel, jobTypes,
@@ -99,10 +100,15 @@
     current: {},
     darken, onColor,
     // Fetch /api/brand (public), apply and cache. Never throws.
+    // Signed in → the token goes along, so the request counts against the person's own
+    // rate-limit bucket instead of the office's shared per-IP one (VERIFIER-1 M2).
+    // /api/brand never requires auth: a stale token is simply ignored by the server.
     async load(pageTitle) {
       let b = null;
       try {
-        const r = await fetch('/api/brand');
+        let t = null;
+        try { t = localStorage.getItem('token'); } catch (e) { /* storage blocked */ }
+        const r = await fetch('/api/brand', t ? { headers: { Authorization: 'Bearer ' + t } } : undefined);
         if (r.ok) b = await r.json();
       } catch (e) { /* offline: keep cached */ }
       if (b) { try { localStorage.setItem(KEY, JSON.stringify(b)); } catch (e) { /* quota */ } }

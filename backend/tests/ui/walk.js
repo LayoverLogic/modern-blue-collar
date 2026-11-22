@@ -20,7 +20,12 @@
  *      activity panel, reverse-charge placeholder handling on the print view,
  *      invite + add a team member, export CSV from three pages, technician on
  *      mobile: Today view with Navigate / Call / Text / On My Way, open the job,
- *      change status, upload a photo; dispatcher nav has no admin items.
+ *      change status, upload a photo; dispatcher nav has no admin items but does have
+ *      Quotes & Invoices (read-only: lists, no New Quote / export).
+ *      F4 layout checks: admin nav is one row at 1440px with a keyboard-usable "More" menu;
+ *      mobile header (name + hamburger) is one row ≤ 72px; the reverse-charge checkbox is
+ *      hidden for a US brand (shown only where the brand allows it); the import dry run has
+ *      no "§", "Gate ", option keys or record refs on screen.
  *   2b. Integrations walk (admin, Settings): download the import template, dry-run a
  *      small generic CSV (new rows, a duplicate of a seeded customer, a bad phone, an
  *      XSS payload) → counts + gate-3 equation, decide the duplicate, report zip,
@@ -388,6 +393,28 @@ async function flowWalk(browser, ctxInfo, results) {
   const A = await newPage(browser, 'desktop'); const alog = newLog(); instrument(A.page, alog); const page = A.page;
   const login = await uiLogin(page, USERS.admin);
   step('1. Login (admin, desktop, typed credentials + Sign In)', login.ok, login.ok ? 'dashboard shown' : JSON.stringify(login), { screenshot: await shot(page, 'flow-01-login-admin') });
+  // F4: the admin nav fits on ONE row at 1440px (less-used items under "More"), and "More" works by keyboard.
+  try {
+    const navRow = await page.evaluate(() => {
+      const items = [...document.querySelectorAll('#topnav .nav-links > a, #topnav .nav-links > .nav-more')];
+      // A new row starts when an item begins below the previous item's bottom edge.
+      const rects = items.map((e) => e.getBoundingClientRect());
+      const tops = rects.filter((r, i) => i === 0 || r.top >= rects[i - 1].bottom - 1);
+      return { items: items.map((e) => (e.querySelector('button') || e).innerText.trim()), rows: tops.length, navHeight: Math.round(document.getElementById('topnav').getBoundingClientRect().height),
+        more: [...document.querySelectorAll('#nav-more-menu a')].map((a) => a.textContent.trim()) };
+    });
+    step('1b. Admin nav is one row at 1440px (Team / Pricebook / API Keys / Settings / Communications under "More")',
+      navRow.rows === 1 && navRow.navHeight <= 72 && ['Team', 'Settings', 'API Keys'].every((x) => navRow.more.includes(x)), JSON.stringify(navRow));
+    await page.focus('#nav-more-btn'); await page.keyboard.press('Enter'); await sleep(150);
+    const opened = await page.evaluate(() => ({ open: !document.getElementById('nav-more-menu').hidden, expanded: document.getElementById('nav-more-btn').getAttribute('aria-expanded'),
+      focus: document.activeElement && document.activeElement.closest('#nav-more-menu') ? document.activeElement.textContent.trim() : null }));
+    await page.keyboard.press('ArrowDown'); await sleep(50);
+    const second = await page.evaluate(() => (document.activeElement || {}).textContent);
+    await page.keyboard.press('Escape'); await sleep(100);
+    const closed = await page.evaluate(() => ({ open: !document.getElementById('nav-more-menu').hidden, focusOnButton: document.activeElement === document.getElementById('nav-more-btn') }));
+    step('1c. "More" menu by keyboard: Enter opens + focuses the first item, arrows move, Escape closes back to the button',
+      opened.open && opened.expanded === 'true' && !!opened.focus && second !== opened.focus && !closed.open && closed.focusOnButton, JSON.stringify({ opened, second, closed }));
+  } catch (e) { step('1b/1c. Admin nav', false, e.message); }
 
   // Create customer.
   const first = 'Siobhan', last = `Walsh-${stamp}`;
@@ -468,6 +495,9 @@ async function flowWalk(browser, ctxInfo, results) {
     await page.select('#f-job', jobId);
     await page.click('#new-quote-form .btn-primary'); await settle(page);
     if (!(await isVisible(page, '#doc-editor .doc-editor'))) throw new Error('line editor did not open on the job page');
+    // GAP-16: the reverse-charge box only where the brand allows it — never for US sales tax.
+    const rc = await page.evaluate(() => ({ box: !!document.getElementById('de-reverse'), available: MBC.fmt.reverseChargeAvailable(), country: MBC.fmt.country(), tax: MBC.fmt.tax().enabled, label: MBC.fmt.tax().label }));
+    step('5r. Reverse-charge checkbox shown only when the brand allows it (hidden for a US brand)', rc.country === 'US' ? (!rc.box && !rc.available) : rc.box === rc.available, JSON.stringify(rc));
     const items = await page.$$eval('#de-item option', (os) => os.filter((x) => /^\d+$/.test(x.value)).map((o) => o.value));
     if (items.length < 2) throw new Error('pricebook has fewer than 2 items');
     await page.select('#de-item', items[0]); await sleep(100);
@@ -583,7 +613,10 @@ async function flowWalk(browser, ctxInfo, results) {
   // Reverse charge with placeholder wording: nothing printed, admins see a screen-only banner.
   try {
     const tax = brand.locale || {};
+    const rcFlag = [tax.reverseChargeAvailable, tax.reverseCharge && tax.reverseCharge.available].find((v) => typeof v === 'boolean');
+    const rcAvailable = typeof rcFlag === 'boolean' ? rcFlag : (tax.country || 'US') !== 'US';
     if (!tax.taxEnabled) { step('6g. Reverse-charge placeholder handling', null, 'tax not enabled for this brand'); }
+    else if (!rcAvailable) { step('6g. Reverse-charge placeholder handling', null, 'reverse charge is not available for this brand (US sales tax / no RCT)'); }
     else {
       const custs = (await api(at, 'GET', '/api/customers')).body || [];
       const c = custs.find((x) => x.lastName === `Walsh-${stamp}`) || custs[0];
@@ -643,6 +676,17 @@ async function flowWalk(browser, ctxInfo, results) {
   const T = await newPage(browser, 'mobile'); const tlog = newLog(); instrument(T.page, tlog); const tp = T.page;
   const tl = await uiLogin(tp, USERS.technician);
   step('9a. Login (technician, mobile) lands on Today', tl.ok && /today\.html/.test(tl.path), `path ${tl.path}`, { screenshot: await shot(tp, 'flow-09a-tech-today') });
+  // F4: brand name + hamburger share one header row (≤ 72px); a long name truncates instead of wrapping.
+  try {
+    const hdr = await tp.evaluate(() => {
+      const r = (s) => { const e = document.querySelector(s); if (!e) return null; const b = e.getBoundingClientRect(); return { top: Math.round(b.top), bottom: Math.round(b.bottom), h: Math.round(b.height), w: Math.round(b.width) }; };
+      const name = document.getElementById('nav-company');
+      return { nav: r('#topnav'), brand: r('.nav-brand'), toggle: r('.nav-toggle'), nameTruncates: !!name && getComputedStyle(name).textOverflow === 'ellipsis',
+        badgeShown: !!document.getElementById('nav-trade') && getComputedStyle(document.getElementById('nav-trade')).display !== 'none' };
+    });
+    const oneRow = hdr.nav && hdr.toggle && hdr.brand && hdr.nav.h <= 72 && hdr.toggle.top < hdr.brand.bottom && hdr.toggle.bottom > hdr.brand.top;
+    step('9a2. Mobile header: name + hamburger on one row, height ≤ 72px', !!oneRow && hdr.toggle.h >= 44, JSON.stringify(hdr));
+  } catch (e) { step('9a2. Mobile header', false, e.message); }
   try {
     await tp.goto(BASE + '/today.html'); await settle(tp);
     const cards = await tp.$$eval('.today-card', (cs) => cs.map((c) => ({
@@ -678,8 +722,21 @@ async function flowWalk(browser, ctxInfo, results) {
   const D = await newPage(browser, 'desktop'); const dlog = newLog(); instrument(D.page, dlog);
   const dl = await uiLogin(D.page, USERS.dispatcher);
   const nav = await D.page.$$eval('#topnav .nav-links a', (as) => as.map((a) => a.textContent.trim())).catch(() => []);
-  const adminItems = nav.filter((n) => /Team|API Keys|Quotes/.test(n));
-  step('11. Dispatcher nav has no admin-only items', dl.ok && !adminItems.length && nav.includes('Dispatch') && nav.includes('Communications'), `nav: ${nav.join(', ')}`);
+  const adminItems = nav.filter((n) => /Team|API Keys|Settings/.test(n));
+  step('11. Dispatcher nav has no admin-only items (and does have Quotes & Invoices)', dl.ok && !adminItems.length && nav.includes('Dispatch') && nav.includes('Communications') && nav.includes('Quotes & Invoices'), `nav: ${nav.join(', ')}`);
+  // L10: dispatcher reads Quotes & Invoices — lists load, no New Quote / export, a read-only note.
+  try {
+    const before = dlog.httpErrors.length;
+    await D.page.goto(BASE + '/quote-invoice.html'); await settle(D.page);
+    const qi = await D.page.evaluate(() => ({
+      rows: document.querySelectorAll('#list-tbody tr.clickable').length,
+      newQuote: !document.getElementById('btn-new-quote').hidden, exportBtn: !document.getElementById('btn-export').hidden,
+      note: !document.getElementById('readonly-note').hidden, denied: /do not have access/i.test(document.querySelector('main').innerText),
+    }));
+    const errs = dlog.httpErrors.slice(before);
+    step('11a. Dispatcher sees Quotes & Invoices read-only (lists, no New Quote / export)', qi.rows > 0 && !qi.newQuote && !qi.exportBtn && qi.note && !qi.denied && !errs.length,
+      `${JSON.stringify(qi)}; HTTP errors: ${errs.join(', ') || 'none'}`, { screenshot: await shot(D.page, 'flow-11a-dispatcher-billing') });
+  } catch (e) { step('11a. Dispatcher Quotes & Invoices', false, e.message); }
   if (jobUrl) {
     await D.page.goto(jobUrl); await settle(D.page);
     const ro = await D.page.evaluate(() => ({
@@ -772,12 +829,19 @@ async function integrationsWalk(browser, ctxInfo, results) {
     const banner = await visibleText(page, '#dr-banner');
     const xssRun = await page.evaluate(() => ({ executed: window.__xss || null, injected: document.querySelectorAll('img[src="x"]').length }));
     const ok = c.sourceRows === expectRows && c.created === 2 && c.errored === 1 && c.unexplained === 0 && c.excluded === (dup ? 1 : 0) &&
-      /Counts add up/.test(gate) && /sourceRows \(\d+\) = created \(\d+\)/.test(gate) && mergeRows === (dup ? 1 : 0) &&
-      excRows.some((r) => /invalid phone/i.test(r)) && spot > 0 && /nothing has been written/i.test(banner) && !xssRun.executed && !xssRun.injected;
+      /Every row is accounted for/.test(gate) && /\d+ rows in the file = \d+ new \+/.test(gate) && mergeRows === (dup ? 1 : 0) &&
+      excRows.some((r) => /phone number not valid/i.test(r)) && spot > 0 && /nothing has been written/i.test(banner) && !xssRun.executed && !xssRun.injected;
     step('I3. Import dry run: counts, gate-3 equation, duplicate, exceptions, spot check (nothing written, payload inert)', ok,
       `counts ${JSON.stringify(c)}; gate "${gate.replace(/\s+/g, ' ')}"; merge rows ${mergeRows}; exceptions ${excRows.length}; spot ${spot}; xss ${JSON.stringify(xssRun)}`);
     const before = (await api(at, 'GET', '/api/customers')).body.filter((x) => x.lastName === last).length;
     step('I3b. Dry run wrote nothing', before === 0, `${before} customer(s) named ${last}`);
+    // F4: plain end-user wording — no playbook sections, gate numbers, option keys or record refs on screen.
+    const jargon = await page.evaluate(() => {
+      const t = document.getElementById('dry-run').innerText;
+      return [/§/, /Gate \d/, /options\.\w/, /\b(customer|row):\d/, /merge-candidates\.csv/, /sourceRows/].map((re) => re.exec(t)).filter(Boolean)
+        .map((m) => m[0] + ' in "…' + t.slice(Math.max(0, m.index - 40), m.index + 40).replace(/\s+/g, ' ') + '…"');
+    });
+    step('I3c. Import dry run uses plain wording (no "§", "Gate ", option keys, record ids or file names)', jargon.length === 0, jargon.length ? `found: ${jargon.join(', ')}` : 'clean');
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({ path: path.join(FINAL, 'import-dry-run' + SHOT_SUFFIX + '.png'), fullPage: true });
 

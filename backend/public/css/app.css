@@ -42,10 +42,19 @@ a { color: var(--color-primary-dark); }
 .nav-brand .brand-logo { height: 32px; width: auto; max-width: 140px; object-fit: contain; }
 .nav-brand .brand-name { overflow: hidden; text-overflow: ellipsis; }
 .trade-badge { font-size: 0.68rem; background: var(--color-accent); color: var(--color-on-accent); padding: 2px 8px; border-radius: 99px; font-weight: 700; letter-spacing: 0.02em; white-space: nowrap; }
-.nav-links { display: flex; gap: 0.1rem; flex: 1; flex-wrap: wrap; justify-content: center; }
+.nav-links { display: flex; gap: 0.1rem; flex: 1; flex-wrap: wrap; justify-content: center; align-items: center; }
 .nav-links a { color: var(--color-nav-text); opacity: 0.72; text-decoration: none; font-size: 0.84rem; padding: 0.4rem 0.4rem; border-radius: 6px; white-space: nowrap; }
 .nav-links a:hover { opacity: 1; }
-.nav-links a.active { opacity: 1; background: rgba(255,255,255,0.12); font-weight: 600; }
+.nav-links a.active, .nav-more-btn.active { opacity: 1; background: rgba(255,255,255,0.12); font-weight: 600; }
+/* "More" menu (nav.js): admin-only and less-used items, so the bar stays on one row */
+.nav-more { position: relative; }
+.nav-more-btn { background: none; border: 1px solid transparent; color: var(--color-nav-text); opacity: 0.72; font: inherit; font-size: 0.84rem; padding: 0.4rem 0.4rem; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+.nav-more-btn:hover, .nav-more-btn[aria-expanded="true"] { opacity: 1; }
+.nav-more-btn:focus-visible, .nav-links a:focus-visible, .nav-profile:focus-visible, .nav-toggle:focus-visible { outline: 2px solid var(--color-nav-text); outline-offset: 1px; }
+.nav-more-menu { position: absolute; left: 0; top: calc(100% + 6px); background: #fff; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); min-width: 200px; padding: 0.4rem; z-index: 150; display: flex; flex-direction: column; }
+.nav-links .nav-more-menu a { color: var(--text); opacity: 1; font-size: 0.9rem; padding: 0.55rem 0.75rem; min-height: 40px; display: flex; align-items: center; }
+.nav-links .nav-more-menu a:hover, .nav-links .nav-more-menu a:focus-visible { background: #f1f5f9; outline: none; }
+.nav-links .nav-more-menu a.active { background: #e2e8f0; font-weight: 600; }
 .nav-right { display: flex; align-items: center; gap: 0.75rem; margin-left: auto; }
 .nav-user { font-size: 0.85rem; opacity: 0.8; white-space: nowrap; }
 .nav-role { font-size: 0.7rem; opacity: 0.7; text-transform: capitalize; }
@@ -199,7 +208,7 @@ pre.quote-notes { white-space: pre-wrap; font: inherit; font-size: 0.85rem; colo
 .view-toggle button.active { background: var(--color-primary); color: var(--color-on-primary); }
 .nav-label { font-weight: 600; min-width: 170px; text-align: center; }
 .controls input[type=date] { width: auto; }
-.calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--line); border-radius: var(--radius); overflow: hidden; }
+.calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 1px; background: var(--line); border-radius: var(--radius); overflow: hidden; }
 .day-header { background: #f8fafc; padding: 0.5rem; text-align: center; font-size: 0.8rem; font-weight: 600; color: var(--muted); }
 .day-cell { background: #fff; min-height: 110px; padding: 0.4rem; }
 .day-cell.other-month { background: #f8fafc; color: #cbd5e1; }
@@ -245,7 +254,8 @@ pre.quote-notes { white-space: pre-wrap; font: inherit; font-size: 0.85rem; colo
 
 
 /* ── Documents: quote / invoice cards and the line editor (js/documents.js) ─ */
-.doc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+/* One document per row: a quote / invoice needs the width for its description column. */
+.doc-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
 .doc-card { min-width: 0; }
 .doc-section-head { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
 .doc-item { border: 1px solid var(--line); border-radius: 8px; padding: 0.9rem 1rem; margin-bottom: 0.75rem; min-width: 0; }
@@ -257,6 +267,11 @@ pre.quote-notes { white-space: pre-wrap; font: inherit; font-size: 0.85rem; colo
 .doc-meta { margin-bottom: 0.5rem; }
 .lock-tag { display: inline-block; font-size: 0.7rem; font-weight: 700; background: #f1f5f9; color: #475569; border-radius: 4px; padding: 0 6px; margin-left: 4px; }
 table.doc-lines th, table.doc-lines td { padding: 0.45rem 0.5rem; }
+@media (min-width: 901px) {
+  table.doc-lines th.num, table.doc-lines td.num { white-space: nowrap; width: 1%; padding-left: 1.25rem; }
+  table.doc-lines .desc { overflow-wrap: anywhere; }
+  .doc-item > .doc-totals { max-width: 460px; margin-left: auto; }
+}
 .doc-totals { margin-top: 0.5rem; font-size: 0.9rem; }
 .doc-totals > div { display: flex; justify-content: space-between; gap: 1rem; padding: 0.2rem 0.5rem; font-variant-numeric: tabular-nums; }
 .doc-totals .doc-total { font-weight: 700; font-size: 1.05rem; border-top: 2px solid var(--line); margin-top: 0.25rem; padding-top: 0.4rem; }
@@ -312,11 +327,22 @@ label.check { display: flex; gap: 0.5rem; align-items: center; font-weight: 500;
 @media (max-width: 900px) {
   :root { --tap: 44px; }
   .btn-sm { min-height: 44px; padding: 0.45rem 0.9rem; }
-  .nav-inner { flex-wrap: wrap; padding: 0.4rem 0.9rem; gap: 0.5rem; }
-  .nav-toggle { display: inline-flex; align-items: center; justify-content: center; }
-  .nav-brand { min-height: 44px; }
+  /* One header row: brand (name truncates) · badge · hamburger. The brand's flex basis is 0 so
+     it shrinks instead of pushing the hamburger onto a second row. */
+  .nav-inner { flex-wrap: wrap; padding: 0.35rem 0.9rem; gap: 0.5rem; min-height: 0; }
+  .nav-toggle { display: inline-flex; align-items: center; justify-content: center; flex: none; }
+  .nav-brand { min-height: 44px; flex: 1 1 0; min-width: 0; overflow: hidden; }
+  .nav-brand .brand-name { min-width: 0; }
+  .nav-brand .brand-logo { height: 30px; max-width: 96px; flex: none; }
+  .trade-badge { flex: none; }
+  .nav-more { width: 100%; }
+  .nav-more-btn { display: none; }
+  #topnav .nav-more-menu, #topnav .nav-more-menu[hidden] { display: flex !important; position: static; flex-direction: column; background: none; box-shadow: none; padding: 0; min-width: 0; border-radius: 0; }
+  .nav-links .nav-more-menu a { color: var(--color-nav-text); opacity: 0.72; font-size: 1rem; padding: 0.4rem; min-height: 44px; }
+  .nav-links .nav-more-menu a.active { background: rgba(255,255,255,0.12); opacity: 1; }
+  .nav-links .nav-more-menu a:hover, .nav-links .nav-more-menu a:focus-visible { background: rgba(255,255,255,0.08); }
   .nav-links, .nav-right { display: none; width: 100%; }
-  #topnav.open .nav-links { display: flex; flex-direction: column; gap: 0; padding-bottom: 0.25rem; }
+  #topnav.open .nav-links { display: flex; flex-direction: column; align-items: stretch; gap: 0; padding-bottom: 0.25rem; }
   #topnav.open .nav-right { display: flex; justify-content: space-between; padding: 0.5rem 0 0.75rem; border-top: 1px solid rgba(255,255,255,0.15); }
   .nav-links a { min-height: 44px; display: flex; align-items: center; font-size: 1rem; }
   .btn-logout { min-height: 44px; padding: 0.4rem 1rem; }
@@ -363,6 +389,7 @@ label.check { display: flex; gap: 0.5rem; align-items: center; font-weight: 500;
   table.responsive td.num { text-align: right; }
   table.responsive tfoot, table.responsive tfoot tr, table.responsive tfoot td { display: flex; justify-content: space-between; }
   table.responsive td .btn { min-height: 44px; }
+  table.responsive td.nowrap { white-space: normal; }
   /* Schedule */
   .nav-label { min-width: 0; flex: 1 1 100%; order: -1; text-align: left; }
   .controls > .btn, .controls input[type=date] { flex: 1 1 auto; }
@@ -377,6 +404,9 @@ label.check { display: flex; gap: 0.5rem; align-items: center; font-weight: 500;
   .calendar-grid.month .job-chip { min-height: 22px; font-size: 0.65rem; padding: 2px 3px; }
   .day-job { min-height: 44px; }
   .time-label { width: 56px; }
+}
+@media (max-width: 480px) {
+  .trade-badge { display: none; }
 }
 @media print {
   #topnav, .page-actions, .action-bar, .btn { display: none !important; }
@@ -435,3 +465,35 @@ details.more summary::before { content: '\25B8'; margin-right: 0.4rem; }
 details.more[open] summary::before { content: '\25BE'; }
 main.auth-screen { max-width: none; margin: 0; }
 .modal.modal-wide { max-width: 860px; }
+
+/* ── Date fields in the brand order (js/ui.js dateFields) ────────────────── */
+.date-field { position: relative; display: inline-flex; align-items: stretch; min-width: 0; vertical-align: middle; }
+.form-group .date-field { display: flex; width: 100%; }
+.date-field .date-text { flex: 1 1 auto; min-width: 8.5em; width: 100%; border-top-right-radius: 0; border-bottom-right-radius: 0; font-variant-numeric: tabular-nums; }
+.date-field .date-text[aria-invalid="true"] { border-color: var(--danger); }
+.date-field .date-pick { flex: none; width: 40px; min-height: var(--tap); margin-left: -1px; display: inline-flex; align-items: center; justify-content: center; background: #fff; color: var(--text); border: 1px solid #cbd5e1; border-radius: 0 8px 8px 0; cursor: pointer; padding: 0; }
+.date-field .date-pick:hover { background: #f1f5f9; }
+.date-field .date-pick:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+.date-field input.date-native { position: absolute; top: 0; right: 0; width: 40px; height: 100%; min-height: 0; padding: 0; border: 0; opacity: 0; cursor: pointer; }
+.controls .date-field .date-text { width: 9.5em; }
+@media (max-width: 900px) {
+  .date-field .date-pick, .date-field input.date-native { width: 44px; }
+  .controls .date-field { flex: 1 1 auto; }
+  .controls .date-field .date-text { width: 100%; }
+}
+
+/* ── Schedule week view: richer chips, columns fill the screen ───────────── */
+.calendar-grid.week .day-cell { min-height: max(320px, calc(100vh - 300px)); }
+.job-chip.week-chip { white-space: normal; padding: 5px 7px; margin-bottom: 4px; line-height: 1.25; border-left: 3px solid rgba(0,0,0,0.18); }
+.week-chip > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.week-chip .chip-top { display: flex; align-items: center; gap: 0.35rem; }
+.week-chip .chip-time { font-weight: 700; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.week-chip .chip-tech { flex: none; font-size: 0.65rem; font-weight: 700; letter-spacing: 0.02em; background: rgba(255,255,255,0.75); border-radius: 99px; padding: 0 6px; line-height: 1.5; }
+.week-chip .chip-tech.none { opacity: 0.6; }
+.week-chip .chip-cust { font-weight: 600; }
+.week-chip .chip-job { opacity: 0.85; font-size: 0.7rem; }
+@media (max-width: 900px) {
+  .calendar-grid.week .day-cell { min-height: 0; }
+  .calendar-grid.week .job-chip.week-chip { font-size: 0.85rem; }
+  .week-chip .chip-job { font-size: 0.78rem; }
+}

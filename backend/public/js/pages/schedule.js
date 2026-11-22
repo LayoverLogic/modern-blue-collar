@@ -66,6 +66,25 @@
       '</div></div>';
   }
 
+  // Initials of a person's name ("Matt Kessler" → "MK").
+  function initials(p) {
+    const n = fmt.name(p);
+    const parts = String(n || '').trim().split(/\s+/).filter(Boolean);
+    return parts.length ? (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase() : '';
+  }
+  // Week chip: time + technician initials, customer, job title (type when there is no title).
+  function weekChip(j) {
+    const tech = fmt.name(j.technician);
+    const what = j.title || j.type || '';
+    return '<button type="button" class="job-chip week-chip ' + fmt.esc(j.status) + '" data-job="' + fmt.esc(j.id) + '" title="' + chipTitle(j) + '">' +
+      '<span class="chip-top">' + dot(j) + '<span class="chip-time">' + fmt.esc(j.scheduledTime ? fmt.time(j.scheduledTime) : 'Any time') + '</span>' +
+        (tech ? '<span class="chip-tech" aria-hidden="true">' + fmt.esc(initials(j.technician)) + '</span><span class="sr-only">, ' + fmt.esc(tech) + '</span>'
+          : '<span class="chip-tech none" aria-hidden="true">?</span><span class="sr-only">, unassigned</span>') + '</span>' +
+      '<span class="chip-cust">' + fmt.esc(fmt.name(j.customer) || ('Job #' + j.id)) + '</span>' +
+      (what ? '<span class="chip-job">' + fmt.esc(what) + (j.title && j.type ? ' · ' + fmt.esc(j.type) : '') + '</span>' : '') +
+      '</button>';
+  }
+
   function renderWeek() {
     const ws = startOfWeek(cursor), we = fmt.addDays(ws, 6);
     $('nav-label').textContent = fmt.date(ws, { month: 'short', day: 'numeric' }) + ' – ' + fmt.date(we, { month: 'short', day: 'numeric', year: 'numeric' });
@@ -77,9 +96,7 @@
       const dj = onDay(list, day);
       html += '<div class="day-cell"><div class="day-head"><div class="day-name">' + fmt.esc(fmt.date(day, { weekday: 'short' })) + '</div>' +
         '<div class="day-num' + (day === today ? ' today' : '') + '">' + d(day).getDate() + '</div></div><div class="day-jobs">' +
-        (dj.length ? dj.map((j) => '<button type="button" class="job-chip ' + fmt.esc(j.status) + '" data-job="' + fmt.esc(j.id) + '" title="' + chipTitle(j) + '">' + dot(j) +
-          (j.scheduledTime ? fmt.esc(fmt.time(j.scheduledTime)) + ' ' : '') + '#' + fmt.esc(j.id) + ' ' + fmt.esc((j.customer && j.customer.lastName) || j.title || '') + '</button>').join('')
-          : '<div class="no-jobs">No jobs</div>') + '</div></div>';
+        (dj.length ? dj.map(weekChip).join('') : '<div class="no-jobs">No jobs</div>') + '</div></div>';
     }
     $('calendar-container').innerHTML = html + '</div>';
   }

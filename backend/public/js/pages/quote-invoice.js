@@ -1,5 +1,7 @@
-/* quote-invoice.html — billing lists (admin): document numbers (Q-0001 / INV-0001), totals in each
- * document's currency, print links. Customer comes from job.customer; total from amount. */
+/* quote-invoice.html — billing lists: document numbers (Q-0001 / INV-0001), totals in each
+ * document's currency, print links. Customer comes from job.customer; total from amount.
+ * Admins: + New Quote and the invoices CSV export. Dispatcher / office: read-only (lists,
+ * search, print, open the job) — the API keeps billing writes and exports admin-only. */
 (function () {
   'use strict';
   const { fmt, api, ui } = window.MBC;
@@ -57,8 +59,12 @@
   }
 
   MBC.page({
-    active: 'billing', title: 'Quotes & Invoices', roles: 'admin',
+    active: 'billing', title: 'Quotes & Invoices', roles: 'staff',
     async run() {
+      const admin = MBC.auth.isAdmin();
+      $('btn-export').hidden = !admin;
+      $('btn-new-quote').hidden = !admin;
+      $('readonly-note').hidden = admin;
       document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => setTab(t.dataset.tab)));
       $('search-input').addEventListener('input', render);
       $('status-filter').addEventListener('change', render);

@@ -1,5 +1,5 @@
 /*
- * team.html — members (admin only): completed-job counts, status badges (Deactivated /
+ * team.html — members (admin only): completed-job counts (technicians only), status badges (Deactivated /
  * Invited / Must change password / last sign-in), invite by email (accept-invite link,
  * copyable when not emailed), add with a temporary password, and per member:
  * change role, deactivate / reactivate, reset password (temporary password shown once,
@@ -55,7 +55,7 @@
       '<div>' + badges(u) + '</div>' +
       (u.email ? '<div class="line">' + fmt.esc(u.email) + '</div>' : '') +
       (u.phone ? '<div class="line">' + fmt.esc(fmt.phone(u.phone)) + '</div>' : '') +
-      '<div class="line">Jobs completed: ' + fmt.esc(completed[u.id] || 0) + '</div>' +
+      (u.role === 'technician' ? '<div class="line">Jobs completed: ' + fmt.esc(completed[u.id] || 0) + '</div>' : '') +
       '<div class="line">' + (u.lastLoginAt ? 'Last signed in ' + fmt.esc(fmt.dateTime(u.lastLoginAt)) : 'Never signed in') + '</div>' +
       '<div class="line">Member since ' + fmt.esc(fmt.date(u.createdAt)) + '</div>' +
       actions(u) + '</div>').join('');
