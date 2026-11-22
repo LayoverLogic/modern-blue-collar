@@ -169,7 +169,7 @@
       const cur = imp.decisions[m.key] != null ? imp.decisions[m.key] : (m.decision || '');
       const id = 'dec-' + i;
       return '<tr data-key="' + esc(m.key) + '">' +
-        '<td data-label="Row">' + esc(m.row) + '<div class="muted small">' + esc(m.key) + '</div></td>' +
+        '<td data-label="Row" class="nowrap">' + esc(m.row) + '<div class="muted small">' + esc(m.key) + '</div></td>' +
         '<td data-label="Match"><span class="badge ' + (m.rule === 'auto_merge' ? 'badge-approved' : 'badge-sent') + '">' + esc(RULE_TEXT[m.rule] || 'Possibly the same customer') + '</span><div class="muted small">' + esc(matchWhy(m.why)) + '</div></td>' +
         '<td data-label="In the file">' + who(m.source) + '</td>' +
         '<td data-label="Existing">' + who(m.candidate) + '<div>' + existingLink(m.candidate) + '</div></td>' +
@@ -184,8 +184,8 @@
     $('dr-exc-count').textContent = list.length ? '(' + list.length + (list.length > EXC_MAX ? ', first ' + EXC_MAX + ' shown — the report has them all' : '') + ')' : '';
     $('dr-exceptions').querySelector('tbody').innerHTML = list.slice(0, EXC_MAX).map((e) => {
       const [reason, detail] = plainException(e);
-      return '<tr data-rule="' + esc(e.rule) + '"><td data-label="Row">' + esc(e.row) + (e.line ? '<div class="muted small">line ' + esc(e.line) + '</div>' : '') + '</td>' +
-        '<td data-label="ID in the file">' + fmt.text(e.source_id) + '</td>' +
+      return '<tr data-rule="' + esc(e.rule) + '"><td data-label="Row" class="nowrap">' + esc(e.row) + (e.line ? '<div class="muted small">line ' + esc(e.line) + '</div>' : '') + '</td>' +
+        '<td data-label="ID in the file" class="nowrap">' + fmt.text(e.source_id) + '</td>' +
         '<td data-label="Outcome">' + esc(OUTCOME_TEXT[e.outcome] || e.outcome) + '</td>' +
         '<td data-label="Reason">' + esc(reason) + '</td>' +
         '<td data-label="Detail" class="wrap">' + fmt.text(detail) + '</td></tr>';
