@@ -16,6 +16,8 @@ const PUBLISHED_SECRETS = new Set([
   'demo_dev_secret_change_me_to_a_random_32_plus_char_string',
   // tests/whitelabel.test.js used this literal until B4 (M1) — it is in git history
   'whitelabel_test_secret_0123456789abcdef0123456789',
+  // the deliberately weak value of the L7 boot test (tests/backend.test.js, in history since B4)
+  'short',
   '__generate_on_first_run__',
   'test-secret-key',
   'secret',
