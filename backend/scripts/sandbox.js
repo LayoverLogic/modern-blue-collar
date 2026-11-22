@@ -20,6 +20,11 @@
  *      replaced IN THAT FILE by a fresh random secret (so sessions survive
  *      restarts and nobody can forge tokens with a public value). A known value
  *      set in the real process environment is refused.
+ *      The env file is kept private (mode 0600, L8): created that way, and an
+ *      existing one that group / others can read is tightened.
+ *      APP_URL (links in emails) follows PORT (D1): unless APP_URL is set in the
+ *      shell, a localhost APP_URL whose port differs from PORT (or none at all)
+ *      becomes http://localhost:<PORT>. A non-local APP_URL (a tunnel) is kept.
  *   2. Create the database named in DATABASE_URL if it does not exist.
  *   3. Apply migrations (scripts/migrate-deploy.mjs — WASM schema engine).
  *   4. If DEMO_MODE=true, seed demo data (idempotent) for DEMO_PROSPECT: a slug
@@ -54,6 +59,21 @@ const realEnvSecret = process.env.JWT_SECRET; // set by the real environment (wi
 if (realEnvSecret !== undefined && (realEnvSecret.trim() === '' || isKnownSecret(realEnvSecret))) {
   fail('JWT_SECRET in your shell environment is empty or a published / placeholder value. Unset it (the sandbox generates one in its env file) or set a random one:\n  export JWT_SECRET=$(node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))")');
 }
+const realEnvAppUrl = process.env.APP_URL; // set in the shell → never rewritten (D1)
+
+/** chmod 0600 when group / others may read the file (it holds JWT_SECRET) — L8. */
+function keepPrivate(file) {
+  try {
+    const st = fs.statSync(file);
+    if (!st.isFile() || (st.mode & 0o077) === 0) return;
+    if (typeof process.getuid === 'function' && st.uid !== process.getuid()) return; // not ours to change
+    fs.chmodSync(file, 0o600);
+    console.log(`[sandbox] ${path.relative(backendDir, file) || file} holds secrets — made it private (mode 0600)`);
+  } catch (e) {
+    console.warn(`[sandbox] could not restrict ${file}: ${e.message}`);
+  }
+}
+
 let envFile;
 if (process.env.ENV_FILE) {
   envFile = path.resolve(backendDir, process.env.ENV_FILE);
@@ -61,12 +81,14 @@ if (process.env.ENV_FILE) {
 } else {
   envFile = path.join(backendDir, '.env.sandbox');
   if (!fs.existsSync(envFile)) {
-    fs.copyFileSync(path.join(backendDir, '.env.sandbox.example'), envFile);
-    console.log('[sandbox] Created backend/.env.sandbox from .env.sandbox.example');
+    // created 0600 from the start: it gets a JWT_SECRET right below (L8)
+    fs.writeFileSync(envFile, fs.readFileSync(path.join(backendDir, '.env.sandbox.example')), { mode: 0o600, flag: 'wx' });
+    console.log('[sandbox] Created backend/.env.sandbox from .env.sandbox.example (mode 0600)');
   }
   process.env.ENV_FILE = '.env.sandbox';
 }
 if (realEnvSecret === undefined && fs.statSync(envFile).isFile()) fillGeneratedSecrets(envFile);
+keepPrivate(envFile);
 
 /**
  * Make the env file carry a usable JWT_SECRET: an empty, placeholder or
@@ -87,7 +109,7 @@ function fillGeneratedSecrets(file) {
   });
   if (!seen) { out = `${out.replace(/\n*$/, '\n')}${fresh()}\n`; changed = true; }
   if (changed) {
-    fs.writeFileSync(file, out);
+    fs.writeFileSync(file, out, { mode: 0o600 });
     console.log(`[sandbox] Generated a random JWT_SECRET in ${path.relative(backendDir, file) || file}`);
   }
 }
@@ -100,6 +122,26 @@ if (!process.env.JWT_SECRET || isKnownSecret(process.env.JWT_SECRET)) fail('JWT_
 
 // Listen on loopback unless HOST says otherwise (demo mode advertises a login).
 if (!process.env.HOST) process.env.HOST = '127.0.0.1';
+
+// D1: APP_URL follows PORT (PORT=3150 npm run sandbox used to keep emailing
+// links to :3101). Only a localhost APP_URL that was not set in the shell.
+{
+  const port = String(process.env.PORT || 3001);
+  const derived = `http://localhost:${port}`;
+  if (realEnvAppUrl === undefined) {
+    let local = !process.env.APP_URL;
+    let samePort = false;
+    try {
+      const u = new URL(process.env.APP_URL);
+      local = local || ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
+      samePort = (u.port || (u.protocol === 'https:' ? '443' : '80')) === port;
+    } catch { local = true; }
+    if (local && !samePort) {
+      if (process.env.APP_URL) console.log(`[sandbox] APP_URL ${process.env.APP_URL} → ${derived} (follows PORT=${port}; set APP_URL in the shell to override)`);
+      process.env.APP_URL = derived;
+    }
+  }
+}
 
 // DEMO_PROSPECT: slug, or an absolute path outside the repo
 if (process.env.DEMO_PROSPECT) {
@@ -164,7 +206,7 @@ async function ensureDatabase() {
     return;
   }
 
-  step(`Starting server on ${process.env.HOST}:${process.env.PORT || 3001}${process.env.HOST === '127.0.0.1' ? ' (this machine only — HOST=0.0.0.0 to share on your network)' : ''}...`);
+  step(`Starting server on ${process.env.HOST}:${process.env.PORT || 3001}${process.env.HOST === '127.0.0.1' ? ' (this machine only — HOST=0.0.0.0 to share on your network)' : ''}, APP_URL ${process.env.APP_URL}...`);
   const child = spawn(process.execPath, [path.join(backendDir, 'server.js')], {
     cwd: backendDir, env: process.env, stdio: 'inherit',
   });

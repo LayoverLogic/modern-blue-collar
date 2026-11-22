@@ -1272,3 +1272,38 @@ test('L2 price book cost is for pricing roles only; L3 technicians get technicia
   const admin = asOffice.json.technicians.find((t) => t.id === U.admin.id);
   assert.ok(admin && admin.email === U.admin.email, 'office still gets admins with contact details for assignment');
 });
+
+test('L8 / D1 sandbox.js keeps the env file private (0600) and derives a localhost APP_URL from PORT', { timeout: 300000 }, async () => {
+  const envFile = path.join(TMP, '.env.demo.d1test');
+  fs.writeFileSync(envFile, fs.readFileSync(path.join(BACKEND, '.env.sandbox.example'), 'utf8').replace(/^DEMO_MODE=true$/m, 'DEMO_MODE=false'), { mode: 0o644 });
+  fs.chmodSync(envFile, 0o644);
+  const base = { ENV_FILE: envFile, DATABASE_URL: TEST_DB };
+  const r = runScript(['scripts/sandbox.js', '--no-start'], { ...base, PORT: '3150' });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.equal(fs.statSync(envFile).mode & 0o777, 0o600, 'env file with JWT_SECRET left readable by others');
+  assert.match(r.stdout, /made it private \(mode 0600\)/);
+  assert.match(r.stdout, /APP_URL http:\/\/localhost:3101 → http:\/\/localhost:3150 \(follows PORT=3150/);
+  // same port: nothing to say; APP_URL from the shell or a non-local one: kept
+  assert.doesNotMatch(runScript(['scripts/sandbox.js', '--no-start'], base).stdout, /APP_URL .* →/);
+  assert.doesNotMatch(runScript(['scripts/sandbox.js', '--no-start'], { ...base, PORT: '3150', APP_URL: 'http://localhost:9999' }).stdout, /APP_URL .* →/);
+  fs.writeFileSync(envFile, fs.readFileSync(envFile, 'utf8').replace(/^APP_URL=.*$/m, 'APP_URL=https://demo.example.test'));
+  assert.doesNotMatch(runScript(['scripts/sandbox.js', '--no-start'], { ...base, PORT: '3150' }).stdout, /APP_URL .* →/);
+  // the running server really uses the derived value
+  fs.writeFileSync(envFile, fs.readFileSync(envFile, 'utf8').replace(/^APP_URL=.*$/m, 'APP_URL=http://localhost:3101'));
+  const port = await freePort();
+  const child = spawn(process.execPath, ['scripts/sandbox.js'], {
+    cwd: BACKEND, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, ...base, PORT: String(port), STORAGE_DRIVER: 'local', LOCAL_STORAGE_DIR: path.join(TMP, 'storage') },
+  });
+  let out = '';
+  child.stdout.on('data', (d) => { out += d; });
+  child.stderr.on('data', (d) => { out += d; });
+  try {
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline && !/Server running on/.test(out)) await sleep(200);
+    assert.match(out, new RegExp(`APP_URL http://localhost:${port}\\.\\.\\.`), out);
+  } finally {
+    child.kill('SIGTERM');
+    await new Promise((res) => { if (child.exitCode != null) res(); else child.once('exit', res); setTimeout(res, 4000); });
+  }
+});
