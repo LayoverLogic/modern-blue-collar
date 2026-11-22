@@ -28,6 +28,14 @@
  *      tables); Xero CSV (date check, unmapped-tax warning); quotes CSV; QuickBooks
  *      in sandbox (Connect / Sync payments / Push to QuickBooks say "no request was
  *      sent"). Screenshots settings-data, import-dry-run, quickbooks.
+ *   2c. Accounts walk: temporary password → forced change screen; profile menu →
+ *      Change password (new token stored, old one revoked); Team: badges, change role,
+ *      role matrix for a plain admin, reset password (temporary, shown once),
+ *      deactivate / reactivate; Forgot password → outbox mail → reset-password.html
+ *      (token from the fragment, stripped, single use); invite → accept-invite.html →
+ *      signed in; Pricebook → Import CSV (dry run, problems, import); two quotes →
+ *      two invoices on one job; dashboard "Scheduled Today" in the brand time zone and
+ *      Recent Jobs order. Screenshots team-manage, reset-password, job-multi-documents.
  *   3. XSS: stores `<img src=x onerror=...>`-style payloads in a customer, job,
  *      quote, communication and pricebook item (via the API), opens every page
  *      that shows them and asserts nothing executed / no payload element exists.
@@ -65,6 +73,7 @@
  * Options (env): UI_ROLES=admin,technician  UI_VIEWPORTS=desktop,mobile
  *                UI_PAGES=index,dispatch    UI_SKIP_AUDIT=1  UI_SKIP_FLOW=1  UI_SKIP_XSS=1  UI_SKIP_FINAL=1
  *                UI_SKIP_INTEGRATIONS=1 (skip the Settings import / export / QuickBooks walk)
+ *                UI_SKIP_ACCOUNTS=1 (skip the accounts walk)  UI_OFFICE_EMAIL (an admin, not super-admin; default office@demo.test)
  *                UI_REPORT_ONLY=1   UI_KEEP_DATA=1 (keep the customer/job/quote/invoice/users the flow created)
  *                UI_SHOT_SUFFIX=-ie  (appended to final screenshot names)
  *                UI_FINAL_ONLY=invoice,invoice-print  (take only these final screenshots)
@@ -130,7 +139,15 @@ const BAD_TOKENS = ['undefined', 'NaN', 'Invalid Date', '[object Object]', 'null
 fs.mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const localISO = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-const TODAY = localISO();
+// "Today" is the BRAND time zone's date (the pages use it too); set from /api/brand at start.
+let TODAY = localISO();
+function brandToday(tz) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+    const g = (t) => parts.find((x) => x.type === t).value;
+    return `${g('year')}-${g('month')}-${g('day')}`;
+  } catch { return localISO(); }
+}
 
 // ── Server management ────────────────────────────────────────────────────────
 let server = null;
@@ -598,7 +615,7 @@ async function flowWalk(browser, ctxInfo, results) {
     await page.click('#invite-form .btn-primary'); await settle(page, 400);
     const res = await visibleText(page, '#invite-result');
     const err = await visibleText(page, '#modal-error');
-    step('7. Invite a team member (Team > + Invite Member)', !err && /outbox|not set up|emailed/i.test(res) && /api\/auth\/google/.test(res), `${err ? 'error: ' + err : res.replace(/\s+/g, ' ').slice(0, 220)}; HTTP errors: ${JSON.stringify(alog.httpErrors.slice(n))}`, { screenshot: await shot(page, 'flow-07-invite') });
+    step('7. Invite a team member (Team > + Invite Member) → accept-invite link', !err && /outbox|not sent|emailed/i.test(res) && /accept-invite\.html#token=/.test(res) && !!(await page.$('#btn-copy-link')), `${err ? 'error: ' + err : res.replace(/\s+/g, ' ').slice(0, 220)}; HTTP errors: ${JSON.stringify(alog.httpErrors.slice(n))}`, { screenshot: await shot(page, 'flow-07-invite') });
     await page.click('#modal [data-close-modal]');
     await page.click('#btn-add'); await sleep(250);
     await page.type('#a-first', 'Niamh'); await page.type('#a-last', `Byrne-${stamp}`); await page.type('#a-email', `niamh.b${stamp}@example.test`);
@@ -908,6 +925,283 @@ async function integrationsWalk(browser, ctxInfo, results) {
   await S.ctx.close();
 }
 
+// ── 2c. Accounts (Part B): passwords, invites, team management, pricebook import,
+//        several quotes / invoices per job, dashboard "today" in the brand time zone ─
+function latestMail(to, needle, after) {
+  if (!fs.existsSync(OUTBOX)) return null;
+  const files = fs.readdirSync(OUTBOX).filter((f) => f.endsWith('.json')).sort().reverse();
+  for (const f of files) {
+    const full = path.join(OUTBOX, f);
+    if (fs.statSync(full).mtimeMs < after) break;
+    try { const m = JSON.parse(fs.readFileSync(full, 'utf8')); if (String(m.to).includes(to) && String(m.text || '').includes(needle)) return m; } catch { /* skip */ }
+  }
+  return null;
+}
+async function accountsWalk(browser, ctxInfo, results) {
+  await startServer();
+  const steps = results.flow;
+  const step = (name, ok, detail, extra = {}) => { const status = ok === true ? 'pass' : (ok === null ? 'skip' : 'fail'); steps.push({ step: name, status, detail, ...extra }); console.log(`  [${status}] ${name} — ${detail}`); };
+  const stamp = Date.now().toString().slice(-5);
+  const { token: at } = await apiLogin(USERS.admin);
+  const probe = await api(at, 'GET', '/api/users');
+  if (!Array.isArray(probe.body) || !probe.body.length || !('mustChangePassword' in probe.body[0])) { step('B0. Accounts API (2d)', null, 'server has no 2d account endpoints'); return; }
+  const memberEmail = `orla${stamp}@example.test`, inviteEmail = `cian${stamp}@example.test`;
+  results.accountsCreated = [memberEmail, inviteEmail];
+  const temp1 = `Temp-pass-${stamp}!`, pw2 = `Orla-own-${stamp}-pw`, pw3 = `Orla-newer-${stamp}-pw`, pw4 = `Orla-reset-${stamp}-pw`;
+  const allLogs = [];
+  const adminPage = async () => {
+    const X = await newPage(browser, 'desktop'); const lg = newLog(); instrument(X.page, lg); allLogs.push(lg);
+    await X.page.goto(BASE + '/api/health'); await X.page.evaluate((tk) => localStorage.setItem('token', tk), at);
+    return X;
+  };
+  const cardOf = (page, email) => page.$$eval('.team-card', (cs, e) => { const c = cs.find((x) => x.innerText.includes(e)); return c ? { text: c.innerText.replace(/\s+/g, ' '), id: c.getAttribute('data-user') } : null; }, email);
+
+  // Member with a temporary password (server default mustChangePassword: true).
+  const created = await api(at, 'POST', '/api/users', { firstName: 'Orla', lastName: `Kinsella-${stamp}`, email: memberEmail, role: 'technician', password: temp1 });
+  const memberId = created.body && created.body.id;
+  const A = await adminPage(); const page = A.page;
+  try {
+    await page.goto(BASE + '/team.html'); await settle(page);
+    const c = await cardOf(page, memberEmail);
+    const self = await cardOf(page, USERS.admin);
+    const selfNoActions = self && !(await page.$(`.team-card[data-user="${self.id}"] [data-deactivate], .team-card[data-user="${self.id}"] select[data-role-for]`));
+    step('B1. Team: new member shows "Must change password" + "Never signed in"; own card has no actions', !!c && /Must change password/.test(c.text) && /Never signed in/.test(c.text) && selfNoActions && created.body.mustChangePassword === true,
+      `card "${c && c.text.slice(0, 140)}"; own card actions hidden ${selfNoActions}`);
+    // Change role technician → dispatcher.
+    await page.select(`select[data-role-for="${memberId}"]`, 'dispatcher'); await settle(page, 400);
+    const after = (await api(at, 'GET', '/api/users')).body.find((u) => u.id === memberId);
+    const opts = await page.$$eval(`select[data-role-for="${memberId}"] option`, (os) => os.map((o) => o.value));
+    step('B2. Change role (technician → dispatcher); super-admin may grant admin', after && after.role === 'dispatcher' && opts.includes('admin'), `role now ${after && after.role}; options ${opts.join(',')}`);
+  } catch (e) { step('B1-2. Team', false, e.message, { screenshot: await shot(page, 'flow-B1-team') }); }
+
+  // Role matrix for a plain admin (office@demo.test by default).
+  try {
+    const officeEmail = process.env.UI_OFFICE_EMAIL || 'office@demo.test';
+    const off = await apiLogin(officeEmail).catch(() => null);
+    if (!off || off.user.role !== 'admin') step('B2b. Role matrix (admin)', null, `${officeEmail} is not an admin login here`);
+    else {
+      const O = await newPage(browser, 'desktop'); instrument(O.page, newLog());
+      await O.page.goto(BASE + '/api/health'); await O.page.evaluate((tk) => localStorage.setItem('token', tk), off.token);
+      await O.page.goto(BASE + '/team.html'); await settle(O.page);
+      const users = (await api(at, 'GET', '/api/users')).body;
+      const supers = users.filter((u) => ['admin', 'super-admin'].includes(u.role) && u.id !== off.user.id);
+      const privActions = await O.page.evaluate((ids) => ids.filter((id) => document.querySelector(`.team-card[data-user="${id}"] [data-deactivate], .team-card[data-user="${id}"] select[data-role-for]`)).length, supers.map((u) => String(u.id)));
+      const opts = await O.page.$$eval(`select[data-role-for="${memberId}"] option`, (os) => os.map((o) => o.value)).catch(() => []);
+      step('B2b. Role matrix: an admin cannot manage admins / super-admins or grant admin', privActions === 0 && opts.length > 0 && !opts.includes('admin') && !opts.includes('super-admin'),
+        `${supers.length} privileged cards, ${privActions} with actions; member role options ${opts.join(',')}`);
+      await O.ctx.close();
+    }
+  } catch (e) { step('B2b. Role matrix', false, e.message); }
+
+  // Forced password change on first sign-in (temporary password).
+  let memberToken = null;
+  try {
+    const M = await newPage(browser, 'mobile'); const mlog = newLog(); instrument(M.page, mlog); allLogs.push(mlog);
+    await M.page.goto(BASE + '/index.html'); await settle(M.page, 200);
+    await M.page.type('#email-input', memberEmail); await M.page.type('#password-input', temp1);
+    await M.page.click('#btn-login'); await settle(M.page, 600);
+    const landed = M.page.url();
+    await M.page.type('#cp-current', temp1); await M.page.type('#cp-new', pw2); await M.page.type('#cp-confirm', pw2);
+    await M.page.click('#btn-cp-save'); await settle(M.page, 600);
+    const end = M.page.url();
+    memberToken = await M.page.evaluate(() => localStorage.getItem('token'));
+    const me = (await api(memberToken, 'GET', '/api/users/me')).body || {};
+    step('B3. Temporary password → forced "Choose a new password" screen → start page', /change-password\.html/.test(landed) && /index\.html|\/$/.test(end) && me.mustChangePassword === false,
+      `after sign-in ${landed.replace(BASE, '')}; after save ${end.replace(BASE, '')}; mustChangePassword ${me.mustChangePassword}`, { screenshot: await shot(M.page, 'flow-B3-forced-change') });
+    // Profile menu → Change password (the response's new token replaces the old one).
+    await M.page.goto(BASE + '/dispatch.html'); await settle(M.page);
+    await M.page.click('#topnav .nav-toggle').catch(() => {}); await sleep(150);
+    await M.page.click('#nav-profile'); await sleep(150);
+    await M.page.click('#nav-change-password'); await sleep(200);
+    await M.page.type('#pw-current', pw2); await M.page.type('#pw-new', pw3); await M.page.type('#pw-confirm', pw3);
+    await M.page.click('#pw-save'); await settle(M.page, 500);
+    const err = await visibleText(M.page, '#pw-error');
+    const tok2 = await M.page.evaluate(() => localStorage.getItem('token'));
+    const oldTok = await api(memberToken, 'GET', '/api/users/me');
+    const newTok = await api(tok2, 'GET', '/api/users/me');
+    const relog = await fetch(`${BASE}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: memberEmail, password: pw3 }) });
+    step('B4. Profile menu → Change password (mobile): new token stored, old session revoked, new password works', !err && tok2 && tok2 !== memberToken && oldTok.status === 401 && newTok.status === 200 && relog.status === 200,
+      `error "${err}"; old token → ${oldTok.status}; new token → ${newTok.status}; sign-in with new password → ${relog.status}`, { screenshot: await shot(M.page, 'flow-B4-change-password') });
+    memberToken = tok2;
+    await M.ctx.close();
+  } catch (e) { step('B3-4. Password change', false, e.message); }
+
+  // Admin: reset password (temporary, shown once), deactivate / reactivate.
+  try {
+    await page.goto(BASE + '/team.html'); await settle(page);
+    await page.click(`[data-reset="${memberId}"]`); await sleep(200);
+    await page.click('#btn-reset-temp'); await settle(page, 400);
+    const secret = await visibleText(page, '#reset-secret');
+    const copyBtn = !!(await page.$('#reset-secret-copy'));
+    const u1 = (await api(at, 'GET', '/api/users')).body.find((u) => u.id === memberId);
+    const tl = await fetch(`${BASE}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: memberEmail, password: secret }) });
+    step('B5. Reset password → temporary password shown once with Copy; user must change it', secret.length >= 10 && copyBtn && u1.mustChangePassword === true && tl.status === 200,
+      `secret length ${secret.length}; copy ${copyBtn}; mustChangePassword ${u1.mustChangePassword}; sign-in with it → ${tl.status}`);
+    await page.click('#reset-modal [data-close-modal]'); await settle(page, 300);
+    const live = (await tl.json()).token;
+    await page.click(`[data-deactivate="${memberId}"]`); await settle(page, 500);
+    const c1 = await cardOf(page, memberEmail);
+    const dead = await api(live, 'GET', '/api/users/me');
+    await page.evaluate(() => document.querySelectorAll('.toast').forEach((t) => t.remove()));
+    await page.screenshot({ path: path.join(FINAL, 'team-manage' + SHOT_SUFFIX + '.png'), fullPage: true });
+    await page.click(`[data-reactivate="${memberId}"]`); await settle(page, 500);
+    const c2 = await cardOf(page, memberEmail);
+    step('B6. Deactivate (session ends at once) and reactivate', /Deactivated/.test(c1.text) && dead.status === 401 && !/Deactivated/.test(c2.text) && !!(await page.$(`[data-deactivate="${memberId}"]`)),
+      `after deactivate "${c1.text.slice(0, 80)}", their token → ${dead.status}; after reactivate "${c2.text.slice(0, 60)}"`);
+  } catch (e) { step('B5-6. Reset / deactivate', false, e.message, { screenshot: await shot(page, 'flow-B5-team') }); }
+
+  // Forgot password (login page) → emailed link (sandbox outbox) → reset page.
+  try {
+    const t0 = Date.now() - 1000;
+    const F = await newPage(browser, 'desktop'); const flog = newLog(); instrument(F.page, flog); allLogs.push(flog);
+    await F.page.goto(BASE + '/index.html'); await settle(F.page, 200);
+    await F.page.click('#btn-forgot'); await sleep(150);
+    await F.page.$eval('#forgot-email', (e) => { e.value = ''; });
+    await F.page.type('#forgot-email', memberEmail);
+    await F.page.click('#btn-forgot-send'); await settle(F.page, 500);
+    const done = await visibleText(F.page, '#forgot-done');
+    let mail = null;
+    for (let i = 0; i < 20 && !mail; i++) { mail = latestMail(memberEmail, 'reset-password.html#token=', t0); if (!mail) await sleep(250); }
+    const link = mail && (String(mail.text).match(/https?:\/\/\S+reset-password\.html#token=[A-Za-z0-9_-]+/) || [])[0];
+    step('B7. Forgot password? → same answer for everyone + reset link emailed (sandbox outbox)', /If an account exists/i.test(done) && !!link, `"${done.slice(0, 90)}"; link ${link ? link.replace(/token=.*/, 'token=…') : 'not found in ' + OUTBOX}`);
+    if (link) {
+      await F.page.goto(link.replace(/^https?:\/\/[^/]+/, BASE)); await settle(F.page, 400);
+      const urlAfter = await F.page.evaluate(() => location.href);
+      const status = await visibleText(F.page, '#rp-status');
+      await F.page.screenshot({ path: path.join(FINAL, 'reset-password' + SHOT_SUFFIX + '.png'), fullPage: true });
+      await F.page.type('#rp-new', pw4); await F.page.type('#rp-confirm', pw4);
+      await F.page.click('#btn-rp-save'); await settle(F.page, 400);
+      const ok = await visibleText(F.page, '#rp-done');
+      const relog = await fetch(`${BASE}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: memberEmail, password: pw4 }) });
+      // The same link again → expired / used (via about:blank: a hash-only change would not reload).
+      await F.page.goto('about:blank');
+      await F.page.goto(link.replace(/^https?:\/\/[^/]+/, BASE)); await settle(F.page, 400);
+      const again = await visibleText(F.page, '#rp-bad');
+      step('B8. Reset page: token read from the fragment and stripped, new password set, link single-use', !/token=/.test(urlAfter) && status.includes(memberEmail) && /changed/i.test(ok) && relog.status === 200 && /expired|used/i.test(again),
+        `URL after load ${urlAfter.replace(BASE, '')}; "${status.slice(0, 70)}"; done "${ok.slice(0, 60)}"; sign-in → ${relog.status}; reuse → "${again.slice(0, 60)}"`);
+    }
+    await F.ctx.close();
+  } catch (e) { step('B7-8. Forgot / reset', false, e.message); }
+
+  // Invite → accept-invite page (set a password) → signed in.
+  try {
+    await page.goto(BASE + '/team.html'); await settle(page);
+    await page.click('#btn-invite'); await sleep(200);
+    await page.type('#f-first', 'Cian'); await page.type('#f-last', `Invitee-${stamp}`); await page.type('#f-email', inviteEmail);
+    await page.click('#btn-send'); await settle(page, 400);
+    const link = (await visibleText(page, '#invite-link')).trim();
+    await page.click('#modal [data-close-modal]');
+    const c0 = await cardOf(page, inviteEmail);
+    const I = await newPage(browser, 'mobile'); const ilog = newLog(); instrument(I.page, ilog); allLogs.push(ilog);
+    await I.page.goto(link.replace(/^https?:\/\/[^/]+/, BASE)); await settle(I.page, 400);
+    const urlAfter = await I.page.evaluate(() => location.href);
+    const email = await visibleText(I.page, '#ai-email');
+    const first = await I.page.$eval('#ai-first', (e) => e.value);
+    await I.page.type('#ai-password', `Cian-own-${stamp}-pw`); await I.page.type('#ai-confirm', `Cian-own-${stamp}-pw`);
+    await I.page.click('#btn-ai-accept'); await settle(I.page, 600);
+    const end = I.page.url();
+    const tok = await I.page.evaluate(() => localStorage.getItem('token'));
+    const me = tok ? (await api(tok, 'GET', '/api/users/me')).body : null;
+    await page.goto(BASE + '/team.html'); await settle(page);
+    const c1 = await cardOf(page, inviteEmail);
+    step('B9. Invite → accept-invite page (token stripped) → password set → signed in; "Invited" badge goes', /Invited/.test(c0 && c0.text) && !/token=/.test(urlAfter) && email === inviteEmail && first === 'Cian' &&
+      /today\.html/.test(end) && me && me.email === inviteEmail && !/Invited/.test(c1 && c1.text),
+      `before "${c0 && c0.text.slice(0, 60)}"; URL ${urlAfter.replace(BASE, '')}; landed ${end.replace(BASE, '')}; me ${me && me.email}; after "${c1 && c1.text.slice(0, 60)}"`, { screenshot: await shot(I.page, 'flow-B9-accepted') });
+    await I.ctx.close();
+  } catch (e) { step('B9. Accept invite', false, e.message); }
+
+  // Pricebook import (dry run → problems → commit).
+  let pbItem = null;
+  try {
+    const csv = path.join(os.tmpdir(), `mbc-ui-walk-pricebook-${stamp}.csv`);
+    fs.writeFileSync(csv, `sku,name,category,price,unit\nWALK-${stamp},Walk test valve ${stamp},Parts,12.50,each\n,Bad price ${stamp},Parts,abc,each\n`);
+    await page.goto(BASE + '/pricebook.html'); await settle(page);
+    await page.click('#btn-import'); await sleep(200);
+    await (await page.$('#pb-file')).uploadFile(csv);
+    await page.click('#btn-pb-dry'); await settle(page, 400);
+    const v = async (k) => page.$eval(`#pb-counts [data-count="${k}"] .value`, (e) => Number(e.textContent)).catch(() => null);
+    const dry = { created: await v('created'), errored: await v('errored') };
+    const errRows = await page.$$eval('#pb-errors tbody tr', (rs) => rs.map((r) => r.innerText.replace(/\s+/g, ' ')));
+    const none = ((await api(at, 'GET', '/api/pricebook')).body.items || []).some((i) => i.sku === `WALK-${stamp}`);
+    const label = await visibleText(page, '#btn-pb-commit');
+    await page.click('#btn-pb-commit'); await settle(page, 500);
+    const banner = await visibleText(page, '#pb-banner');
+    pbItem = ((await api(at, 'GET', '/api/pricebook')).body.items || []).find((i) => i.sku === `WALK-${stamp}`);
+    await page.click('#import-modal [data-close-modal]'); await settle(page, 200);
+    const listed = await page.$$eval('#items-tbody tr', (rs, s) => rs.some((r) => r.innerText.includes(s)), `WALK-${stamp}`);
+    step('B10. Pricebook → Import CSV: dry run (1 new, 1 problem row shown), then import', dry.created === 1 && dry.errored === 1 && errRows.some((r) => /price/i.test(r)) && !none && /Import 1 row/.test(label) && /Imported/.test(banner) && !!pbItem && listed,
+      `dry ${JSON.stringify(dry)}; problems ${errRows.join(' | ').slice(0, 100)}; before commit in DB ${none}; button "${label}"; "${banner.slice(0, 50)}"; listed ${listed}`, { screenshot: await shot(page, 'flow-B10-pricebook-import') });
+    fs.rmSync(csv, { force: true });
+  } catch (e) { step('B10. Pricebook import', false, e.message); }
+  if (pbItem) await api(at, 'DELETE', `/api/pricebook/${pbItem.id}`);
+
+  // Several quotes and invoices on one job.
+  let mjob = null;
+  try {
+    const cust = ((await api(at, 'GET', '/api/customers')).body || [])[0];
+    mjob = (await api(at, 'POST', '/api/jobs', { customerId: cust.id, title: `Two quotes ${stamp}` })).body;
+    await page.goto(`${BASE}/job.html?id=${mjob.id}`); await settle(page);
+    const build = async (desc, price) => {
+      await page.click('#btn-build-quote'); await settle(page, 300);
+      await page.click('#de-add'); await sleep(100);
+      await page.type('[data-line="0"] [data-f="description"]', desc);
+      await page.type('[data-line="0"] [data-f="unitPrice"]', price);
+      await page.click('#de-save'); await settle(page, 500);
+    };
+    await build('Option A: repair', '180');
+    await build('Option B: replace', '640');
+    const cards = await page.$$eval('#quote-card .doc-item', (cs) => cs.map((c) => c.querySelector('.doc-number').textContent));
+    // Convert the OLDER quote (the second card) → invoice; then the newer one too.
+    const older = await page.$$('#quote-card .doc-item');
+    await (await older[1].$('[data-act="convert"]')).click(); await sleep(250);
+    await page.click('#btn-convert-confirm'); await settle(page, 500);
+    await page.click('#btn-convert'); await sleep(250);
+    await page.click('#btn-convert-confirm'); await settle(page, 500);
+    const inv = await page.$$eval('#invoice-card .doc-item', (cs) => cs.map((c) => c.innerText.replace(/\s+/g, ' ')));
+    const convertLeft = await page.$$eval('#quote-card [data-act="convert"]', (bs) => bs.length);
+    const j = (await api(at, 'GET', `/api/jobs/${mjob.id}`)).body;
+    step('B11. Job page: two quotes, each converted → two invoices (no "Convert" left)', cards.length === 2 && inv.length === 2 && convertLeft === 0 && (j.quotes || []).length === 2 && (j.invoices || []).length === 2 &&
+      inv.every((t) => /from Q/.test(t) || /from quote/.test(t)), `quotes ${cards.join(', ')}; invoices ${inv.map((t) => t.slice(0, 40)).join(' | ')}; API ${(j.quotes || []).length}/${(j.invoices || []).length}`,
+      { screenshot: await shot(page, 'flow-B11-multi-docs') });
+    await page.evaluate(() => { window.scrollTo(0, 0); document.querySelectorAll('.toast').forEach((t) => t.remove()); });
+    const el = await page.$('#billing-card');
+    if (el) { await page.evaluate(() => { document.getElementById('topnav').style.position = 'static'; }); await el.screenshot({ path: path.join(FINAL, 'job-multi-documents' + SHOT_SUFFIX + '.png') }); }
+  } catch (e) { step('B11. Several quotes / invoices', false, e.message, { screenshot: await shot(page, 'flow-B11-multi-docs') }); }
+  if (mjob) {
+    const j = (await api(at, 'GET', `/api/jobs/${mjob.id}`)).body || {};
+    for (const i of j.invoices || []) await api(at, 'DELETE', `/api/invoices/${i.id}`);
+    for (const q of j.quotes || []) await api(at, 'DELETE', `/api/quotes/${q.id}`);
+    await api(at, 'DELETE', `/api/jobs/${mjob.id}`);
+  }
+
+  // Dashboard: "Scheduled Today" in the brand time zone; Recent Jobs = ?sort=recent.
+  try {
+    await page.goto(BASE + '/index.html'); await settle(page);
+    const shown = Number(await visibleText(page, '#stat-today'));
+    const jobs = (await api(at, 'GET', '/api/jobs')).body || [];
+    const want = jobs.filter((x) => x.scheduledDate === TODAY && x.status !== 'cancelled').length;
+    const recentApi = ((await api(at, 'GET', '/api/jobs?sort=recent&limit=10')).body || []).map((x) => '#' + x.id);
+    const recentUi = await page.$$eval('#jobs-tbody tr td:first-child', (ts) => ts.map((t) => t.innerText.trim()));
+    step('B12. Dashboard: "Scheduled Today" counts the brand time zone\'s today; Recent Jobs newest first', shown === want && want > 0 && recentUi.join(',') === recentApi.join(','),
+      `today (${(ctxInfo.brand || {}).timezone}) ${TODAY}: shown ${shown}, API ${want}; recent ${recentUi.slice(0, 5).join(',')}`);
+    const slogan = (ctxInfo.brand || {}).companySlogan;
+    if (slogan === '') {
+      const L = await newPage(browser, 'desktop');
+      await L.page.goto(BASE + '/index.html'); await settle(L.page, 200);
+      const vis = await isVisible(L.page, '#login-slogan');
+      step('B13. Empty brand slogan is hidden on the sign-in page', !vis, `slogan visible: ${vis}`);
+      await L.ctx.close();
+    }
+  } catch (e) { step('B12. Dashboard', false, e.message); }
+
+  await A.ctx.close();
+  // Expected refusals from the negative checks (revoked token 401, temp-password 403, reused
+  // reset link 400, sandbox 503) are logged by Chrome as resource errors: not page bugs.
+  const bad = allLogs.flatMap((l) => [...l.pageErrors, ...l.console.filter((m) => !/status of (400|401|403|503)/.test(m))]);
+  step('B14. No JS/console errors during the accounts walk', bad.length === 0, bad.slice(0, 4).join(' | ') || 'none');
+  for (const u of ((await api(at, 'GET', '/api/users')).body || []).filter((x) => results.accountsCreated.includes(x.email))) await api(at, 'DELETE', `/api/users/${u.id}`);
+}
+
 // ── 3. XSS: stored payloads must render as text everywhere ────────────────────
 async function xssCheck(browser, ctxInfo, results) {
   await startServer();
@@ -915,7 +1209,7 @@ async function xssCheck(browser, ctxInfo, results) {
   const P = (n) => `<img src=x onerror="window.__xss=(window.__xss||[]).concat(${n})">`;
   const created = {};
   const cust = await api(t, 'POST', '/api/customers', {
-    firstName: P(1), lastName: `"><svg onload="window.__xss=(window.__xss||[]).concat(2)">`, phone: '620-555-0100',
+    firstName: P(1), lastName: `"><svg onload="window.__xss=(window.__xss||[]).concat(2)">`, phone: ((ctxInfo.brand.locale || {}).country === 'IE' ? '087 555 0100' : '620-555-0100'),
     email: 'xss@example.test', address: P(3), addressLine2: P(4), city: `<b onmouseover=alert(1)>Town</b>`, state: '<i>KS</i>', company: P(18), notes: P(5),
   });
   created.customer = cust.body && cust.body.id;
@@ -1060,11 +1354,15 @@ async function cleanupFlow(results) {
   let browser;
   try {
     await startServer();
+    const b0 = await (await fetch(BASE + '/api/brand')).json().catch(() => ({}));
+    if (b0 && b0.timezone) TODAY = brandToday(b0.timezone);
+    console.log(`Brand time zone ${b0 && b0.timezone}; today there = ${TODAY}`);
     const ctxInfo = await ensureFixtures();
     results.brand = ctxInfo.brand; results.fixtures = ctxInfo.fixtures;
     browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', '--no-first-run'] });
     if (!process.env.UI_SKIP_AUDIT) { console.log('Page audit'); await pageAudit(browser, ctxInfo, results); }
     if (!process.env.UI_SKIP_FLOW) { console.log('Main flow'); await flowWalk(browser, ctxInfo, results); }
+    if (!process.env.UI_SKIP_ACCOUNTS) { console.log('Accounts (passwords, invites, team, pricebook import, several documents per job, dashboard today)'); fs.mkdirSync(FINAL, { recursive: true }); await accountsWalk(browser, ctxInfo, results); }
     if (!process.env.UI_SKIP_INTEGRATIONS) { fs.mkdirSync(FINAL, { recursive: true }); console.log('Integrations (Settings: import, exports, QuickBooks)'); await integrationsWalk(browser, ctxInfo, results); }
     if (!process.env.UI_SKIP_XSS) { console.log('XSS'); await xssCheck(browser, ctxInfo, results); }
     if (!process.env.UI_SKIP_FINAL) { console.log('Final screenshots'); await finalShots(browser, ctxInfo, results); }

@@ -39,18 +39,20 @@
   }
 
   function stats() {
-    const now = new Date();
     $('s-quotes').textContent = quotes.filter((q) => q.status === 'draft' || q.status === 'sent').length;
     $('s-unpaid').textContent = fmt.money(invoices.filter((i) => i.status === 'unpaid' || i.status === 'overdue').reduce((s, i) => s + (fmt.num(i.amount) || 0), 0));
-    $('s-paid').textContent = fmt.money(invoices.filter((i) => { const p = i.status === 'paid' && fmt.parseDate(i.paidAt); return p && p.getMonth() === now.getMonth() && p.getFullYear() === now.getFullYear(); })
+    const month = fmt.todayISO().slice(0, 7); // this month in the brand time zone
+    $('s-paid').textContent = fmt.money(invoices.filter((i) => i.status === 'paid' && i.paidAt && fmt.zonedISO(i.paidAt).slice(0, 7) === month)
       .reduce((s, i) => s + (fmt.num(i.amount) || 0), 0));
   }
 
   async function openNewQuote() {
     if (!jobs.length) { try { jobs = await api.get('/api/jobs'); } catch (e) { ui.toast(e.message, 'error'); return; } }
-    const open = jobs.filter((j) => !j.quote && !j.invoice && j.status !== 'cancelled');
-    $('f-job').innerHTML = open.length ? open.map((j) => '<option value="' + fmt.esc(j.id) + '">#' + fmt.esc(j.id) + ' ' + fmt.esc(j.title || j.type || '') + ' – ' + fmt.esc(fmt.name(j.customer)) + '</option>').join('')
-      : '<option value="">Every open job already has a quote</option>';
+    // A job can have several quotes: offer every job that is not cancelled, jobs without a quote first.
+    const open = jobs.filter((j) => j.status !== 'cancelled').sort((a, b) => (a.quote ? 1 : 0) - (b.quote ? 1 : 0));
+    const has = (j) => { const n = (Array.isArray(j.quotes) ? j.quotes : (j.quote ? [j.quote] : [])).map((q) => q.number).filter(Boolean); return n.length ? ' (has ' + n.slice(0, 2).join(', ') + (n.length > 2 ? '…' : '') + ')' : ''; };
+    $('f-job').innerHTML = open.length ? open.map((j) => '<option value="' + fmt.esc(j.id) + '">#' + fmt.esc(j.id) + ' ' + fmt.esc(j.title || j.type || '') + ' – ' + fmt.esc(fmt.name(j.customer)) + fmt.esc(has(j)) + '</option>').join('')
+      : '<option value="">No open jobs to quote</option>';
     ui.openModal('modal');
   }
 

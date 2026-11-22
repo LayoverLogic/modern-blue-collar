@@ -124,6 +124,30 @@
     };
   }
 
-  MBC.ui = { $, toast, addressForm, openModal, closeModal, formError, errMsg, on, applyRoleVisibility };
+  // Client-side check of a new password (the server has the final say: ≥ 10 chars, ≤ 72 bytes).
+  const PASSWORD_MIN = 10;
+  function passwordProblem(pw, confirm) {
+    if (!pw) return 'Enter a new password.';
+    if (pw.length < PASSWORD_MIN) return 'The new password must be at least ' + PASSWORD_MIN + ' characters.';
+    if (new TextEncoder().encode(pw).length > 72) return 'The new password is too long (at most 72 bytes).';
+    if (confirm !== undefined && pw !== confirm) return 'The two new passwords do not match.';
+    return null;
+  }
+  // Copy text with a button that confirms ("Copied").
+  function copyButton(btn, text) {
+    btn.addEventListener('click', () => {
+      const done = () => { btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = 'Copy'; }, 2000); };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+      else fallbackCopy(text, done);
+    });
+  }
+  function fallbackCopy(text, done) {
+    const ta = document.createElement('textarea'); ta.value = text; ta.setAttribute('readonly', ''); ta.className = 'sr-only';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); done(); } catch (e) { /* select it by hand */ }
+    ta.remove();
+  }
+
+  MBC.ui = { $, toast, addressForm, openModal, closeModal, formError, errMsg, on, applyRoleVisibility, passwordProblem, PASSWORD_MIN, copyButton };
   MBC.page = page;
 })();

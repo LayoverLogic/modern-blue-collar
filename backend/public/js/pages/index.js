@@ -21,6 +21,7 @@
   }
 
   async function showApp(user) {
+    if (user.mustChangePassword) { location.replace('change-password.html'); return; }
     if (user.role === 'technician') { location.replace('today.html'); return; }
     $('login-screen').hidden = true;
     $('app').hidden = false;
@@ -36,13 +37,13 @@
       $('jobs-tbody').innerHTML = '<tr><td colspan="6" class="empty error-text">' + fmt.esc(e.message) + '</td></tr>';
       return;
     }
+    // "Today" and "this month" in the brand time zone, not the browser's.
     const today = fmt.todayISO();
-    const now = new Date();
+    const month = today.slice(0, 7);
     $('stat-open').textContent = jobs.filter((j) => OPEN.includes(j.status)).length;
     $('stat-today').textContent = jobs.filter((j) => j.scheduledDate === today && j.status !== 'cancelled').length;
     $('stat-completed').textContent = jobs.filter((j) => {
-      const d = j.status === 'completed' && fmt.parseDate(j.completedAt);
-      return d && d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+      return j.status === 'completed' && j.completedAt && fmt.zonedISO(j.completedAt).slice(0, 7) === month;
     }).length;
 
     if (auth.isAdmin()) {
@@ -57,7 +58,9 @@
       $('stat-unpaid').textContent = jobs.filter((j) => !j.technicianId && OPEN.includes(j.status)).length;
     }
 
-    const recent = jobs.slice().sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 10);
+    // Newest created first, from the server (GET /api/jobs?sort=recent); older servers: sort here.
+    let recent = await api.get('/api/jobs?sort=recent&limit=10').catch(() => null);
+    if (!Array.isArray(recent)) recent = jobs.slice().sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 10);
     const tb = $('jobs-tbody');
     if (!recent.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">No jobs yet.</td></tr>'; return; }
     tb.innerHTML = recent.map((j) =>
@@ -91,6 +94,30 @@
     } finally { $('btn-login').disabled = false; }
   }
 
+  // Forgot password: POST /api/auth/forgot always answers the same (no account probing).
+  function showForgot(on) {
+    $('login-form').hidden = on;
+    $('forgot-form').hidden = !on;
+    if (on) {
+      $('forgot-email').value = $('email-input').value.trim();
+      $('forgot-done').hidden = true; ui.formError('forgot-error', null);
+      setTimeout(() => $('forgot-email').focus(), 30);
+    } else setTimeout(() => $('email-input').focus(), 30);
+  }
+  async function sendForgot(e) {
+    e.preventDefault();
+    const email = $('forgot-email').value.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { ui.formError('forgot-error', 'Enter a valid email address.'); return; }
+    ui.formError('forgot-error', null);
+    $('btn-forgot-send').disabled = true;
+    try {
+      const r = await api.post('/api/auth/forgot', { email }, { noAuth: true });
+      $('forgot-done').textContent = (r && r.message) || 'If an account exists for that email address, a reset link has been sent to it.';
+      $('forgot-done').hidden = false;
+    } catch (ex) { ui.formError('forgot-error', ex); }
+    finally { $('btn-forgot-send').disabled = false; }
+  }
+
   async function init() {
     document.body.dataset.title = 'Dashboard';
     // Google sign-in returns a one-time ?auth_code= (60 s, single use) that is
@@ -113,10 +140,14 @@
       catch (e) { authError = e.message; }
     }
     $('login-form').addEventListener('submit', doLogin);
+    $('btn-forgot').addEventListener('click', () => showForgot(true));
+    $('btn-forgot-back').addEventListener('click', () => showForgot(false));
+    $('forgot-form').addEventListener('submit', sendForgot);
     let user = null;
     try { user = await auth.me(); } catch (e) { /* show login */ }
     if (user) await showApp(user);
     else showLogin(authError ? 'Sign-in with Google did not complete: ' + authError : '');
+    if (!user && location.hash === '#forgot') { history.replaceState({}, '', 'index.html'); showForgot(true); }
   }
   init();
 })();

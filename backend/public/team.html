@@ -32,14 +32,12 @@
   <form class="modal" id="invite-form" novalidate>
     <h3>Invite Team Member</h3>
     <div class="notice info small" id="invite-explainer">
-      The invite email contains a <strong>Sign in with Google</strong> link. When the person signs in with a Google account for this
-      email address, they are signed in to the account created here with the role you choose.
-      The link does not set a password &mdash; use <em>Add with password</em> for people without Google.
+      The invitation email has a link (valid 7 days, works once) where the person chooses their own password
+      <span id="invite-google-note" hidden> or signs in with Google</span>. If email is not set up, copy the link and send it yourself.
     </div>
-    <div class="notice warn small" id="google-off" hidden>Google sign-in is not set up on this system, so the invite link will not work until it is. Use <em>Add with password</em> instead.</div>
     <div class="form-row">
-      <div class="form-group"><label for="f-first">First name</label><input type="text" id="f-first" /></div>
-      <div class="form-group"><label for="f-last">Last name</label><input type="text" id="f-last" /></div>
+      <div class="form-group"><label for="f-first">First name *</label><input type="text" id="f-first" required /></div>
+      <div class="form-group"><label for="f-last">Last name *</label><input type="text" id="f-last" required /></div>
     </div>
     <div class="form-group"><label for="f-email">Email *</label><input type="email" id="f-email" placeholder="name@example.com" required /></div>
     <div class="form-row">
@@ -69,13 +67,29 @@
       <div class="form-group"><label for="a-phone">Phone</label><input type="tel" id="a-phone" /></div>
     </div>
     <div class="form-group"><label for="a-password">Temporary password * (at least 10 characters)</label><input type="text" id="a-password" autocomplete="new-password" required /></div>
-    <p class="muted small">Share the password with them directly; ask them to change it after first sign-in.</p>
+    <label class="check"><input type="checkbox" id="a-must-change" checked /> They must choose their own password when they first sign in</label>
+    <p class="muted small">Share the temporary password with them directly (not by email).</p>
     <div id="add-error" class="form-error" hidden></div>
     <div class="modal-footer">
       <button class="btn btn-outline" type="button" data-close-modal>Cancel</button>
       <button class="btn btn-primary" type="submit" id="btn-create">Create account</button>
     </div>
   </form>
+</div>
+<div class="modal-overlay" id="reset-modal">
+  <div class="modal" role="dialog" aria-labelledby="reset-title">
+    <h3 id="reset-title">Reset password</h3>
+    <div id="reset-choose">
+      <p class="small">Choose how <strong id="reset-who"></strong> gets back in. Either way their current sessions end.</p>
+      <div class="field-actions">
+        <button class="btn btn-primary" type="button" id="btn-reset-temp">Make a temporary password</button>
+        <button class="btn btn-outline" type="button" id="btn-reset-link">Email a reset link</button>
+      </div>
+    </div>
+    <div id="reset-result" hidden></div>
+    <div id="reset-error" class="form-error" hidden></div>
+    <div class="modal-footer"><button class="btn btn-outline" type="button" data-close-modal>Close</button></div>
+  </div>
 </div>
 <script src="js/api.js"></script>
 <script src="js/nav.js"></script>

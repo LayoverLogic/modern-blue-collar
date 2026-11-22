@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Accept invitation</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="css/app.css" />
+  <script src="js/format.js"></script>
+  <script src="js/brand.js"></script>
+</head>
+<body>
+<main class="auth-screen">
+  <div class="login-card auth-card">
+    <img data-brand-logo class="brand-logo" alt="" hidden />
+    <h1 id="ai-title">Join the team</h1>
+    <p class="slogan" id="ai-status">Checking your invitation&hellip;</p>
+    <form id="ai-form" novalidate hidden>
+      <div class="info-row"><span class="info-label">Email</span><span class="info-value" id="ai-email"></span></div>
+      <div class="info-row"><span class="info-label">Role</span><span class="info-value" id="ai-role"></span></div>
+      <input type="text" class="sr-only" autocomplete="username" tabindex="-1" aria-hidden="true" id="ai-username" />
+      <div class="form-row mt">
+        <div class="form-group"><label for="ai-first">First name</label><input type="text" id="ai-first" autocomplete="given-name" /></div>
+        <div class="form-group"><label for="ai-last">Last name</label><input type="text" id="ai-last" autocomplete="family-name" /></div>
+      </div>
+      <div class="form-group"><label for="ai-password" id="l-ai-password">Choose a password</label><input type="password" id="ai-password" autocomplete="new-password" required /></div>
+      <div class="form-group"><label for="ai-confirm">Password again</label><input type="password" id="ai-confirm" autocomplete="new-password" required /></div>
+      <div id="ai-error" class="notice error" hidden></div>
+      <button class="btn btn-primary btn-block" type="submit" id="btn-ai-accept">Accept and sign in</button>
+      <div id="ai-google" hidden>
+        <div class="divider">or</div>
+        <a class="btn btn-outline btn-block" href="/api/auth/google" id="ai-google-link">Continue with Google</a>
+        <p class="muted small mt-s">Use the Google account for the email address above.</p>
+      </div>
+    </form>
+    <div id="ai-bad" class="notice error" hidden></div>
+    <div class="field-actions" id="ai-links" hidden><a class="btn btn-outline btn-block" href="index.html">Go to sign in</a></div>
+  </div>
+</main>
+<script src="js/api.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/pages/accept-invite.js"></script>
+</body>
+</html>

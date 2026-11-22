@@ -14,7 +14,10 @@
 <main>
   <div class="page-header">
     <h2 id="page-title">Pricebook</h2>
-    <div class="page-actions"><button class="btn btn-primary" type="button" id="btn-new" data-roles="admin" hidden>+ Add Item</button></div>
+    <div class="page-actions">
+      <button class="btn btn-outline" type="button" id="btn-import" data-roles="admin" hidden>Import CSV</button>
+      <button class="btn btn-primary" type="button" id="btn-new" data-roles="admin" hidden>+ Add Item</button>
+    </div>
   </div>
   <div class="filters">
     <input type="search" id="search-input" placeholder="Search items&hellip;" aria-label="Search items" />
@@ -32,6 +35,7 @@
   <form class="modal" id="item-form" novalidate>
     <h3 id="modal-title">Add Pricebook Item</h3>
     <div class="form-group"><label for="f-name">Name *</label><input type="text" id="f-name" required /></div>
+    <div class="form-group"><label for="f-sku">SKU / code</label><input type="text" id="f-sku" maxlength="64" placeholder="Optional, unique" /></div>
     <div class="form-group"><label for="f-category">Category *</label><input type="text" id="f-category" list="category-list" placeholder="e.g. Labor, Parts, Service" required /><datalist id="category-list"></datalist></div>
     <div class="form-group"><label for="f-desc">Description</label><textarea id="f-desc"></textarea></div>
     <div class="form-row">
@@ -45,6 +49,36 @@
       <button class="btn btn-danger" type="button" id="btn-archive" hidden>Archive</button>
       <button class="btn btn-outline" type="button" data-close-modal>Cancel</button>
       <button class="btn btn-primary" type="submit" id="btn-save">Save Item</button>
+    </div>
+  </form>
+</div>
+<div class="modal-overlay" id="import-modal">
+  <form class="modal modal-wide" id="pb-import-form" novalidate>
+    <h3>Import pricebook items (CSV)</h3>
+    <p class="muted small">Columns: <code>sku, name, category, subcategory, description, price, cost, unit, taxRateKey, taxable, active</code>.
+      Rows match existing items by SKU, else by name + category. Blank cells never clear a value. A dry run comes first and changes nothing.</p>
+    <div class="form-group"><label for="pb-file">CSV file *</label><input type="file" id="pb-file" accept=".csv,text/csv" /></div>
+    <div class="field-actions">
+      <button class="btn btn-primary" type="submit" id="btn-pb-dry">Check file (dry run)</button>
+      <button class="btn btn-outline" type="button" id="btn-pb-template">Download template</button>
+    </div>
+    <div id="pb-import-error" class="form-error mt-s" hidden></div>
+    <div id="pb-report" class="mt" hidden>
+      <div class="notice small" id="pb-banner"></div>
+      <div class="count-grid" id="pb-counts"></div>
+      <div id="pb-columns" class="small muted"></div>
+      <div id="pb-errors-wrap" hidden>
+        <h4 class="mt">Rows with problems (not imported)</h4>
+        <div class="table-scroll"><table class="responsive" id="pb-errors"><thead><tr><th>Row</th><th>Item</th><th>Field</th><th>Problem</th></tr></thead><tbody></tbody></table></div>
+      </div>
+      <div id="pb-changes-wrap" hidden>
+        <h4 class="mt">Changes</h4>
+        <div class="table-scroll"><table class="responsive" id="pb-changes"><thead><tr><th>Row</th><th>Item</th><th>Outcome</th><th>What changes</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" type="button" data-close-modal>Close</button>
+      <button class="btn btn-primary" type="button" id="btn-pb-commit" hidden>Import</button>
     </div>
   </form>
 </div>

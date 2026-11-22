@@ -40,7 +40,8 @@
         '<td data-label="Scheduled">' + fmt.esc(fmt.schedule(j)) + '</td></tr>';
     }).join('') : '<tr><td colspan="5" class="empty">No jobs yet.</td></tr>';
 
-    const invoices = jobs.filter((j) => j.invoice).map((j) => Object.assign({ jobTitle: j.title }, j.invoice));
+    // Several invoices per job (invoices[], newest first); older servers send only invoice.
+    const invoices = [].concat(...jobs.map((j) => (Array.isArray(j.invoices) ? j.invoices : (j.invoice ? [j.invoice] : [])).map((i) => Object.assign({ jobTitle: j.title }, i))));
     $('stat-invoiced').textContent = fmt.money(invoices.filter((i) => i.status !== 'void').reduce((s, i) => s + (fmt.num(i.amount) || 0), 0));
     $('invoices-tbody').innerHTML = invoices.length ? invoices.map((i) => {
       const href = 'job.html?id=' + encodeURIComponent(i.jobId);

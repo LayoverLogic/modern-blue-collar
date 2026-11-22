@@ -1,8 +1,8 @@
 /*
  * job.html — one job: status, field actions (Navigate / Call / Text / On My Way),
  * schedule & assign (staff), notes, photos, activity log (GET /api/jobs/:id/activity,
- * paged), quote + invoice with line items (staff read, admin edit / email /
- * convert; js/documents.js), print links (print.html), live "who else is viewing"
+ * paged), quotes + invoices with line items — several per job, newest first (staff
+ * read, admin edit / email / convert / push to QuickBooks; js/documents.js), print links (print.html), live "who else is viewing"
  * presence (socket.io, authenticated with the token).
  */
 (function () {
@@ -14,10 +14,10 @@
   let me = null;
   let socket = null;
   let pricebook = null;
-  let docs = { quote: null, invoice: null }; // full documents (GET /api/quotes|invoices/:id)
+  let docs = { quote: [], invoice: [] };       // full documents (GET /api/quotes|invoices/:id), newest first
   let editing = null;                          // { type, doc } while the editor is open
-  let emailing = null;                         // 'quote' | 'invoice' while the email modal is open
-  const qbo = { status: null, link: null, msg: null, busy: false }; // QuickBooks (admin): GET /api/quickbooks/status + /invoice/:id
+  let emailing = null;                         // { type, d } while the email modal is open
+  const qbo = { status: null, links: {}, msgs: {}, busy: false }; // QuickBooks (admin): GET /api/quickbooks/status + /invoice/:id
 
   function fail(msg) { $('loading-msg').hidden = true; $('job-content').hidden = true; $('error-msg').textContent = msg; $('error-msg').hidden = false; }
 
@@ -60,30 +60,25 @@
     }
   }
 
-  // ── Quote & invoice cards ───────────────────────────────────────────────────
+  // ── Quotes & invoices (several per job; the newest of each is the "primary") ─
+  // The primary (newest) quote / invoice keeps the stable element ids (quote-number,
+  // btn-edit-invoice, btn-convert, …); every card's buttons also carry data-act, and
+  // the card carries data-doc-type / data-doc-id, so any document can be acted on.
   const D = () => MBC.docs;
-  function docCard(type) {
-    const d = docs[type];
+  const findDoc = (type, id) => (docs[type] || []).find((d) => String(d.id) === String(id)) || null;
+  const liveInvoiceFor = (q) => docs.invoice.find((i) => i.quoteId != null && String(i.quoteId) === String(q.id) && i.status !== 'void') || null;
+  function btn(primary, id, act, cls, label) {
+    return '<button class="btn ' + cls + '" type="button"' + (primary && id ? ' id="' + id + '"' : '') + ' data-act="' + act + '">' + label + '</button>';
+  }
+  function docCard(type, d, primary) {
     const admin = auth.isAdmin();
     const L = D().label(type);
-    if (!d) {
-      let html = '<h4>' + L + '</h4><p class="muted small">No ' + L.toLowerCase() + ' yet.</p>';
-      if (admin && !editing) {
-        if (type === 'quote' && !docs.invoice) html += '<div class="field-actions"><button class="btn" type="button" id="btn-build-quote">Build quote</button></div>';
-        if (type === 'invoice') {
-          const q = docs.quote;
-          if (q && q.status !== 'declined') html += '<div class="field-actions"><button class="btn" type="button" id="btn-convert">Convert ' + fmt.esc(q.number || 'quote') + ' to invoice</button>' +
-            '<button class="btn btn-outline" type="button" id="btn-create-invoice">Blank invoice</button></div>';
-          else html += '<div class="field-actions"><button class="btn" type="button" id="btn-create-invoice">Create invoice</button></div>';
-        }
-      }
-      return html;
-    }
-    const cur = d.currency;
-    let head = '<div class="doc-head"><h4><span class="doc-number" id="' + type + '-number">' + fmt.esc(d.number || ('#' + d.id)) + '</span> <span class="muted">' + L + '</span></h4>';
+    const pid = (name) => (primary ? ' id="' + name + '"' : '');
+    let head = '<div class="doc-head"><h4><span class="doc-number"' + pid(type + '-number') + '>' + fmt.esc(d.number || ('#' + d.id)) + '</span> <span class="muted">' + L + '</span></h4>';
     if (admin) {
       const sts = type === 'quote' ? ['draft', 'sent', 'approved', 'declined'] : ['unpaid', 'paid', 'overdue', 'void'];
-      head += '<span><label for="' + type + '-status" class="sr-only">' + L + ' status</label><select id="' + type + '-status" data-status="' + type + '">' +
+      const sid = type + '-status' + (primary ? '' : '-' + d.id);
+      head += '<span><label for="' + sid + '" class="sr-only">' + L + ' ' + fmt.esc(d.number || d.id) + ' status</label><select id="' + sid + '" data-status="' + type + '">' +
         sts.map((st) => '<option value="' + st + '"' + (st === d.status ? ' selected' : '') + '>' + fmt.statusLabel(st) + '</option>').join('') + '</select></span>';
     } else head += fmt.badge(d.status);
     head += '</div>';
@@ -91,75 +86,108 @@
     if (type === 'invoice' && d.dueDate) meta.push('due ' + fmt.date(String(d.dueDate).slice(0, 10)));
     if (d.sentAt) meta.push('emailed ' + fmt.dateTime(d.sentAt));
     if (type === 'invoice' && d.paidAt) meta.push('paid ' + fmt.date(d.paidAt));
+    if (type === 'invoice' && d.quoteId != null) { const q = findDoc('quote', d.quoteId); meta.push('from ' + (q && q.number ? q.number : 'quote #' + d.quoteId)); }
     if (d.reverseCharge) meta.push('reverse charge');
-    let html = head + '<div class="muted small doc-meta">' + fmt.esc(meta.join(' · ')) + (d.locked ? ' <span class="lock-tag" title="Sent or no longer a draft: only the status can change">Locked</span>' : '') + '</div>';
+    let html = '<article class="doc-item' + (primary ? ' primary' : '') + '" data-doc-type="' + type + '" data-doc-id="' + fmt.esc(d.id) + '">' + head +
+      '<div class="muted small doc-meta">' + fmt.esc(meta.join(' · ')) + (d.locked ? ' <span class="lock-tag" title="Sent or no longer a draft: only the status can change">Locked</span>' : '') + '</div>';
     html += D().linesHtml(d, { jobTitle: job.title });
     if (d.notes && (d.lines || []).length) html += '<p class="doc-notes small">' + fmt.esc(d.notes) + '</p>';
     html += '<div class="doc-actions">';
-    html += '<a class="btn btn-outline btn-sm" id="lnk-print-' + type + '" href="print.html?type=' + type + '&id=' + encodeURIComponent(d.id) + '" target="_blank" rel="noopener">Print / PDF</a>';
+    html += '<a class="btn btn-outline btn-sm"' + pid('lnk-print-' + type) + ' href="print.html?type=' + type + '&id=' + encodeURIComponent(d.id) + '" target="_blank" rel="noopener">Print / PDF</a>';
     if (admin) {
-      if (!d.locked && !editing) html += '<button class="btn btn-outline btn-sm" type="button" id="btn-edit-' + type + '">Edit lines</button>';
-      if (d.status !== 'void' && d.status !== 'declined') html += '<button class="btn btn-sm" type="button" id="btn-email-' + type + '">' + (d.sentAt ? 'Email again' : 'Email to customer') + '</button>';
-      if (type === 'invoice' && d.status !== 'paid' && d.status !== 'void') html += '<button class="btn btn-outline btn-sm" type="button" id="btn-mark-paid">Mark paid</button>';
+      if (!d.locked && !editing) html += btn(primary, 'btn-edit-' + type, 'edit', 'btn-outline btn-sm', 'Edit lines');
+      if (d.status !== 'void' && d.status !== 'declined') html += btn(primary, 'btn-email-' + type, 'email', 'btn-sm', d.sentAt ? 'Email again' : 'Email to customer');
+      if (type === 'invoice' && d.status !== 'paid' && d.status !== 'void') html += btn(primary, 'btn-mark-paid', 'paid', 'btn-outline btn-sm', 'Mark paid');
+      if (type === 'quote' && d.status !== 'declined' && !liveInvoiceFor(d) && !editing) html += btn(primary, 'btn-convert', 'convert', 'btn-sm', 'Convert to invoice');
     }
     html += '</div>';
-    if (admin && type === 'invoice') html += qboLine(d);
-    return html;
+    if (admin && type === 'quote') { const inv = liveInvoiceFor(d); if (inv) html += '<div class="muted small mt-s">Invoiced as ' + fmt.esc(inv.number || '#' + inv.id) + '</div>'; }
+    if (admin && type === 'invoice') html += qboLine(d, primary);
+    return html + '</article>';
+  }
+  function section(type) {
+    const list = docs[type];
+    const admin = auth.isAdmin();
+    const L = D().label(type);
+    let html = '<div class="doc-section-head"><h4>' + (type === 'quote' ? 'Quotes' : 'Invoices') + (list.length > 1 ? ' <span class="muted small">(' + list.length + ')</span>' : '') + '</h4>';
+    if (admin && !editing) {
+      html += type === 'quote'
+        ? '<button class="btn btn-sm" type="button" id="btn-build-quote" data-act="new">' + (list.length ? '+ New quote' : 'Build quote') + '</button>'
+        : '<button class="btn btn-outline btn-sm" type="button" id="btn-create-invoice" data-act="new">' + (list.length || docs.quote.length ? '+ Blank invoice' : 'Create invoice') + '</button>';
+    }
+    html += '</div>';
+    if (!list.length) return html + '<p class="muted small">No ' + L.toLowerCase() + ' yet.' + (type === 'invoice' && docs.quote.length && admin ? ' Use “Convert to invoice” on a quote, or start a blank one.' : '') + '</p>';
+    return html + list.map((d, i) => docCard(type, d, i === 0)).join('');
   }
 
   // ── QuickBooks link badge + "Push to QuickBooks" (admin) ────────────────────
-  function qboLine(d) {
+  function qboLine(d, primary) {
     const st = qbo.status;
     if (!st) return '';
-    const link = qbo.link && String(qbo.link.invoiceId) === String(d.id) ? qbo.link : null;
-    let html = '<div class="qbo-line" id="qbo-line">';
+    const link = qbo.links[d.id] || null;
+    const pid = (name) => (primary ? ' id="' + name + '"' : '');
+    let html = '<div class="qbo-line"' + pid('qbo-line') + '>';
     if (link && link.linked) {
-      html += '<span class="badge badge-active" id="qbo-badge">In QuickBooks #' + fmt.esc(link.qboId) + '</span>' +
+      html += '<span class="badge badge-active"' + pid('qbo-badge') + '>In QuickBooks #' + fmt.esc(link.qboId) + '</span>' +
         '<span class="muted small">synced ' + fmt.esc(fmt.dateTime(link.syncedAt)) + (link.balance != null ? ' · balance ' + fmt.esc(fmt.money(link.balance, d.currency)) : '') + '</span>';
-    } else html += '<span class="badge" id="qbo-badge">Not in QuickBooks</span>';
+    } else html += '<span class="badge"' + pid('qbo-badge') + '>Not in QuickBooks</span>';
+    const busy = qbo.busy === d.id;
     if (d.status !== 'void') {
       if (st.enabled && !st.connected) html += '<a class="btn btn-outline btn-sm" href="settings.html#quickbooks">Connect QuickBooks</a>';
-      else html += '<button class="btn btn-outline btn-sm" type="button" id="btn-qbo-push"' + (qbo.busy ? ' disabled' : '') + '>' + (qbo.busy ? 'Pushing…' : (link && link.linked ? 'Update in QuickBooks' : 'Push to QuickBooks')) + '</button>';
+      else html += '<button class="btn btn-outline btn-sm" type="button"' + pid('btn-qbo-push') + ' data-act="qbo-push"' + (busy ? ' disabled' : '') + '>' + (busy ? 'Pushing…' : (link && link.linked ? 'Update in QuickBooks' : 'Push to QuickBooks')) + '</button>';
     }
     const warnings = (link && link.warnings) || [];
-    if (warnings.length) html += '<ul class="notes-list small qbo-msg" id="qbo-warnings">' + warnings.map((w) => '<li>' + fmt.esc(typeof w === 'string' ? w : (w && w.message) || '') + '</li>').join('') + '</ul>';
-    if (qbo.msg) html += '<div class="qbo-msg notice ' + qbo.msg.kind + ' small" id="qbo-msg">' + fmt.esc(qbo.msg.text) + '</div>';
-    else if (!st.enabled) html += '<div class="qbo-msg muted small">' + fmt.esc(api.disabledText({ integration: 'quickbooks', reason: st.disabledReason }).replace(' — no request was sent.', ': pushing sends nothing to Intuit.')) + '</div>';
+    if (warnings.length) html += '<ul class="notes-list small qbo-msg">' + warnings.map((w) => '<li>' + fmt.esc(typeof w === 'string' ? w : (w && w.message) || '') + '</li>').join('') + '</ul>';
+    const msg = qbo.msgs[d.id];
+    if (msg) html += '<div class="qbo-msg notice ' + msg.kind + ' small"' + pid('qbo-msg') + '>' + fmt.esc(msg.text) + '</div>';
+    else if (!st.enabled && primary) html += '<div class="qbo-msg muted small">' + fmt.esc(api.disabledText({ integration: 'quickbooks', reason: st.disabledReason }).replace(' — no request was sent.', ': pushing sends nothing to Intuit.')) + '</div>';
     return html + '</div>';
   }
-  async function loadQboLink() {
+  async function loadQboLinks() {
     if (!auth.isAdmin()) return;
     if (!qbo.status) qbo.status = await api.get('/api/quickbooks/status').catch(() => null);
-    const inv = docs.invoice;
-    qbo.link = inv && qbo.status ? await api.get('/api/quickbooks/invoice/' + encodeURIComponent(inv.id)).catch(() => null) : null;
+    qbo.links = {};
+    if (!qbo.status) return;
+    const got = await Promise.all(docs.invoice.slice(0, 10).map((inv) => api.get('/api/quickbooks/invoice/' + encodeURIComponent(inv.id)).catch(() => null)));
+    docs.invoice.slice(0, 10).forEach((inv, i) => { if (got[i]) qbo.links[inv.id] = got[i]; });
   }
-  async function pushQbo() {
-    const inv = docs.invoice; if (!inv || qbo.busy) return;
-    qbo.busy = true; qbo.msg = null; renderBilling();
+  async function pushQbo(inv) {
+    if (!inv || qbo.busy) return;
+    qbo.busy = inv.id; delete qbo.msgs[inv.id]; renderBilling();
     try {
       const r = await api.post('/api/quickbooks/sync-invoice/' + encodeURIComponent(inv.id), {});
       const verb = r.action === 'created' ? 'added to' : (r.action === 'updated' ? 'updated in' : 'already up to date in');
-      qbo.msg = { kind: (r.warnings || []).length ? 'warn' : 'ok', text: D().ref(inv, 'invoice') + ' ' + verb + ' QuickBooks' + (r.qbo && r.qbo.id ? ' (#' + r.qbo.id + ')' : '') + '.' +
-        ((r.warnings || []).length ? ' Check: ' + r.warnings.map((w) => (typeof w === 'string' ? w : (w && w.message) || '')).join(' ') : '') };
-      await loadQboLink();
+      const ws = (r.warnings || []).map((w) => (typeof w === 'string' ? w : (w && w.message) || ''));
+      qbo.msgs[inv.id] = { kind: ws.length ? 'warn' : 'ok', text: D().ref(inv, 'invoice') + ' ' + verb + ' QuickBooks' + (r.qbo && r.qbo.id ? ' (#' + r.qbo.id + ')' : '') + '.' + (ws.length ? ' Check: ' + ws.join(' ') : '') };
+      await loadQboLinks();
     } catch (e) {
-      qbo.msg = { kind: e.status === 503 ? 'warn' : 'error', text: e.message };
+      qbo.msgs[inv.id] = { kind: e.status === 503 ? 'warn' : 'error', text: e.message };
     } finally { qbo.busy = false; renderBilling(); }
   }
+
   function renderBilling() {
-    $('quote-card').innerHTML = docCard('quote');
-    $('invoice-card').innerHTML = docCard('invoice');
+    $('quote-card').innerHTML = section('quote');
+    $('invoice-card').innerHTML = section('invoice');
     // Reverse-charge wording that is still the placeholder: never printed; admins are told why.
     const t = fmt.tax();
-    const rc = ['quote', 'invoice'].some((k) => docs[k] && docs[k].reverseCharge);
-    const ph = rc && (t.reverseChargeNoteIsPlaceholder || ['quote', 'invoice'].some((k) => docs[k] && docs[k].print && docs[k].print.reverseChargeNoteIsPlaceholder));
+    const all = docs.quote.concat(docs.invoice);
+    const rc = all.some((d) => d.reverseCharge);
+    const ph = rc && (t.reverseChargeNoteIsPlaceholder || all.some((d) => d.print && d.print.reverseChargeNoteIsPlaceholder));
     $('rc-banner').hidden = !(auth.isAdmin() && ph);
     $('rc-banner').textContent = ph ? 'Reverse charge is on, but the reverse-charge wording is still the placeholder text. It is NOT printed or emailed as compliant wording: set BRAND_RCT_NOTE to wording confirmed by an accountant.' : '';
   }
+  // Job responses list every document (quotes[] / invoices[], newest first); older
+  // servers only send quote / invoice.
+  const MAX_DOCS = 20;
   async function loadDocs() {
-    const get = (type, ref) => (ref ? api.get('/api/' + type + 's/' + encodeURIComponent(ref.id)).catch(() => Object.assign({ lines: [] }, ref)) : Promise.resolve(null));
-    [docs.quote, docs.invoice] = await Promise.all([get('quote', job.quote), get('invoice', job.invoice)]);
-    await loadQboLink();
+    const refs = (type) => {
+      const many = job[type + 's'];
+      return Array.isArray(many) ? many.slice(0, MAX_DOCS) : (job[type] ? [job[type]] : []);
+    };
+    const get = (type, ref) => api.get('/api/' + type + 's/' + encodeURIComponent(ref.id)).catch(() => Object.assign({ lines: [] }, ref));
+    const [qs, is] = await Promise.all([Promise.all(refs('quote').map((r) => get('quote', r))), Promise.all(refs('invoice').map((r) => get('invoice', r)))]);
+    docs.quote = qs; docs.invoice = is;
+    await loadQboLinks();
     renderBilling();
   }
 
@@ -170,7 +198,7 @@
       catch (e) { pricebook = []; ui.toast('Could not load the pricebook: ' + e.message, 'error'); }
     }
     editing = { type, doc: doc || null };
-    $('de-title').textContent = doc ? 'Edit ' + D().ref(doc, type) : (type === 'quote' ? 'Build a quote' : 'Create an invoice');
+    $('de-title').textContent = doc ? 'Edit ' + D().ref(doc, type) : (type === 'quote' ? (docs.quote.length ? 'Build another quote' : 'Build a quote') : 'Create an invoice');
     $('doc-editor-wrap').hidden = false;
     renderBilling();
     D().editor($('doc-editor'), {
@@ -196,20 +224,22 @@
     }
     closeEditor();
     await load(); // re-render from the server's totals
-    const d = docs[type] || saved;
+    const d = (saved && findDoc(type, saved.id)) || saved;
     ui.toast(D().ref(d, type) + ' saved: ' + fmt.money(d.amount, d.currency) + '.', 'ok');
   }
 
-  async function setStatus(type, status) {
-    const d = docs[type]; if (!d) return;
+  async function setStatus(type, d, status) {
+    if (!d) return;
     try { await api.patch('/api/' + type + 's/' + d.id, { status, version: d.version }); ui.toast(D().ref(d, type) + ' marked ' + fmt.statusLabel(status).toLowerCase() + '.', 'ok'); }
     catch (e) { ui.toast(e.message, 'error'); }
     await load();
   }
 
   // ── Convert quote → invoice ─────────────────────────────────────────────────
-  function openConvert() {
-    const q = docs.quote; if (!q) return;
+  let converting = null; // the quote being converted
+  function openConvert(q) {
+    if (!q) return;
+    converting = q;
     $('convert-title').textContent = 'Convert ' + D().ref(q, 'quote') + ' to an invoice';
     $('convert-summary').textContent = 'The invoice copies the quote\'s ' + ((q.lines || []).length || 1) + ' line(s) and its total of ' + fmt.money(q.amount, q.currency) + '.' +
       (q.status === 'approved' ? '' : ' The quote is ' + fmt.statusLabel(q.status).toLowerCase() + ', not approved — check before converting.');
@@ -219,7 +249,7 @@
   }
   async function confirmConvert(e) {
     e.preventDefault();
-    const q = docs.quote; if (!q) return;
+    const q = converting; if (!q) return;
     $('btn-convert-confirm').disabled = true;
     try {
       const inv = await api.post('/api/invoices/from-quote/' + encodeURIComponent(q.id), { dueDate: $('convert-due').value || undefined, notes: $('convert-notes').value.trim() || undefined });
@@ -227,15 +257,15 @@
       ui.toast(D().ref(inv, 'invoice') + ' created from ' + (q.number || 'the quote') + ' for ' + fmt.money(inv.amount, inv.currency) + '.', 'ok');
       await load();
     } catch (ex) {
-      if (ex.code === 'DUPLICATE') { ui.closeModal('convert-modal'); ui.toast('This job already has an invoice — it has been loaded.', 'error'); await load(); }
+      if (ex.code === 'DUPLICATE') { ui.closeModal('convert-modal'); ui.toast(q.number ? q.number + ' already has a live invoice — void it first to bill this quote again.' : 'This quote already has a live invoice.', 'error'); await load(); }
       else ui.formError('convert-error', ex.code === 'INVALID_AMOUNT' ? 'The quote total is 0, so there is nothing to invoice.' : ex);
     } finally { $('btn-convert-confirm').disabled = false; }
   }
 
   // ── Email to customer ───────────────────────────────────────────────────────
-  function openEmail(type) {
-    const d = docs[type]; if (!d) return;
-    emailing = type;
+  function openEmail(type, d) {
+    if (!d) return;
+    emailing = { type, d };
     const to = (job.customer && job.customer.email) || '';
     $('email-title').textContent = 'Email ' + D().ref(d, type) + ' to the customer';
     $('email-to').textContent = to || 'No email address on file';
@@ -249,12 +279,12 @@
   }
   async function sendEmail(e) {
     e.preventDefault();
-    const type = emailing; const d = type && docs[type]; if (!d) return;
+    if (!emailing) return;
+    const { type, d } = emailing;
     $('btn-email-send').disabled = true; $('btn-email-send').textContent = 'Sending…';
     try {
       const r = await api.post('/api/' + type + 's/' + encodeURIComponent(d.id) + '/email', { message: $('email-message').value.trim() || undefined });
       ui.closeModal('email-modal');
-      if (r && r.document) { docs[type] = r.document; renderBilling(); }
       ui.toast(D().ref(d, type) + ' emailed to ' + (r && r.to ? r.to : 'the customer') + (r && r.driver === 'outbox' ? ' (sandbox outbox — nothing left this machine).' : '.'), 'ok');
       await load();
     } catch (ex) {
@@ -277,7 +307,7 @@
   }
   const FIELD_NAMES = { title: 'title', description: 'description', type: 'job type', priority: 'priority', customerId: 'customer' };
   function docRefText(kind, to) {
-    const known = docs[kind] && to && String(docs[kind].id) === String(to[kind + 'Id']) ? docs[kind] : null;
+    const known = to && to[kind + 'Id'] != null ? findDoc(kind, to[kind + 'Id']) : null;
     const n = to && (to.number || (known && known.number) || (to[kind + 'Id'] != null ? '#' + to[kind + 'Id'] : ''));
     return D().label(kind) + (n ? ' ' + n : '') + (to && to.amount != null ? ' · ' + fmt.money(to.amount, to.currency || (known && known.currency)) : '');
   }
@@ -351,7 +381,7 @@
   async function patchJob(body, okMsg) {
     try {
       const updated = await api.patch('/api/jobs/' + encodeURIComponent(jobId), Object.assign({ version: job.version }, body));
-      job = Object.assign({}, job, updated, { quote: job.quote, invoice: job.invoice, jobParts: job.jobParts });
+      job = Object.assign({}, job, updated, { quote: job.quote, invoice: job.invoice, quotes: job.quotes, invoices: job.invoices, jobParts: job.jobParts });
       render();
       if (okMsg) ui.toast(okMsg, 'ok');
       return true;
@@ -473,22 +503,32 @@
       $('activity-more').addEventListener('click', () => loadActivity(true));
       if (auth.isAdmin()) {
         $('billing-card').addEventListener('click', (e) => {
-          const id = e.target.id;
-          if (id === 'btn-build-quote') openEditor('quote', null);
-          else if (id === 'btn-create-invoice') openEditor('invoice', null);
-          else if (id === 'btn-edit-quote') openEditor('quote', docs.quote);
-          else if (id === 'btn-edit-invoice') openEditor('invoice', docs.invoice);
-          else if (id === 'btn-convert') openConvert();
-          else if (id === 'btn-email-quote') openEmail('quote');
-          else if (id === 'btn-email-invoice') openEmail('invoice');
-          else if (id === 'btn-mark-paid') setStatus('invoice', 'paid');
-          else if (id === 'btn-qbo-push') pushQbo();
+          const b = e.target.closest('[data-act]');
+          if (!b || b.disabled) return;
+          const card = b.closest('[data-doc-type]');
+          const sec = b.closest('#quote-card') ? 'quote' : 'invoice';
+          const type = card ? card.getAttribute('data-doc-type') : sec;
+          const d = card ? findDoc(type, card.getAttribute('data-doc-id')) : null;
+          switch (b.getAttribute('data-act')) {
+            case 'new': openEditor(sec, null); break;
+            case 'edit': openEditor(type, d); break;
+            case 'email': openEmail(type, d); break;
+            case 'paid': setStatus('invoice', d, 'paid'); break;
+            case 'convert': openConvert(d); break;
+            case 'qbo-push': pushQbo(d); break;
+            default: break;
+          }
         });
-        $('billing-card').addEventListener('change', (e) => { const t = e.target.getAttribute('data-status'); if (t) setStatus(t, e.target.value); });
+        $('billing-card').addEventListener('change', (e) => {
+          const t = e.target.getAttribute('data-status'); if (!t) return;
+          const card = e.target.closest('[data-doc-id]');
+          setStatus(t, card && findDoc(t, card.getAttribute('data-doc-id')), e.target.value);
+        });
         $('convert-form').addEventListener('submit', confirmConvert);
         $('email-form').addEventListener('submit', sendEmail);
-        if (location.hash === '#quote' && !job.quote && !job.invoice) openEditor('quote', null);
-        if (location.hash === '#invoice' && !job.invoice) openEditor('invoice', null);
+        // quote-invoice.html → "New quote" lands here with #quote: open a new quote.
+        if (location.hash === '#quote') { history.replaceState({}, '', location.pathname + location.search); openEditor('quote', null); }
+        if (location.hash === '#invoice') { history.replaceState({}, '', location.pathname + location.search); openEditor('invoice', null); }
       }
     },
   });

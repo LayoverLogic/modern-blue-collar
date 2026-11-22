@@ -7,7 +7,7 @@
  *   MBC.fmt.timeZone()        brand time zone (timestamps are shown in it; calendar dates never shift)
  *   MBC.fmt.parseDate(v)      'YYYY-MM-DD' → LOCAL midnight (never UTC); other values → Date
  *   MBC.fmt.date(v)/time(t)/dateTime(v)/schedule(job)
- *   MBC.fmt.todayISO()        local YYYY-MM-DD
+ *   MBC.fmt.todayISO()        today's YYYY-MM-DD in the BRAND time zone (zonedISO(v): any instant's date there)
  *   MBC.fmt.phone(p)          E.164 → national display style for the brand country (tel:/sms: keep E.164)
  *   MBC.fmt.name(x)           display name: company if set, else firstName + lastName (then name / email)
  *   MBC.fmt.contactName(x)    firstName + lastName only;  contactLine(x): the person when a company is shown
@@ -105,7 +105,20 @@
     const x = parseDate(d); if (!x) return '';
     return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0');
   }
-  function todayISO() { return isoDate(new Date()); }
+  // Calendar date (YYYY-MM-DD) of an instant in the brand time zone (browser zone if unknown).
+  function zonedISO(v) {
+    const d = v instanceof Date ? v : parseDate(v);
+    if (!d) return '';
+    const tz = timeZone();
+    if (!tz) return isoDate(d);
+    try {
+      const parts = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d);
+      const g = (t) => (parts.find((p) => p.type === t) || {}).value;
+      return g('year') + '-' + g('month') + '-' + g('day');
+    } catch (e) { return isoDate(d); }
+  }
+  // Today in the brand time zone: an Irish office viewed from a US laptop still sees Irish "today".
+  function todayISO() { return zonedISO(new Date()); }
   function addDays(iso, n) { const d = parseDate(iso) || new Date(); d.setDate(d.getDate() + n); return isoDate(d); }
 
   // A 'YYYY-MM-DD' value is a calendar date (never shifted); a timestamp is
@@ -227,6 +240,6 @@
   MBC.fmt = {
     DASH, esc, text, num, money, parseDate, isoDate, todayISO, addDays, date, dateLong, dateTime, time,
     schedule, name, address, addressLabels, statusLabel, badge, phoneDigits, phone, locale, currency,
-    timeZone, tax, percent, dateShort, country, contactName, contactLine, bytes,
+    timeZone, tax, percent, dateShort, country, contactName, contactLine, bytes, zonedISO,
   };
 })();

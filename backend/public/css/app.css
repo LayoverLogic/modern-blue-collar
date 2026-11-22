@@ -151,7 +151,7 @@ tfoot td { font-weight: 700; border-top: 2px solid var(--line); }
 .toast.ok { background: #14532d; }
 
 /* ── Login ───────────────────────────────────────────────────────────────── */
-#login-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--color-nav-bg); padding: 1rem; }
+#login-screen, .auth-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--color-nav-bg); padding: 1rem; }
 .login-card { background: #fff; border-radius: 12px; padding: 2.25rem 2rem; width: 100%; max-width: 380px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); }
 .login-card .brand-logo { display: block; max-height: 56px; max-width: 200px; margin-bottom: 0.75rem; }
 .login-card h1 { font-size: 1.45rem; margin-bottom: 0.25rem; }
@@ -246,7 +246,10 @@ pre.quote-notes { white-space: pre-wrap; font: inherit; font-size: 0.85rem; colo
 
 /* ── Documents: quote / invoice cards and the line editor (js/documents.js) ─ */
 .doc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
-.doc-card { border: 1px solid var(--line); border-radius: 8px; padding: 0.9rem 1rem; min-width: 0; }
+.doc-card { min-width: 0; }
+.doc-section-head { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+.doc-item { border: 1px solid var(--line); border-radius: 8px; padding: 0.9rem 1rem; margin-bottom: 0.75rem; min-width: 0; }
+.doc-item.primary { border-color: #cbd5e1; }
 .doc-card h4 { font-size: 1rem; margin-bottom: 0.25rem; }
 .doc-head { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .doc-head select { width: auto; }
@@ -284,6 +287,27 @@ label.check { display: flex; gap: 0.5rem; align-items: center; font-weight: 500;
 .act-text { font-size: 0.9rem; overflow-wrap: anywhere; }
 .act-note { color: #334155; white-space: pre-wrap; overflow-wrap: anywhere; }
 
+/* ── Profile menu (nav.js) ──────────────────────────────────────────────── */
+.profile { position: relative; }
+.nav-profile { background: none; border: 1px solid transparent; color: var(--color-nav-text); font: inherit; font-size: 0.85rem; cursor: pointer; border-radius: 6px; padding: 0.35rem 0.6rem; min-height: 36px; }
+.nav-profile:hover, .nav-profile[aria-expanded="true"] { border-color: rgba(255,255,255,0.35); }
+.nav-profile .nav-user { opacity: 0.9; }
+.profile-menu { position: absolute; right: 0; top: calc(100% + 6px); background: #fff; color: var(--text); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); min-width: 220px; padding: 0.4rem; z-index: 150; display: flex; flex-direction: column; }
+.profile-menu[hidden] { display: none; }
+.profile-who { padding: 0.5rem 0.75rem; color: var(--muted); border-bottom: 1px solid var(--line); margin-bottom: 0.25rem; overflow-wrap: anywhere; }
+.profile-menu button { background: none; border: none; text-align: left; font: inherit; font-size: 0.9rem; padding: 0.55rem 0.75rem; border-radius: 6px; cursor: pointer; color: var(--text); min-height: 40px; }
+.profile-menu button:hover, .profile-menu button:focus-visible { background: #f1f5f9; }
+.profile-menu .btn-logout { border: none; color: var(--danger); }
+.badge-invited { background: #e0e7ff; color: #3730a3; }
+.badge-mustchange { background: #fef3c7; color: #92400e; }
+.team-card .actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+.team-card .actions select { width: auto; flex: 1 1 140px; min-height: 32px; padding: 0.25rem 0.5rem; font-size: 0.85rem; }
+.team-card.inactive { opacity: 0.75; }
+.secret { font-family: ui-monospace, monospace; font-size: 1rem; background: #f8fafc; border: 1px dashed #94a3b8; border-radius: 6px; padding: 0.6rem; margin: 0.5rem 0; word-break: break-all; }
+.auth-card { max-width: 420px; }
+.auth-card .form-group input { margin-bottom: 0; }
+.link-button { background: none; border: none; color: var(--color-primary-dark); text-decoration: underline; cursor: pointer; font: inherit; font-size: 0.88rem; padding: 0.4rem 0; min-height: 36px; }
+
 /* ── Mobile ──────────────────────────────────────────────────────────────── */
 @media (max-width: 900px) {
   :root { --tap: 44px; }
@@ -296,6 +320,12 @@ label.check { display: flex; gap: 0.5rem; align-items: center; font-weight: 500;
   #topnav.open .nav-right { display: flex; justify-content: space-between; padding: 0.5rem 0 0.75rem; border-top: 1px solid rgba(255,255,255,0.15); }
   .nav-links a { min-height: 44px; display: flex; align-items: center; font-size: 1rem; }
   .btn-logout { min-height: 44px; padding: 0.4rem 1rem; }
+  .profile { width: 100%; }
+  .nav-profile { min-height: 44px; width: 100%; text-align: left; border-color: rgba(255,255,255,0.25); }
+  .profile-menu { position: static; margin-top: 0.4rem; box-shadow: none; min-width: 0; }
+  .profile-menu button { min-height: 44px; }
+  .team-card .actions select { min-height: 44px; }
+  .link-button { min-height: 44px; }
   main { margin-top: 1rem; padding: 0 0.85rem; }
   .grid-2 { grid-template-columns: 1fr; gap: 0; }
   .form-row, .form-row.three { grid-template-columns: 1fr; gap: 0; }
@@ -403,3 +433,5 @@ fieldset.checks label.check { margin: 0.3rem 0; }
 }
 details.more summary::before { content: '\25B8'; margin-right: 0.4rem; }
 details.more[open] summary::before { content: '\25BE'; }
+main.auth-screen { max-width: none; margin: 0; }
+.modal.modal-wide { max-width: 860px; }

@@ -22,10 +22,21 @@
     <label for="password-input" class="sr-only">Password</label>
     <input type="password" id="password-input" placeholder="Password" autocomplete="current-password" required />
     <button class="btn btn-primary btn-block" type="submit" id="btn-login">Sign In</button>
+    <div class="field-actions"><button class="link-button" type="button" id="btn-forgot">Forgot password?</button></div>
     <div id="google-block" hidden>
       <div class="divider">or</div>
       <a class="btn btn-outline btn-block" href="/api/auth/google" id="btn-google">Continue with Google</a>
     </div>
+  </form>
+  <form class="login-card" id="forgot-form" novalidate hidden>
+    <h1>Reset your password</h1>
+    <p class="slogan">Enter the email address you sign in with. If it has an account, we will email it a link to choose a new password (valid 30 minutes).</p>
+    <label for="forgot-email" class="sr-only">Email address</label>
+    <input type="email" id="forgot-email" placeholder="Email address" autocomplete="username" required />
+    <div id="forgot-error" class="notice error" hidden></div>
+    <div id="forgot-done" class="notice ok" hidden></div>
+    <button class="btn btn-primary btn-block" type="submit" id="btn-forgot-send">Email me a reset link</button>
+    <div class="field-actions"><button class="link-button" type="button" id="btn-forgot-back">Back to sign in</button></div>
   </form>
 </div>
 <div id="app" hidden>

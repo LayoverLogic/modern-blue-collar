@@ -72,8 +72,11 @@
   // Put the brand into any element marked with data-brand="companyName" etc.
   function fillText(b) {
     document.querySelectorAll('[data-brand]').forEach((el) => {
-      const v = b[el.getAttribute('data-brand')];
-      if (v) el.textContent = v;
+      const k = el.getAttribute('data-brand');
+      const v = b[k];
+      if (v) { el.textContent = v; el.hidden = false; }
+      // An empty slogan (BRAND_COMPANY_SLOGAN=) hides the line rather than showing a default.
+      else if (k === 'companySlogan' && v === '') el.hidden = true;
     });
     document.querySelectorAll('[data-tech-label]').forEach((el) => {
       const t = b.technicianLabel || 'Technician';

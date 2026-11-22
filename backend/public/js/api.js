@@ -12,7 +12,10 @@
  * never raw server / Prisma output.  401 → token cleared, back to the login page.
  * 409 → "Someone else changed this … reload".
  *
- * MBC.auth.requireUser({ roles }) loads the signed-in user (or redirects to login)
+ * 403 PASSWORD_CHANGE_REQUIRED (temporary password) → change-password.html.
+ *
+ * MBC.auth.requireUser({ roles }) loads the signed-in user (or redirects to login; a user
+ * who must change a temporary password goes to change-password.html)
  * and, if the user's role is not allowed on the page, shows a no-access message
  * instead of calling APIs the role cannot use.
  */
@@ -78,7 +81,18 @@
         if (label && safe && data.field && safe.indexOf(data.field) === 0) return label + safe.slice(data.field.length) + '.';
         return label ? label + ' is not valid.' : (safe || 'Some details are not valid. Please check the form.');
       }
-      case 'WEAK_PASSWORD': return 'The password must be at least 10 characters.';
+      case 'WEAK_PASSWORD': return 'The password must be at least ' + (Number(data.minLength) || 10) + ' characters (and at most 72 bytes).';
+      case 'INVALID_PASSWORD': return 'That password cannot be used. Choose at least ' + (Number(data.minLength) || 10) + ' characters (at most 72 bytes).';
+      case 'INVALID_CURRENT_PASSWORD': return 'Your current password is not right.';
+      case 'PASSWORD_UNCHANGED': return 'The new password must be different from the current one.';
+      case 'PASSWORD_CHANGE_REQUIRED': return 'Choose a new password before you continue.';
+      case 'RATE_LIMITED': return 'Too many attempts. Wait a few minutes and try again.';
+      case 'INVALID_RESET_TOKEN': return 'This password reset link has expired or was already used. Ask for a new one.';
+      case 'INVALID_INVITE': return 'This invitation link has expired, was already used, or was replaced by a newer one. Ask your administrator for a new invite.';
+      case 'USER_INACTIVE': return 'This account is deactivated. Reactivate it first.';
+      case 'INVALID_ROLE': return 'That role is not one of the allowed roles.';
+      case 'LAST_SUPER_ADMIN': return 'This is the last active super-admin, so it cannot be deactivated, demoted or deleted.';
+      case 'EMAIL_FAILED': return 'The email could not be sent (the mail server refused it), so nothing was marked as sent. Try again later.';
       case 'DUPLICATE': return 'A record with these details already exists (for example, the same email address).';
       case 'IN_USE_OR_MISSING_REFERENCE': return 'This is still linked to other records, so it cannot be changed or removed.';
       case 'NOT_FOUND': return 'That record could not be found. It may have been deleted.';
@@ -151,6 +165,10 @@
     if (!onLoginPage()) location.href = 'index.html';
   }
 
+  // Temporary password: everything except the change-password screen answers 403 until it is changed.
+  function onChangePasswordPage() { return /change-password\.html$/.test(location.pathname); }
+  function toChangePassword() { if (!onChangePasswordPage()) location.href = 'change-password.html'; }
+
   async function request(method, url, body, opts) {
     opts = opts || {};
     const headers = Object.assign({}, opts.headers || {});
@@ -168,6 +186,7 @@
     if (ct.includes('application/json')) { try { data = await res.json(); } catch (e) { data = null; } }
     if (!res.ok) {
       if (res.status === 401 && !opts.noAuth && !opts.no401Redirect) toLogin();
+      if (res.status === 403 && data && data.code === 'PASSWORD_CHANGE_REQUIRED' && !opts.noAuth) toChangePassword();
       throw new ApiError(res.status, friendly(res.status, data && (data.error || data.message), data && data.code, data), data && data.code, data);
     }
     return data;
@@ -250,6 +269,7 @@
       const u = await this.me();
       if (!u) { toLogin(); return null; }
       const list = Array.isArray(allowed) ? allowed : ROLES[allowed || 'all'];
+      if (u.mustChangePassword && !onChangePasswordPage()) { toChangePassword(); return null; }
       if (list && !list.includes(u.role)) {
         const main = document.querySelector('main');
         if (main) {
@@ -260,6 +280,16 @@
       }
       return u;
     },
-    logout() { setToken(null); location.href = 'index.html'; },
+    // Ends the session on the server too (cookie / audit), then back to sign-in.
+    logout() {
+      const t = token();
+      setToken(null);
+      const go = () => { location.href = 'index.html'; };
+      if (!t) { go(); return; }
+      fetch('/api/auth/logout', { method: 'POST', headers: { Authorization: 'Bearer ' + t } }).catch(() => {}).then(go, go);
+    },
+    // Where a signed-in person starts.
+    home(u) { return u && u.role === 'technician' ? 'today.html' : 'index.html'; },
+    toChangePassword,
   };
 })();
