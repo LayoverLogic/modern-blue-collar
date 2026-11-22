@@ -1,0 +1,3 @@
+source_id,company,first_name,last_name,email,phone,phone_alt,line1,line2,city,region,postcode,country,type,tax_number,notes,created_at,lifetime_value,service_address,archived
+"C-1001","","Maeve","Synthetic","maeve@example.com","(620) 555-0142","","12 Example Ave","","Hutchinson","KS","67501","US","residential","","Gate code 1234","2024-03-15","1250.00","","false"
+"C-1002","Example Builders LLC","Tom","Placeholder","office@example.org","620-555-0199","","400 Sample St","Suite 2","Wichita","KS","67202","US","commercial","","","2023-11-02","8400.00","410 Sample St, Wichita, KS 67202","false"

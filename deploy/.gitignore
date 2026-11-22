@@ -1,0 +1,3 @@
+# Real per-client settings hold SMTP / bucket credentials — never commit them.
+clients/*.env
+!clients/*.env.example

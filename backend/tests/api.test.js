@@ -1,10 +1,53 @@
 /**
  * tests/api.test.js
- * 83-test API test suite covering auth, guards, CRUD, and admin roles.
+ * 68-test Prisma-level suite: auth helpers, CRUD, optimistic-locking counters,
+ * price book, role guards, deletes. (HTTP-level suites: tests/redteam.test.js,
+ * tests/backend.test.js.)
  *
- * Usage: npm test
+ * It writes to the database, so it only runs against TEST_DATABASE_URL, and
+ * refuses to run when that is the app's DATABASE_URL (from the environment or
+ * backend/.env / .env.sandbox) or when the database name does not contain
+ * "test" (override: ALLOW_DESTRUCTIVE_TESTS=1).
+ *
+ * Isolation: every row it creates is tagged — users and customers get an email
+ * on the reserved domain api-test.example with this run's id, pricebook items a
+ * description "api-test:<run>" — and cleanup() deletes exactly those rows (and
+ * the jobs, quotes, invoices, parts, photos, activity and communications that
+ * hang off them) when the run ends, pass or fail. Rows of other suites are never
+ * touched, so suites can share one TEST_DATABASE_URL in any order. Leftovers
+ * of an earlier run that was killed (tagged, older than an hour) are swept at
+ * start, as are the legacy admin@test.com / tech@test.com users of the old
+ * version of this suite.
+ *
+ * Usage:
+ *   TEST_DATABASE_URL=postgresql://mbc:mbc_sandbox@localhost:5432/mbc_backend_test?schema=public npm test
  */
-const { PrismaClient } = require('@prisma/client');
+
+// ── PLAT-6: pick + guard the database BEFORE anything loads Prisma ──────────
+(function guardDatabase() {
+  const path = require('path');
+  const { spawnSync } = require('child_process');
+  const TEST_DB = process.env.TEST_DATABASE_URL;
+  const refuse = (msg) => { console.error(`[api.test] REFUSING TO RUN: ${msg}`); process.exit(1); };
+  if (!TEST_DB) refuse('TEST_DATABASE_URL is not set. This suite wipes tables — point it at a throwaway database, e.g. .../mbc_test.');
+
+  require('../helpers/loadEnv'); // app config (env vars, then .env / .env.sandbox)
+  const { parseDatabaseUrl } = require('../helpers/databaseUrl');
+  const id = (u) => { const { url, database } = parseDatabaseUrl(u); return `${url.hostname}:${url.port || 5432}/${database}`; };
+  const testId = id(TEST_DB);
+  if (process.env.DATABASE_URL && id(process.env.DATABASE_URL) === testId) {
+    refuse(`TEST_DATABASE_URL (${testId}) is the app database (DATABASE_URL).`);
+  }
+  if (!/test/i.test(testId.split('/').pop()) && process.env.ALLOW_DESTRUCTIVE_TESTS !== '1') {
+    refuse(`database "${testId.split('/').pop()}" does not look like a test database (name must contain "test"; override with ALLOW_DESTRUCTIVE_TESTS=1).`);
+  }
+  process.env.DATABASE_URL = TEST_DB;
+  const r = spawnSync(process.execPath, [path.join(__dirname, '..', 'scripts', 'migrate-deploy.mjs'), '--quiet'], {
+    env: { ...process.env, ENV_FILE: '/dev/null' }, encoding: 'utf8',
+  });
+  if (r.status !== 0) refuse(`could not migrate the test database:\n${r.stdout}\n${r.stderr}`);
+}());
+
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { requireRole } = require('../routes/auth');
@@ -28,12 +71,61 @@ function runMiddleware(mw, user) {
   });
 }
 
-const prisma = new PrismaClient();
+const prisma = require('../helpers/prisma');
 const JWT_SECRET = process.env.JWT_SECRET || 'test-secret-key';
 
 // Helper to generate tokens
 function makeToken(user) {
   return jwt.sign(user, JWT_SECRET, { expiresIn: '1h' });
+}
+
+// ── Run tagging (see header) ────────────────────────────────────────────────
+const TAG_DOMAIN = 'api-test.example';
+const RUN = `a${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+const tagEmail = (local) => `${local}.${RUN}@${TAG_DOMAIN}`;
+const PB_TAG = `api-test:${RUN}`;
+const LEGACY_EMAILS = ['admin@test.com', 'tech@test.com'];
+
+/**
+ * Delete rows this suite created. Without `olderThan`: this run's rows.
+ * With `olderThan` (a Date): any run's tagged rows created before it (stale
+ * leftovers of a killed run) plus the old suite's legacy users.
+ */
+async function cleanup({ olderThan } = {}) {
+  const custWhere = olderThan
+    ? { email: { endsWith: `@${TAG_DOMAIN}` }, createdAt: { lt: olderThan } }
+    : { email: { endsWith: `.${RUN}@${TAG_DOMAIN}` } };
+  const userWhere = olderThan
+    ? { OR: [{ email: { endsWith: `@${TAG_DOMAIN}` }, createdAt: { lt: olderThan } }, { email: { in: LEGACY_EMAILS } }] }
+    : { email: { endsWith: `.${RUN}@${TAG_DOMAIN}` } };
+  const pbWhere = olderThan
+    ? { description: { startsWith: 'api-test:' }, createdAt: { lt: olderThan } }
+    : { description: PB_TAG };
+
+  const custIds = (await prisma.customer.findMany({ where: custWhere, select: { id: true } })).map((c) => c.id);
+  const userIds = (await prisma.user.findMany({ where: userWhere, select: { id: true } })).map((u) => u.id);
+  const jobIds = (await prisma.job.findMany({
+    where: { OR: [{ customerId: { in: custIds } }, { technicianId: { in: userIds } }] }, select: { id: true },
+  })).map((j) => j.id);
+  // Jobs of OTHER suites assigned to a stale/legacy user of ours: unassign, never delete.
+  const foreign = jobIds.length
+    ? (await prisma.job.findMany({ where: { id: { in: jobIds }, customerId: { notIn: custIds } }, select: { id: true } })).map((j) => j.id)
+    : [];
+  if (foreign.length) await prisma.job.updateMany({ where: { id: { in: foreign } }, data: { technicianId: null } });
+  const ownJobs = jobIds.filter((id) => !foreign.includes(id));
+
+  await prisma.$transaction(async (tx) => {
+    await tx.jobActivity.deleteMany({ where: { jobRef: { in: ownJobs } } });
+    await tx.jobPhoto.deleteMany({ where: { jobId: { in: ownJobs } } });
+    await tx.jobPart.deleteMany({ where: { jobId: { in: ownJobs } } });
+    await tx.quote.deleteMany({ where: { jobId: { in: ownJobs } } });
+    await tx.invoice.deleteMany({ where: { jobId: { in: ownJobs } } });
+    await tx.job.deleteMany({ where: { id: { in: ownJobs } } });
+    await tx.communication.deleteMany({ where: { customerId: { in: custIds } } });
+    await tx.customer.deleteMany({ where: { id: { in: custIds } } });
+    await tx.priceBookItem.deleteMany({ where: pbWhere });
+    await tx.user.deleteMany({ where: { id: { in: userIds }, apiKeys: { none: {} } } });
+  });
 }
 
 // Test data
@@ -67,30 +159,25 @@ function assertEqual(a, b, msg) {
 async function setup() {
   console.log('\nSetting up test data...');
 
-  // Clean up test data
-  await prisma.communication.deleteMany({});
-  await prisma.jobPart.deleteMany({});
-  await prisma.quote.deleteMany({});
-  await prisma.invoice.deleteMany({});
-  await prisma.job.deleteMany({});
-  await prisma.customer.deleteMany({});
-  await prisma.user.deleteMany({ where: { email: { contains: '@test.com' } } });
+  // Sweep tagged leftovers of a killed earlier run (never this suite's live
+  // rows of a concurrent run, never other suites' rows).
+  await cleanup({ olderThan: new Date(Date.now() - 3600000) });
 
   const hash = await bcrypt.hash('testpass123', 10);
 
   adminUser = await prisma.user.create({
-    data: { email: 'admin@test.com', password: hash, firstName: 'Admin', lastName: 'User', role: 'super-admin' },
+    data: { email: tagEmail('admin'), password: hash, firstName: 'Admin', lastName: 'User', role: 'super-admin' },
   });
 
   techUser = await prisma.user.create({
-    data: { email: 'tech@test.com', password: hash, firstName: 'Tech', lastName: 'User', role: 'technician' },
+    data: { email: tagEmail('tech'), password: hash, firstName: 'Tech', lastName: 'User', role: 'technician' },
   });
 
   adminToken = makeToken({ id: adminUser.id, email: adminUser.email, role: adminUser.role, firstName: adminUser.firstName, lastName: adminUser.lastName });
   techToken = makeToken({ id: techUser.id, email: techUser.email, role: techUser.role, firstName: techUser.firstName, lastName: techUser.lastName });
 
   testCustomer = await prisma.customer.create({
-    data: { firstName: 'Test', lastName: 'Customer', phone: '555-0001', address: '123 Test St', city: 'Testville', state: 'KS', zip: '66001' },
+    data: { firstName: 'Test', lastName: 'Customer', email: tagEmail('customer'), phone: '555-0001', address: '123 Test St', city: 'Testville', state: 'KS', zip: '66001' },
   });
 }
 
@@ -100,7 +187,7 @@ async function authTests() {
 
   await test('Valid JWT decodes correctly', async () => {
     const decoded = jwt.verify(adminToken, JWT_SECRET);
-    assertEqual(decoded.email, 'admin@test.com');
+    assertEqual(decoded.email, adminUser.email);
     assertEqual(decoded.role, 'super-admin');
   });
 
@@ -148,7 +235,7 @@ async function customerTests() {
 
   await test('Create customer', async () => {
     const c = await prisma.customer.create({
-      data: { firstName: 'Jane', lastName: 'Doe', phone: '555-0002', address: '456 Test Ave', city: 'Testville', state: 'KS', zip: '66002' },
+      data: { firstName: 'Jane', lastName: 'Doe', email: tagEmail('jane'), phone: '555-0002', address: '456 Test Ave', city: 'Testville', state: 'KS', zip: '66002' },
     });
     assert(c.id, 'Should have ID');
     assertEqual(c.firstName, 'Jane');
@@ -430,7 +517,7 @@ async function optimisticLockingTests() {
 
   await test('Version starts at 1 for new records', async () => {
     const c = await prisma.customer.create({
-      data: { firstName: 'Version', lastName: 'Test', phone: '555-9999', address: '789 V St', city: 'Test', state: 'KS', zip: '66003' },
+      data: { firstName: 'Version', lastName: 'Test', email: tagEmail('version'), phone: '555-9999', address: '789 V St', city: 'Test', state: 'KS', zip: '66003' },
     });
     assertEqual(c.version, 1);
     await prisma.customer.delete({ where: { id: c.id } });
@@ -438,7 +525,7 @@ async function optimisticLockingTests() {
 
   await test('Version increments on update', async () => {
     const c = await prisma.customer.create({
-      data: { firstName: 'Inc', lastName: 'Test', phone: '555-9998', address: '100 I St', city: 'Test', state: 'KS', zip: '66004' },
+      data: { firstName: 'Inc', lastName: 'Test', email: tagEmail('inc'), phone: '555-9998', address: '100 I St', city: 'Test', state: 'KS', zip: '66004' },
     });
     const updated = await prisma.customer.update({
       where: { id: c.id },
@@ -470,9 +557,10 @@ async function optimisticLockingTests() {
 async function pricebookTests() {
   console.log('\n--- PriceBook Tests ---');
 
+  let pbItem;
   await test('Create pricebook item', async () => {
-    const item = await prisma.priceBookItem.create({
-      data: { industry: 'Electrical', category: 'Test', name: 'Test Item', price: 100, cost: 50, unit: 'ea', taxable: true },
+    const item = pbItem = await prisma.priceBookItem.create({
+      data: { industry: 'Electrical', category: 'Test', name: 'Test Item', description: PB_TAG, price: 100, cost: 50, unit: 'ea', taxable: true },
     });
     assert(item.id);
     assertEqual(item.price, 100);
@@ -494,7 +582,7 @@ async function pricebookTests() {
   });
 
   await test('Soft-delete pricebook item', async () => {
-    const item = await prisma.priceBookItem.findFirst({ where: { name: 'Test Item' } });
+    const item = await prisma.priceBookItem.findFirst({ where: { id: pbItem.id } });
     const updated = await prisma.priceBookItem.update({ where: { id: item.id }, data: { active: false } });
     assertEqual(updated.active, false);
   });
@@ -511,12 +599,12 @@ async function roleTests() {
   console.log('\n--- Role Guard Tests ---');
 
   await test('Super-admin role exists', async () => {
-    const u = await prisma.user.findUnique({ where: { email: 'admin@test.com' } });
+    const u = await prisma.user.findUnique({ where: { email: adminUser.email } });
     assertEqual(u.role, 'super-admin');
   });
 
   await test('Technician role exists', async () => {
-    const u = await prisma.user.findUnique({ where: { email: 'tech@test.com' } });
+    const u = await prisma.user.findUnique({ where: { email: techUser.email } });
     assertEqual(u.role, 'technician');
   });
 
@@ -597,17 +685,37 @@ async function deleteTests() {
 async function runAll() {
   console.log('=== Modern Blue Collar API Test Suite ===');
 
-  await setup();
-  await authTests();
-  await customerTests();
-  await jobTests();
-  await quoteTests();
-  await invoiceTests();
-  await communicationTests();
-  await optimisticLockingTests();
-  await pricebookTests();
-  await roleTests();
-  await deleteTests();
+  try {
+    await setup();
+    await authTests();
+    await customerTests();
+    await jobTests();
+    await quoteTests();
+    await invoiceTests();
+    await communicationTests();
+    await optimisticLockingTests();
+    await pricebookTests();
+    await roleTests();
+    await deleteTests();
+  } catch (e) {
+    results.failed++;
+    results.errors.push({ name: 'suite aborted', error: e.message });
+    console.log(`  \u2717 suite aborted: ${e.message}`);
+  } finally {
+    // Leave the database as we found it (this run's tagged rows only).
+    await cleanup().catch((e) => {
+      results.failed++;
+      results.errors.push({ name: 'cleanup', error: e.message });
+    });
+  }
+
+  await test('Cleanup left nothing of this run behind', async () => {
+    const users = await prisma.user.count({ where: { email: { endsWith: `.${RUN}@${TAG_DOMAIN}` } } });
+    const custs = await prisma.customer.count({ where: { email: { endsWith: `.${RUN}@${TAG_DOMAIN}` } } });
+    const pb = await prisma.priceBookItem.count({ where: { description: PB_TAG } });
+    const legacy = await prisma.user.count({ where: { email: { in: LEGACY_EMAILS } } });
+    assertEqual(users + custs + pb + legacy, 0, `left behind: ${users} users, ${custs} customers, ${pb} pricebook items, ${legacy} legacy users`);
+  });
 
   console.log(`\n=== Results: ${results.passed} passed, ${results.failed} failed (${results.passed + results.failed} total) ===`);
 

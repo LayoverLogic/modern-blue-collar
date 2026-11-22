@@ -1,0 +1,143 @@
+{
+  "code": "US",
+  "currency": "USD",
+  "priceFactor": 1,
+  "timezone": "America/Chicago",
+  "invoiceTermsDays": 14,
+  "phone": {
+    "note": "555-0100..555-0199 is reserved for fictional use in every NANP area code. Templates are national; seeded rows are stored in E.164 (+1AAA55501nn), which `pattern` matches.",
+    "landline": "({area}) 555-01{nn}",
+    "mobile": "({area}) 555-01{nn}",
+    "pattern": "^\\+1\\d{3}55501\\d{2}$",
+    "nationalPattern": "^\\(\\d{3}\\) 555-01\\d{2}$"
+  },
+  "customerEmailDomain": "example.com",
+  "firstNames": [
+    "James",
+    "Maria",
+    "Robert",
+    "Linda",
+    "Michael",
+    "Patricia",
+    "Daniel",
+    "Jennifer",
+    "Kevin",
+    "Angela",
+    "Brian",
+    "Megan",
+    "Carlos",
+    "Ashley",
+    "Tyler",
+    "Nicole",
+    "Marcus",
+    "Emily",
+    "Luis",
+    "Rachel",
+    "Grace",
+    "Owen",
+    "Hannah",
+    "Ethan"
+  ],
+  "lastNames": [
+    "Anderson",
+    "Brooks",
+    "Carter",
+    "Delgado",
+    "Ellison",
+    "Foster",
+    "Garcia",
+    "Hughes",
+    "Iverson",
+    "Jensen",
+    "Keller",
+    "Lopez",
+    "Mitchell",
+    "Nolan",
+    "Ortega",
+    "Parker",
+    "Quinn",
+    "Reyes",
+    "Sullivan",
+    "Turner",
+    "Vaughn",
+    "Whitaker",
+    "Young",
+    "Zimmerman"
+  ],
+  "streets": [
+    "Maple Ave",
+    "Oak St",
+    "Elm St",
+    "Cedar Ln",
+    "Walnut Dr",
+    "Prairie View Rd",
+    "Main St",
+    "Park Ave",
+    "Lincoln Blvd",
+    "Sunset Dr",
+    "Willow Ct",
+    "Birch Way",
+    "Meadowlark Ln",
+    "Harvest Rd",
+    "Cottonwood Dr",
+    "Ridge Rd"
+  ],
+  "houseNumber": [
+    100,
+    4999
+  ],
+  "commercial": [
+    [
+      "Riverside",
+      "Dental Group"
+    ],
+    [
+      "Main Street",
+      "Coffee Co."
+    ],
+    [
+      "Oak Park",
+      "Apartments"
+    ],
+    [
+      "Summit",
+      "Office Plaza"
+    ],
+    [
+      "Lakeview",
+      "Veterinary Clinic"
+    ],
+    [
+      "Heritage",
+      "Senior Living"
+    ]
+  ],
+  "defaultArea": {
+    "note": "Used by prospects without an `area` (the generic default prospect): fictional towns, BRAND_DEFAULT_STATE (state null), ZIP-shaped codes.",
+    "state": null,
+    "phoneAreaCode": "555",
+    "towns": [
+      {
+        "name": "Anytown",
+        "postcodes": [
+          "00101",
+          "00102",
+          "00103"
+        ]
+      },
+      {
+        "name": "Springfield",
+        "postcodes": [
+          "00111",
+          "00112"
+        ]
+      },
+      {
+        "name": "Riverside",
+        "postcodes": [
+          "00121"
+        ]
+      }
+    ]
+  }
+}

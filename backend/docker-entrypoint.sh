@@ -2,10 +2,18 @@
 # Container entrypoint: apply DB migrations, optionally seed demo data, start server.
 # The app service `depends_on` postgres with condition: service_healthy, so the
 # database is reachable by the time this runs.
+#
+# With arguments, run that command instead (no migrations, no server), e.g.
+#   docker compose run --rm app node scripts/migrate-deploy.mjs
+#   docker compose run --rm app npm run restore -- --list --remote
 set -e
 
-echo "[entrypoint] Applying database migrations (prisma migrate deploy)..."
-npx prisma migrate deploy
+if [ "$#" -gt 0 ]; then
+  exec "$@"
+fi
+
+echo "[entrypoint] Applying database migrations (Prisma migrate deploy, WASM schema engine)..."
+node scripts/migrate-deploy.mjs
 
 if [ "$DEMO_MODE" = "true" ]; then
   echo "[entrypoint] DEMO_MODE=true → seeding demo data (idempotent)..."

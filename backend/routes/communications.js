@@ -2,19 +2,37 @@
  * routes/communications.js
  * Customer communication history: calls, emails, texts, notes.
  * Gmail integration endpoint structure.
+ *
+ * Access: office roles see / log everything; technicians see and log comms
+ * only for customers on their assigned jobs (RT-21). Deleting a log entry
+ * (the audit trail) is admin-only (RT-8).
  */
 const express          = require('express');
+const crypto           = require('crypto');
 const router           = express.Router();
-const { PrismaClient } = require('@prisma/client');
 const { requireAuth, requireRole } = require('./auth');
-const prisma           = new PrismaClient();
+const { ADMIN, isOffice } = require('../helpers/roles');
+const { customerScope, jobScope, assertCustomerAccess } = require('../helpers/access');
+const { parseId, notFound, badRequest } = require('../helpers/httpError');
+const { isPlaceholder } = require('../helpers/integrations');
+const v = require('../helpers/validate');
+// WL-10: money in the timeline uses the document's currency + locale format
+const { formatMoney } = require('../helpers/locale');
+const prisma           = require('../helpers/prisma');
+const { DOCS_INCLUDE } = require('../helpers/jobDocs');
 
 // GET /api/communications?customerId=X — timeline for a customer
 router.get('/', requireAuth, async (req, res, next) => {
   try {
-    const { customerId, type } = req.query;
+    const customerId = typeof req.query.customerId === 'string' && req.query.customerId ? parseId(req.query.customerId, 'customerId') : null;
+    const type = typeof req.query.type === 'string' ? req.query.type : '';
     const where = {};
-    if (customerId) where.customerId = Number(customerId);
+    if (customerId) {
+      await assertCustomerAccess(req.user, customerId);
+      where.customerId = customerId;
+    } else if (!isOffice(req.user)) {
+      where.customer = customerScope(req.user);
+    }
     if (type) where.type = type;
 
     const comms = await prisma.communication.findMany({
@@ -26,13 +44,12 @@ router.get('/', requireAuth, async (req, res, next) => {
     // If customerId provided, also fetch quotes and invoices for timeline
     if (customerId) {
       const jobs = await prisma.job.findMany({
-        where: { customerId: Number(customerId) },
-        include: { quote: true, invoice: true },
+        where: { customerId, ...jobScope(req.user) },
+        include: DOCS_INCLUDE,
       });
 
       const timeline = [];
 
-      // Add communications
       comms.forEach(c => {
         timeline.push({
           id: `comm-${c.id}`,
@@ -47,33 +64,31 @@ router.get('/', requireAuth, async (req, res, next) => {
         });
       });
 
-      // Add quotes inline
       jobs.forEach(j => {
-        if (j.quote) {
+        for (const q of j.quotes) {
           timeline.push({
-            id: `quote-${j.quote.id}`,
+            id: `quote-${q.id}`,
             type: 'quote',
-            subject: `Quote #${j.quote.id} for Job #${j.id}`,
-            body: `Amount: $${j.quote.amount.toFixed(2)} — Status: ${j.quote.status}`,
-            createdAt: j.quote.createdAt,
+            subject: `Quote ${q.number || `#${q.id}`} for Job #${j.id}`,
+            body: `Amount: ${formatMoney(q.amount, q.currency)} — Status: ${q.status}`,
+            createdAt: q.createdAt,
             category: 'financial',
             jobId: j.id,
           });
         }
-        if (j.invoice) {
+        for (const inv of j.invoices) {
           timeline.push({
-            id: `invoice-${j.invoice.id}`,
+            id: `invoice-${inv.id}`,
             type: 'invoice',
-            subject: `Invoice #${j.invoice.id} for Job #${j.id}`,
-            body: `Amount: $${j.invoice.amount.toFixed(2)} — Status: ${j.invoice.status}`,
-            createdAt: j.invoice.createdAt,
+            subject: `Invoice ${inv.number || `#${inv.id}`} for Job #${j.id}`,
+            body: `Amount: ${formatMoney(inv.amount, inv.currency)} — Status: ${inv.status}`,
+            createdAt: inv.createdAt,
             category: 'financial',
             jobId: j.id,
           });
         }
       });
 
-      // Sort by date descending
       timeline.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
       return res.json({ communications: comms, timeline });
     }
@@ -86,10 +101,11 @@ router.get('/', requireAuth, async (req, res, next) => {
 router.get('/:id', requireAuth, async (req, res, next) => {
   try {
     const comm = await prisma.communication.findUnique({
-      where: { id: Number(req.params.id) },
+      where: { id: parseId(req.params.id) },
       include: { customer: true },
     });
-    if (!comm) return res.status(404).json({ error: 'Communication not found' });
+    if (!comm) throw notFound('Communication not found');
+    await assertCustomerAccess(req.user, comm.customerId);
     res.json(comm);
   } catch (err) { next(err); }
 });
@@ -97,29 +113,30 @@ router.get('/:id', requireAuth, async (req, res, next) => {
 // POST /api/communications — log a call, text, email, or note
 router.post('/', requireAuth, async (req, res, next) => {
   try {
-    const { customerId, type, direction, subject, body, from, to } = req.body;
-    if (!customerId || !type) {
-      return res.status(400).json({ error: 'customerId and type are required' });
+    const body = req.body || {};
+    if (body.customerId == null || body.customerId === '' || !body.type) {
+      throw badRequest('customerId and type are required', { code: 'REQUIRED' });
     }
-    const comm = await prisma.communication.create({
-      data: {
-        customerId: Number(customerId),
-        type,
-        direction: direction || 'outbound',
-        subject,
-        body,
-        from,
-        to,
-      },
-    });
+    const customerId = parseId(body.customerId, 'customerId');
+    const data = {
+      customerId,
+      type:      v.oneOf(body.type, v.COMM_TYPES, 'type', { required: true }),
+      direction: v.oneOf(body.direction, v.COMM_DIRECTIONS, 'direction') || 'outbound',
+      subject:   v.str(body.subject, 'subject', { max: 500 }),
+      body:      v.str(body.body, 'body', { max: 20000 }),
+      from:      v.str(body.from, 'from', { max: 254 }),
+      to:        v.str(body.to, 'to', { max: 254 }),
+    };
+    await assertCustomerAccess(req.user, customerId);
+    const comm = await prisma.communication.create({ data });
     res.status(201).json(comm);
   } catch (err) { next(err); }
 });
 
-// DELETE /api/communications/:id
-router.delete('/:id', requireAuth, async (req, res, next) => {
+// DELETE /api/communications/:id — admin+ (the log is an audit trail)
+router.delete('/:id', requireAuth, requireRole(...ADMIN), async (req, res, next) => {
   try {
-    await prisma.communication.delete({ where: { id: Number(req.params.id) } });
+    await prisma.communication.delete({ where: { id: parseId(req.params.id) } });
     res.json({ success: true });
   } catch (err) { next(err); }
 });
@@ -127,7 +144,7 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
 // ── Gmail Integration Endpoints ─────────────────────────────────────────────
 
 // POST /api/communications/gmail/sync — sync emails for a customer
-router.post('/gmail/sync', requireAuth, requireRole('super-admin', 'admin'), async (req, res, next) => {
+router.post('/gmail/sync', requireAuth, requireRole(...ADMIN), async (req, res, next) => {
   try {
     const { customerId, email } = req.body;
     if (!customerId || !email) {
@@ -149,10 +166,26 @@ router.post('/gmail/sync', requireAuth, requireRole('super-admin', 'admin'), asy
 });
 
 // POST /api/communications/gmail/webhook — receive Gmail push notifications
+// Disabled (503) unless GMAIL_WEBHOOK_SECRET is set; then the caller must send
+// it as `X-Webhook-Secret: <secret>` or `?token=<secret>` (the form a Pub/Sub
+// push subscription can carry). RT-26.
+function webhookSecretOk(req) {
+  const secret = process.env.GMAIL_WEBHOOK_SECRET;
+  const given  = req.get('x-webhook-secret') || (typeof req.query.token === 'string' ? req.query.token : '');
+  if (!given) return false;
+  const a = crypto.createHash('sha256').update(String(given)).digest();
+  const b = crypto.createHash('sha256').update(String(secret)).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
 router.post('/gmail/webhook', async (req, res, next) => {
   try {
+    if (isPlaceholder(process.env.GMAIL_WEBHOOK_SECRET) || String(process.env.GMAIL_WEBHOOK_SECRET).length < 16) {
+      return res.status(503).json({ error: 'Gmail webhook is not configured (set GMAIL_WEBHOOK_SECRET, 16+ chars)', code: 'WEBHOOK_DISABLED' });
+    }
+    if (!webhookSecretOk(req)) return res.status(401).json({ error: 'Invalid webhook secret', code: 'WEBHOOK_UNAUTHORISED' });
     // Gmail push notification handler placeholder
-    // In production: verify webhook, parse notification, fetch new messages
+    // In production: parse notification, fetch new messages
     res.json({ received: true });
   } catch (err) { next(err); }
 });

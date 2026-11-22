@@ -1,0 +1,521 @@
+/**
+ * demo/lib/checks.js — the checks behind `npm run demo:check`.
+ *
+ *   runDbChecks({ prisma, brand, denylist, now, adminEmail })          → results[]
+ *   runApiChecks({ base, brand, denylist, email, password })           → results[]
+ *   runHeadlessChecks({ port, brand, denylist, email, password, ... }) → results[]
+ *
+ * A result is { level: 'PASS' | 'WARN' | 'FAIL', id, msg }. FAIL means a
+ * prospect would see something wrong (client names, "undefined", $0 amounts,
+ * plumbing jobs in an electrical demo, a stale calendar, a job activity feed
+ * that contradicts the job); WARN is worth a look.
+ */
+'use strict';
+
+const path = require('path');
+const { spawn } = require('child_process');
+const { localDate } = require('./dates');
+const { isReservedEmailDomain, emailDomain, denylistHits } = require('./guard');
+const { loadTrade, loadLocale } = require('./fixtures');
+const { TRADES } = require('../../helpers/brandValidate');
+const { wordingProblems } = require('./wording');
+
+const brandCountry = (brand) => (brand.locale && brand.locale.country) || brand.jobTypesCountry || 'US';
+const brandCurrency = (brand) => (brand.locale && brand.locale.currency) || 'USD';
+const cents = (x) => Math.round(Number(x) * 100);
+
+/** The symbol a currency is printed with in the brand's number locale ('$', '€', '£'…). */
+function currencySymbol(currency, numberLocale = 'en-US') {
+  try {
+    const part = new Intl.NumberFormat(numberLocale, { style: 'currency', currency }).formatToParts(1).find((p) => p.type === 'currency');
+    return part ? part.value : currency;
+  } catch { return currency; }
+}
+
+/** name (lower-case) → Set of trades whose starter pricebook has it (US + IE names). */
+function starterNames() {
+  const map = new Map();
+  for (const cc of ['US', 'IE']) {
+    const loc = loadLocale(cc);
+    for (const t of TRADES) {
+      for (const p of loadTrade(t, loc).pricebook) {
+        const k = p.name.toLowerCase();
+        if (!map.has(k)) map.set(k, new Set());
+        map.get(k).add(t);
+      }
+    }
+  }
+  return map;
+}
+const sameFamily = (a, b) => a === b || [a, b].sort().join() === 'hvac,plumbing-hvac' || [a, b].sort().join() === 'plumbing,plumbing-hvac';
+
+const GARBAGE = /(^|[^A-Za-z])(undefined|NaN|\[object Object\])([^A-Za-z]|$)|^null$/;
+const FICTIONAL_PHONES = [/555-01\d{2}$/, /^(\+353\s?|0)20 ?91\d ?\d{4}$/, /^(\+353\s?|0)89 ?011 ?0\d{3}$/,
+  // E.164, as stored (L4): +1 AAA 555 01nn · +353 20 91x xxxx · +353 89 011 0xxx
+  /^\+1\d{3}55501\d{2}$/, /^\+3532091\d{5}$/, /^\+353890110\d{3}$/];
+
+const US_STATES = new Set(('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC PR').split(' '));
+const IE_COUNTY = /^(Co\.?\s+|County\s+)?(Carlow|Cavan|Clare|Cork|Donegal|Dublin|Galway|Kerry|Kildare|Kilkenny|Laois|Leitrim|Limerick|Longford|Louth|Mayo|Meath|Monaghan|Offaly|Roscommon|Sligo|Tipperary|Waterford|Westmeath|Wexford|Wicklow)$/i;
+
+/**
+ * Address problems of one customer for the brand's country (M5): postcode
+ * shape (ZIP / Eircode), state vs county, and an explicit other country.
+ * `loc` is brand.locale (helpers/locale.js). → string[]
+ */
+function addressProblems(c, loc) {
+  const cc = (loc && loc.country) || 'US';
+  const out = [];
+  if (c.country && String(c.country).toUpperCase() !== cc) out.push(`country ${c.country} (brand is ${cc})`);
+  const zip = c.zip ? String(c.zip).trim() : '';
+  if (zip && loc && loc.postcodePattern && !new RegExp(loc.postcodePattern, 'i').test(zip)) out.push(`${loc.postcodeLabel || 'postcode'} "${zip}" is not ${cc}-shaped (e.g. ${loc.postcodeExample})`);
+  const st = c.state ? String(c.state).trim() : '';
+  if (cc === 'US') {
+    if (st && !US_STATES.has(st.toUpperCase())) out.push(`state "${st}" is not a US state`);
+    if (!zip) out.push('no ZIP code');
+  } else if (cc === 'IE') {
+    if (st && !IE_COUNTY.test(st)) out.push(`county "${st}" is not an Irish county${US_STATES.has(st.toUpperCase()) ? ' (a US state)' : ''}`);
+    if (!st) out.push('no county');
+  }
+  return out;
+}
+
+function results() {
+  const list = [];
+  const add = (level, id, msg) => list.push({ level, id, msg });
+  return { list, pass: (id, m) => add('PASS', id, m), warn: (id, m) => add('WARN', id, m), fail: (id, m) => add('FAIL', id, m) };
+}
+
+const sample = (arr, n = 3) => arr.slice(0, n).join('; ') + (arr.length > n ? ` (+${arr.length - n} more)` : '');
+
+/** Flatten every string field of a set of rows into [{ where, value }]. */
+function textFields(table, rows, fields) {
+  const out = [];
+  for (const r of rows) for (const f of fields) if (typeof r[f] === 'string' && r[f]) out.push({ where: `${table}#${r.id}.${f}`, value: r[f] });
+  return out;
+}
+
+async function runDbChecks({ prisma, brand, denylist = [], now = new Date(), adminEmail = process.env.ADMIN_EMAIL }) {
+  const R = results();
+  const [users, customers, jobs, quotes, invoices, pricebook, inventory, comms, acts] = await Promise.all([
+    prisma.user.findMany(), prisma.customer.findMany(), prisma.job.findMany(), prisma.quote.findMany({ include: { lines: true } }),
+    prisma.invoice.findMany({ include: { lines: true } }), prisma.priceBookItem.findMany(), prisma.inventoryItem.findMany(), prisma.communication.findMany(),
+    prisma.jobActivity.findMany({ orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] }),
+  ]);
+
+  if (!customers.length || !jobs.length) {
+    R.fail('db.empty', `no demo data (${customers.length} customers, ${jobs.length} jobs) — run: npm run seed:demo`);
+  } else {
+    R.pass('db.counts', `${users.length} users, ${customers.length} customers, ${jobs.length} jobs, ${quotes.length} quotes, ${invoices.length} invoices, ${pricebook.length} pricebook items`);
+  }
+
+  // ── client names / garbage text ─────────────────────────────────────────
+  const texts = [
+    ...textFields('user', users, ['email', 'firstName', 'lastName', 'phone']),
+    ...textFields('customer', customers, ['firstName', 'lastName', 'email', 'phone', 'address', 'city', 'state', 'zip', 'notes']),
+    ...textFields('job', jobs, ['title', 'description', 'type', 'notes']),
+    ...textFields('quote', quotes, ['notes']),
+    ...textFields('invoice', invoices, ['notes']),
+    ...textFields('pricebook', pricebook, ['industry', 'category', 'subcategory', 'name', 'description']),
+    ...textFields('inventory', inventory, ['name', 'description', 'sku', 'location']),
+    ...textFields('communication', comms, ['subject', 'body', 'from', 'to']),
+    ...acts.flatMap((a) => ['from', 'to'].filter((f) => a[f] != null).map((f) => ({ where: `activity#${a.id}.${f}`, value: JSON.stringify(a[f]) }))),
+    ...Object.entries(brand).filter(([, v]) => typeof v === 'string').map(([k, v]) => ({ where: `brand.${k}`, value: v })),
+  ];
+  const deny = texts.flatMap((t) => denylistHits(t.value, denylist).map((h) => `${t.where} contains "${h}"`));
+  if (!denylist.length) R.warn('db.denylist', 'no denylist loaded — client names not checked (create backend/demo/denylist.local.txt, see denylist.example.txt)');
+  else if (deny.length) R.fail('db.denylist', `client names in demo data: ${sample(deny)}`);
+  else R.pass('db.denylist', `no denylisted names in ${texts.length} text fields (${denylist.length} terms)`);
+
+  const garbage = texts.filter((t) => GARBAGE.test(t.value.trim())).map((t) => `${t.where}=${JSON.stringify(t.value.slice(0, 40))}`);
+  if (garbage.length) R.fail('db.garbage-text', `"undefined"/"NaN"/"null" stored as text: ${sample(garbage)}`);
+  else R.pass('db.garbage-text', 'no "undefined"/"NaN"/"null" strings stored');
+
+  // ── trade correctness ───────────────────────────────────────────────────
+  const badType = jobs.filter((j) => !brand.jobTypes.includes(j.type)).map((j) => `job#${j.id} "${j.title}" type "${j.type}"`);
+  if (badType.length) R.fail('db.job-types', `job types not offered for ${brand.tradeType} (${brandCountry(brand)} wording${brand.jobTypesCustom ? ', BRAND_JOB_TYPES' : ''}): ${sample(badType)} — npm run seed:demo -- --reset`);
+  else if (jobs.length) R.pass('db.job-types', `all ${jobs.length} job types are ${brand.tradeType} job types`);
+  // country wording (11b): an Irish demo shows no US trade words and vice versa
+  const cc = brandCountry(brand);
+  const wordJobs = jobs.flatMap((j) => [
+    ...wordingProblems(j.title, cc).map((w) => `job#${j.id} title "${j.title}" ${w}`),
+    ...wordingProblems(j.notes, cc).map((w) => `job#${j.id} notes ${w}`),
+    ...wordingProblems(j.description, cc).map((w) => `job#${j.id} description ${w}`),
+  ]);
+  if (wordJobs.length) R.fail('db.wording', `job titles / notes not in ${cc} wording: ${sample(wordJobs)} — npm run seed:demo -- --reset`);
+  else if (jobs.length) R.pass('db.wording', `job titles and notes use ${cc} wording`);
+  const wordPb = pricebook.filter((p) => p.active).flatMap((p) => [...wordingProblems(p.name, cc), ...wordingProblems(p.description, cc)].map((w) => `"${p.name}" ${w}`));
+  if (wordPb.length) R.warn('db.wording-pricebook', `pricebook items not in ${cc} wording: ${sample(wordPb)}`);
+
+  const otherTrade = jobs.filter((j) => j.tradeType && j.tradeType !== brand.tradeType);
+  if (otherTrade.length) {
+    R.fail('db.job-trade', `${otherTrade.length} jobs were seeded for another trade (${[...new Set(otherTrade.map((j) => j.tradeType))].join(', ')}) — npm run seed:demo -- --reset`);
+  }
+  const noTrade = jobs.filter((j) => !j.tradeType);
+  if (noTrade.length) R.warn('db.job-trade', `${noTrade.length} jobs have no tradeType`);
+
+  // ── money ───────────────────────────────────────────────────────────────
+  const badMoney = [
+    ...quotes.filter((q) => !(Number.isFinite(q.amount) && q.amount > 0)).map((q) => `quote#${q.id}=${q.amount}`),
+    ...invoices.filter((i) => !(Number.isFinite(i.amount) && i.amount > 0)).map((i) => `invoice#${i.id}=${i.amount}`),
+  ];
+  if (badMoney.length) R.fail('db.amounts', `zero/negative amounts: ${sample(badMoney)}`);
+  else if (quotes.length + invoices.length) R.pass('db.amounts', `all ${quotes.length} quotes and ${invoices.length} invoices > 0`);
+  else R.warn('db.amounts', 'no quotes or invoices — quotes/invoices pages will be empty');
+
+  // totals (Frontend #16): total = subtotal + taxTotal, and subtotal = sum of the lines when there are lines
+  const badTotals = [];
+  for (const [kind, rows, lineModel] of [['quote', quotes, 'lines'], ['invoice', invoices, 'lines']]) {
+    for (const d of rows) {
+      if (cents(d.amount) !== cents(d.subtotal) + cents(d.taxTotal)) badTotals.push(`${kind}#${d.id} total ${d.amount} ≠ subtotal ${d.subtotal} + tax ${d.taxTotal}`);
+      const lines = d[lineModel] || [];
+      if (lines.length) {
+        const sum = lines.reduce((a, l) => a + cents(l.lineTotal), 0);
+        if (sum !== cents(d.subtotal)) badTotals.push(`${kind}#${d.id} subtotal ${d.subtotal} ≠ lines ${(sum / 100).toFixed(2)}`);
+      }
+    }
+  }
+  if (badTotals.length) R.fail('db.totals', `document totals do not add up: ${sample(badTotals)} — npm run seed:demo -- --reset`);
+  else if (quotes.length + invoices.length) R.pass('db.totals', `every quote / invoice: total = subtotal + tax${quotes.concat(invoices).some((d) => (d.lines || []).length) ? ', subtotal = sum of lines' : ''}`);
+
+  // tax (M4): a brand with non-zero tax rates shows tax on most documents
+  {
+    const loc = brand.locale || {};
+    const taxed = (loc.taxRates || []).some((r) => r.rate > 0);
+    const docs = [...quotes.map((q) => ['quote', q]), ...invoices.map((i) => ['invoice', i])].filter(([, d]) => !d.reverseCharge);
+    if (taxed && docs.length) {
+      const withTax = docs.filter(([, d]) => cents(d.taxTotal) > 0).length;
+      const label = loc.taxLabel || 'tax';
+      if (withTax * 2 < docs.length) {
+        R.fail('db.tax', `only ${withTax} of ${docs.length} quotes / invoices carry ${label}, but BRAND_TAX_RATES is ${(loc.taxRates || []).map((r) => `${r.key}:${r.rate}`).join(',')} — a prospect sees untaxed documents; npm run seed:demo -- --reset`);
+      } else R.pass('db.tax', `${withTax} of ${docs.length} quotes / invoices carry ${label}`);
+    }
+  }
+
+  // currency (11a): every document in the brand currency
+  const cur = brandCurrency(brand);
+  const wrongCur = [...quotes.map((q) => ['quote', q]), ...invoices.map((i) => ['invoice', i])].filter(([, d]) => d.currency && d.currency !== cur).map(([k, d]) => `${k}#${d.id} ${d.currency}`);
+  if (wrongCur.length) R.fail('db.currency', `documents not in ${cur}: ${sample(wrongCur)} — npm run seed:demo -- --reset`);
+  else if (quotes.length + invoices.length) R.pass('db.currency', `all documents in ${cur}`);
+
+  // due dates are calendar dates at UTC midnight (Frontend #14)
+  const oddDue = invoices.filter((i) => i.dueDate && new Date(i.dueDate).toISOString().slice(11) !== '00:00:00.000Z').map((i) => `invoice#${i.id} ${new Date(i.dueDate).toISOString()}`);
+  if (oddDue.length) R.warn('db.due-dates', `due dates stored as instants, not calendar dates: ${sample(oddDue)} (the server rewrites them at boot)`);
+
+  const today = localDate(now, brand.timezone);
+  const overdueWrong = invoices.filter((i) => i.status === 'unpaid' && i.dueDate && new Date(i.dueDate).toISOString().slice(0, 10) < today);
+  if (overdueWrong.length) R.warn('db.invoice-status', `${overdueWrong.length} unpaid invoices are past due but not marked overdue (demo dates are getting old — re-seed with --reset)`);
+
+  // ── pricebook ───────────────────────────────────────────────────────────
+  const active = pricebook.filter((p) => p.active && p.industry === brand.industryLabel);
+  if (!active.length) R.fail('db.pricebook', `no active pricebook items for industry "${brand.industryLabel}" — the Pricebook page will be empty (npm run seed:prices)`);
+  else R.pass('db.pricebook', `${active.length} active "${brand.industryLabel}" items`);
+  const starters = starterNames();
+  const foreign = active.filter((p) => p.category !== 'Labor').filter((p) => {
+    const trades = starters.get(p.name.toLowerCase());
+    return trades && ![...trades].some((t) => sameFamily(t, brand.tradeType));
+  }).map((p) => `"${p.name}" (${[...starters.get(p.name.toLowerCase())].join('/')})`);
+  if (foreign.length) R.fail('db.pricebook-trade', `${foreign.length} "${brand.industryLabel}" items are another trade's starter items: ${sample(foreign)}`);
+  const zero = active.filter((p) => !(p.price > 0)).map((p) => `#${p.id} ${p.name}=${p.price}`);
+  if (zero.length) R.fail('db.pricebook-price', `items priced at 0 or less: ${sample(zero)}`);
+  const keys = new Map();
+  for (const p of pricebook) { const k = `${p.industry}|${p.category}|${p.name}`.toLowerCase(); keys.set(k, (keys.get(k) || 0) + 1); }
+  const dup = [...keys].filter(([, n]) => n > 1).map(([k, n]) => `${k} ×${n}`);
+  if (dup.length) R.fail('db.pricebook-dupes', `duplicate pricebook items: ${sample(dup)}`);
+  const others = [...new Set(pricebook.filter((p) => p.industry !== brand.industryLabel).map((p) => p.industry))];
+  if (others.length) R.warn('db.pricebook-industry', `pricebook also holds ${others.join(', ')} items (hidden by the trade filter; --reset removes them)`);
+
+  // ── people: fictional contact details only ──────────────────────────────
+  const realCust = customers.filter((c) => c.email && !isReservedEmailDomain(emailDomain(c.email))).map((c) => c.email);
+  if (realCust.length) R.fail('db.customer-emails', `customer emails on real domains: ${sample(realCust)}`);
+  else R.pass('db.customer-emails', 'customer emails use reserved example domains');
+  const realUsers = users.filter((u) => u.email !== adminEmail && !isReservedEmailDomain(emailDomain(u.email))).map((u) => u.email);
+  if (realUsers.length) R.fail('db.user-emails', `team emails on real domains: ${sample(realUsers)}`);
+  const phones = [...customers.map((c) => c.phone), ...users.map((u) => u.phone)].filter(Boolean);
+  const realPhones = phones.filter((p) => !FICTIONAL_PHONES.some((re) => re.test(p.trim())));
+  if (realPhones.length) R.warn('db.phones', `phone numbers outside the fictional ranges (555-01xx; IE 020 91x / 089 011 0): ${sample(realPhones)}`);
+  const incomplete = customers.filter((c) => !c.firstName || !c.phone || !c.address || !c.city).map((c) => `customer#${c.id}`);
+  if (incomplete.length) R.fail('db.customer-fields', `customers missing name/phone/address/city: ${sample(incomplete)}`);
+  // addresses in the brand's country shape (M5): no "Anytown, KS 00103" on an Irish instance
+  if (customers.length) {
+    const loc = brand.locale || null;
+    const cc = brandCountry(brand);
+    const bad = customers.flatMap((c) => addressProblems(c, loc || { country: cc }).map((p) => `customer#${c.id} ${p}`));
+    if (bad.length) R.fail('db.addresses', `addresses do not match BRAND_COUNTRY=${cc}: ${sample(bad)} — npm run seed:demo -- --reset`);
+    else R.pass('db.addresses', `all ${customers.length} customer addresses are ${cc}-shaped (state / county, ${(loc && loc.postcodeLabel) || 'postcode'})`);
+    const notE164 = [...customers.map((c) => ['customer', c]), ...users.map((u) => ['user', u])].filter(([, r]) => r.phone && !/^\+\d{8,15}$/.test(r.phone)).map(([k, r]) => `${k}#${r.id} "${r.phone}"`);
+    if (notE164.length) R.warn('db.phones-e164', `phones not stored in E.164 (sms: / tel: links may break): ${sample(notE164)} — npm run seed:demo rewrites demo rows`);
+  }
+
+  // ── job activity feeds (GTM-18) ─────────────────────────────────────────
+  // Every job has a trail that starts with "created" and ends in the job's
+  // current status and technician; nothing is dated in the future or before
+  // the job existed; actors are real users.
+  if (jobs.length) {
+    const byJob = new Map();
+    for (const a of acts) if (a.jobId != null) { if (!byJob.has(a.jobId)) byJob.set(a.jobId, []); byJob.get(a.jobId).push(a); }
+    const userIds = new Set(users.map((u) => u.id));
+    const quoteJobs = new Set(quotes.map((q) => q.jobId));
+    const invoiceJobs = new Set(invoices.map((i) => i.jobId));
+    const bad = []; const warn = [];
+    const soon = now.getTime() + 5 * 60000;
+    for (const j of jobs) {
+      const list = byJob.get(j.id) || [];
+      const tag = `job#${j.id}`;
+      if (!list.length) { bad.push(`${tag} has no activity`); continue; }
+      if (list[0].type !== 'created') bad.push(`${tag} first entry is "${list[0].type}", not "created"`);
+      const created = list.find((a) => a.type === 'created');
+      const lastOf = (type) => [...list].reverse().find((a) => a.type === type);
+      const lastStatus = lastOf('status_changed');
+      const status = lastStatus ? lastStatus.to && lastStatus.to.status : created && created.to && created.to.status;
+      if (status !== j.status) bad.push(`${tag} feed says "${status}", job is "${j.status}"`);
+      const lastAssign = lastOf('assigned');
+      const tech = lastAssign ? lastAssign.to && lastAssign.to.technicianId : created && created.to && created.to.technicianId;
+      if ((tech ?? null) !== (j.technicianId ?? null)) bad.push(`${tag} feed says technician ${tech ?? 'none'}, job has ${j.technicianId ?? 'none'}`);
+      const future = list.filter((a) => a.createdAt.getTime() > soon);
+      if (future.length) bad.push(`${tag} has ${future.length} entries dated in the future`);
+      const early = list.filter((a) => a.createdAt.getTime() < j.createdAt.getTime() - 60000);
+      if (early.length) bad.push(`${tag} has ${early.length} entries before the job was created`);
+      if (quoteJobs.has(j.id) && !lastOf('quote_created')) warn.push(`${tag} has a quote but no "quote_created" entry`);
+      if (invoiceJobs.has(j.id) && !lastOf('invoice_created')) warn.push(`${tag} has an invoice but no "invoice_created" entry`);
+      const ghosts = list.filter((a) => a.actorUserId != null && !userIds.has(a.actorUserId));
+      if (ghosts.length) warn.push(`${tag} has ${ghosts.length} entries by deleted users ("Deleted user")`);
+    }
+    if (bad.length) R.fail('db.activity', `job activity feeds missing or contradicting the job: ${sample(bad)} — npm run seed:demo (backfills) or --reset`);
+    else R.pass('db.activity', `${acts.length} activity entries; every one of ${jobs.length} jobs has a feed that matches its status and technician`);
+    if (warn.length) R.warn('db.activity-links', sample(warn));
+  }
+
+  // ── calendar freshness ──────────────────────────────────────────────────
+  const dated = jobs.filter((j) => j.scheduledDate);
+  const todays = dated.filter((j) => j.scheduledDate === today);
+  const future = dated.filter((j) => j.scheduledDate > today);
+  if (jobs.length && !future.length) R.fail('db.freshness', `no jobs after today (${today} ${brand.timezone}) — the demo calendar is stale; npm run seed:demo -- --reset`);
+  else if (jobs.length && !todays.length) R.warn('db.freshness', `no jobs scheduled today (${today}) — dashboard "today" will be 0`);
+  else if (jobs.length) R.pass('db.freshness', `${todays.length} jobs today, ${future.length} upcoming (${today}, ${brand.timezone})`);
+
+  return R.list;
+}
+
+// ── API ──────────────────────────────────────────────────────────────────────
+async function getJson(base, p, token) {
+  const r = await fetch(base + p, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  let body = null;
+  const text = await r.text();
+  try { body = JSON.parse(text); } catch { body = text; }
+  return { status: r.status, body, text };
+}
+
+async function runApiChecks({ base, brand, denylist = [], email, password }) {
+  const R = results();
+  let health;
+  try { health = await getJson(base, '/api/health'); } catch (e) {
+    R.fail('api.reachable', `cannot reach ${base}: ${e.message}`);
+    return R.list;
+  }
+  if (health.status !== 200) R.fail('api.health', `/api/health → HTTP ${health.status}`);
+
+  // /api/brand — what every page reads first
+  const b = (await getJson(base, '/api/brand')).body || {};
+  const missing = ['companyName', 'tradeType', 'technicianLabel', 'industryLabel'].filter((k) => !b[k] || b[k] === 'undefined');
+  if (!Array.isArray(b.jobTypes) || !b.jobTypes.length) missing.push('jobTypes');
+  for (const c of ['primary', 'primaryDark', 'navBg', 'navText']) if (!b.colors || !b.colors[c]) missing.push(`colors.${c}`);
+  if (missing.length) R.fail('api.brand', `/api/brand is missing ${missing.join(', ')}`);
+  else R.pass('api.brand', `/api/brand: ${b.companyName} · ${b.tradeType} · primary ${b.colors.primary} / dark ${b.colors.primaryDark}`);
+  if (b.tradeType && b.tradeType !== brand.tradeType) R.fail('api.brand-trade', `server runs ${b.tradeType} but this check's env says ${brand.tradeType} — run demo:check with the instance's ENV_FILE`);
+  const absent = ['logoUrl', 'faviconUrl'].filter((k) => !(k in b));
+  if (absent.length) R.warn('api.brand-assets', `/api/brand does not expose ${absent.join(', ')} yet (server.js whitelist — WL-7)`);
+  const bd = denylistHits(JSON.stringify(b), denylist);
+  if (bd.length) R.fail('api.brand-denylist', `/api/brand contains ${bd.join(', ')}`);
+
+  // login
+  const lr = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
+  const token = (await lr.json().catch(() => ({}))).token;
+  if (!token) { R.fail('api.login', `login as ${email} failed (HTTP ${lr.status}) — pass --email/--password`); return R.list; }
+  R.pass('api.login', `logged in as ${email}`);
+
+  const need = {
+    '/api/jobs': (rows) => rows.flatMap((j) => [
+      !j.customer && `job#${j.id}.customer`, j.customer && !j.customer.firstName && `job#${j.id}.customer.firstName`,
+      !brand.jobTypes.includes(j.type) && `job#${j.id}.type=${j.type}`, !j.status && `job#${j.id}.status`,
+    ]),
+    '/api/customers': (rows) => rows.flatMap((c) => [!c.firstName && `customer#${c.id}.firstName`, !c.phone && `customer#${c.id}.phone`]),
+    '/api/quotes': (rows) => rows.flatMap((q) => [!(q.amount > 0) && `quote#${q.id}.amount=${q.amount}`, !(q.job && q.job.customer) && `quote#${q.id}.job.customer`]),
+    '/api/invoices': (rows) => rows.flatMap((i) => [!(i.amount > 0) && `invoice#${i.id}.amount=${i.amount}`, !(i.job && i.job.customer) && `invoice#${i.id}.job.customer`]),
+    '/api/pricebook': (body) => {
+      const items = Array.isArray(body) ? body : (body && body.items) || [];
+      return [!items.length && 'pricebook.items is empty', ...items.map((p) => !(p.price > 0) && `pricebook#${p.id}.price=${p.price}`)];
+    },
+    '/api/users': (rows) => rows.flatMap((u) => [!u.firstName && `user#${u.id}.firstName`]),
+  };
+  let jobsSeen = [];
+  for (const [p, check] of Object.entries(need)) {
+    let r;
+    try { r = await getJson(base, p, token); } catch (e) { R.fail(`api.${p.slice(5)}`, e.message); continue; }
+    if (r.status !== 200) { R.fail(`api.${p.slice(5)}`, `HTTP ${r.status}`); continue; }
+    const problems = [];
+    if (Array.isArray(r.body) && !r.body.length && p !== '/api/users') problems.push('empty list');
+    problems.push(...check(r.body).filter(Boolean));
+    if (/"undefined"|\bNaN\b|\[object Object\]/.test(r.text)) problems.push('response contains "undefined"/NaN');
+    const hits = denylistHits(r.text, denylist);
+    if (hits.length) problems.push(`denylisted: ${hits.join(', ')}`);
+    if (problems.length) R.fail(`api.${p.slice(5)}`, sample(problems, 4));
+    else R.pass(`api.${p.slice(5)}`, `${Array.isArray(r.body) ? r.body.length : (r.body.items || []).length} rows, display fields present`);
+    if (p === '/api/jobs' && Array.isArray(r.body) && r.body.length) jobsSeen = r.body;
+  }
+
+  // job activity feed (GTM-18): the busiest-looking job shows a trail with names
+  if (jobsSeen.length) {
+    const job = jobsSeen.find((j) => j.status === 'completed') || jobsSeen[0];
+    let r;
+    try { r = await getJson(base, `/api/jobs/${job.id}/activity`, token); } catch (e) { r = { status: 0, text: e.message }; }
+    const problems = [];
+    if (r.status !== 200 || !Array.isArray(r.body)) problems.push(`HTTP ${r.status}`);
+    else {
+      if (!r.body.length) problems.push('empty feed');
+      problems.push(...r.body.filter((e) => !e.type || !e.createdAt || !(e.actor && e.actor.name)).map((e) => `activity#${e.id} missing type/createdAt/actor.name`));
+      if (r.body.length && r.body[r.body.length - 1].type !== 'created') problems.push('oldest entry is not "created"');
+      if (/"undefined"|\bNaN\b|\[object Object\]/.test(r.text)) problems.push('response contains "undefined"/NaN');
+      const hits = denylistHits(r.text, denylist);
+      if (hits.length) problems.push(`denylisted: ${hits.join(', ')}`);
+    }
+    if (problems.length) R.fail('api.activity', `/api/jobs/${job.id}/activity: ${sample(problems, 4)}`);
+    else R.pass('api.activity', `/api/jobs/${job.id}/activity: ${r.body.length} entries, actors named`);
+  }
+
+  // currency (11a): /api/brand and a printed document use the brand currency
+  {
+    const cur = brandCurrency(brand);
+    const sym = currencySymbol(cur, (brand.locale && brand.locale.numberLocale) || 'en-US');
+    const problems = [];
+    if (b.currency && b.currency !== cur) problems.push(`/api/brand currency ${b.currency} ≠ ${cur}`);
+    for (const kind of ['invoices', 'quotes']) {
+      const list = await getJson(base, `/api/${kind}`, token).catch(() => ({ body: [] }));
+      const first = Array.isArray(list.body) ? list.body[0] : null;
+      if (!first) continue;
+      const one = await getJson(base, `/api/${kind}/${first.id}`, token).catch(() => ({ body: null }));
+      const f = one.body && one.body.print && one.body.print.formatted;
+      if (!f) { problems.push(`/api/${kind}/${first.id} has no print block`); continue; }
+      if (one.body.currency !== cur) problems.push(`${kind.slice(0, -1)}#${first.id} currency ${one.body.currency}`);
+      if (!String(f.total).includes(sym)) problems.push(`${kind.slice(0, -1)}#${first.id} total "${f.total}" lacks "${sym}"`);
+      if (cur !== 'USD' && /\$/.test(JSON.stringify(f))) problems.push(`${kind.slice(0, -1)}#${first.id} shows "$" on a ${cur} brand`);
+    }
+    if (problems.length) R.fail('api.currency', sample(problems, 4));
+    else R.pass('api.currency', `money shown in ${cur} (${sym})`);
+  }
+
+  // dashboard "Recent Jobs" (11d): newest first
+  {
+    const r = await getJson(base, '/api/jobs?sort=recent&limit=10', token).catch((e) => ({ status: 0, text: e.message }));
+    if (r.status !== 200 || !Array.isArray(r.body)) R.fail('api.recent-jobs', `/api/jobs?sort=recent → HTTP ${r.status}`);
+    else {
+      const out = r.body.filter((j, i) => i && String(j.createdAt) > String(r.body[i - 1].createdAt));
+      if (out.length) R.fail('api.recent-jobs', `/api/jobs?sort=recent is not newest first (job#${out[0].id})`);
+      else R.pass('api.recent-jobs', `/api/jobs?sort=recent: ${r.body.length} jobs, newest first`);
+    }
+  }
+  return R.list;
+}
+
+// ── headless pages (via scripts/brand-shot.js) ──────────────────────────────
+function shot(args, env) {
+  return new Promise((resolve) => {
+    const p = spawn(process.execPath, [path.join(__dirname, '..', '..', 'scripts', 'brand-shot.js'), ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = ''; let err = '';
+    p.stdout.on('data', (d) => { out += d; });
+    p.stderr.on('data', (d) => { err += d; });
+    p.on('close', (code) => {
+      try { resolve({ code, json: JSON.parse(out) }); } catch { resolve({ code, error: (err || out).trim().slice(0, 300) }); }
+    });
+  });
+}
+
+const PAGES = ['index.html', 'dispatch.html', 'schedule.html', 'customers.html', 'quote-invoice.html', 'pricebook.html', 'team.html', 'communications.html'];
+
+/**
+ * Jobs `recent` ({ title, createdAt }) must appear after `heading` in the page
+ * text newest first: a job listed above one that was created later is a problem
+ * (equal createdAt may come in either order).
+ */
+function orderProblems(text, heading, recent) {
+  const start = text.indexOf(heading);
+  if (start === -1) return [`no "${heading}" section`];
+  const seen = recent
+    .map((j) => ({ ...j, at: text.indexOf(j.title, start) }))
+    .filter((j) => j.at !== -1)
+    .sort((a, b) => a.at - b.at);
+  const out = [];
+  for (let i = 1; i < seen.length; i++) {
+    if (String(seen[i].createdAt) > String(seen[i - 1].createdAt)) out.push(`"${seen[i].title}" (newer) is listed below "${seen[i - 1].title}"`);
+  }
+  return out;
+}
+
+async function runHeadlessChecks({ port, denylist = [], email, password, token, repair = false, shotsDir = null, extraPages = [], brand = null, techEmail = null, jobId = null, techJobId = null }) {
+  const R = results();
+  if (!token) {
+    const lr = await fetch(`http://localhost:${port}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
+    token = (await lr.json().catch(() => ({}))).token;
+    if (!token) { R.fail('page.login', `login as ${email} failed (HTTP ${lr.status})`); return R.list; }
+  }
+  const env = { ...process.env, DEMO_PASSWORD: password, BRAND_SHOT_TOKEN: token };
+  if (shotsDir) require('fs').mkdirSync(shotsDir, { recursive: true });
+  // (11c) the technician's phone screens: today.html as a technician (mobile), and
+  // job.html for one job as the admin and (their own job) as the technician
+  const runs = [...PAGES, ...extraPages].map((page) => ({ page, env, who: email }));
+  if (jobId) runs.push({ page: `job.html?id=${jobId}`, env, who: email });
+  if (techEmail) {
+    const lr = await fetch(`http://localhost:${port}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: techEmail, password }) });
+    const techToken = (await lr.json().catch(() => ({}))).token;
+    if (!techToken) R.fail('page.tech-login', `login as technician ${techEmail} failed (HTTP ${lr.status})`);
+    else {
+      const tenv = { ...process.env, DEMO_PASSWORD: password, BRAND_SHOT_TOKEN: techToken };
+      runs.push({ page: 'today.html', env: tenv, who: techEmail, mobile: true });
+      if (techJobId) runs.push({ page: `job.html?id=${techJobId}`, env: tenv, who: techEmail, mobile: true, tag: 'tech' });
+    }
+  }
+  const cur = brand ? brandCurrency(brand) : null;
+  // (11d) the dashboard's Recent Jobs must list the newest jobs first
+  const indexRun = runs.find((x) => x.page === 'index.html');
+  if (indexRun) {
+    const rj = await getJson(`http://localhost:${port}`, '/api/jobs?sort=recent&limit=10', token).catch(() => ({ body: [] }));
+    indexRun.recent = Array.isArray(rj.body) ? rj.body.map((j) => ({ title: j.title, createdAt: j.createdAt })) : [];
+  }
+  for (const run of runs) {
+    const { page } = run;
+    const label = `${page}${run.tag ? ` (${run.tag})` : run.who !== email ? ' (technician)' : ''}`;
+    const out = shotsDir ? path.join(shotsDir, `check-${label.replace(/[^a-z0-9]+/gi, '_')}.png`) : '-';
+    const args = ['--port', String(port), '--page', page, '--out', out, '--email', run.who, '--text-limit', '200000'];
+    if (run.mobile) args.push('--mobile');
+    if (repair) args.push('--repair-onclick-quotes');
+    const r = await shot(args, run.env);
+    const id = `page.${label}`;
+    if (!r.json) { R.fail(id, `headless run failed: ${r.error}`); continue; }
+    const { errs = [], httpErrors = [], text = '' } = r.json;
+    const problems = [];
+    const warnings = [];
+    const wsNoise = errs.filter((e) => /WebSocket connection to .* failed/.test(e));
+    const jsErrs = errs.filter((e) => !wsNoise.includes(e));
+    if (wsNoise.length) warnings.push('websocket closed early (realtime presence; usually harmless in a headless run)');
+    if (jsErrs.length) problems.push(`JS errors: ${sample(jsErrs.map((e) => e.slice(0, 120)), 2)}`);
+    const http = [...new Set(httpErrors)];
+    const favicon = http.filter((h) => /\/favicon\.ico$/.test(h));
+    if (favicon.length) warnings.push('favicon.ico 404 (WL-7)');
+    if (http.length > favicon.length) problems.push(`HTTP errors: ${sample(http.filter((h) => !favicon.includes(h)), 3)}`);
+    const bad = text.match(/(^|[^A-Za-z])(undefined|NaN|\[object Object\])([^A-Za-z]|$)/g);
+    if (bad) problems.push(`shows ${[...new Set(bad.map((s) => s.trim()))].join(', ')} (${bad.length}×)`);
+    const hits = denylistHits(text, denylist);
+    if (hits.length) problems.push(`denylisted: ${hits.join(', ')}`);
+    if (/\$0\.00/.test(text)) warnings.push('shows $0.00 somewhere');
+    if (cur && cur !== 'USD' && /\$\s?\d/.test(text)) problems.push(`shows "$" amounts on a ${cur} brand`);
+    if (page === 'index.html' && run.recent && run.recent.length) {
+      const order = orderProblems(text, 'Recent Jobs', run.recent);
+      if (order.length) problems.push(`Recent Jobs not newest first: ${sample(order, 2)}`);
+    }
+    if (problems.length) R.fail(id, [...problems, ...warnings].join(' · '));
+    else if (warnings.length) R.warn(id, warnings.join(' · '));
+    else R.pass(id, `${text.length} chars rendered, no errors`);
+  }
+  return R.list;
+}
+
+module.exports = { runDbChecks, runApiChecks, runHeadlessChecks, PAGES, GARBAGE, currencySymbol, orderProblems, addressProblems };

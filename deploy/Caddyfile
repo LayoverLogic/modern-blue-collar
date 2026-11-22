@@ -1,0 +1,15 @@
+# Caddy in front of the MBC app (docker-compose.prod.yml). APP_DOMAIN and
+# ACME_EMAIL come from .env via the caddy service's environment.
+# Caddy obtains and renews the Let's Encrypt certificate itself once the
+# domain's A/AAAA record points at this server and ports 80/443 are open.
+# Socket.io websockets are proxied automatically.
+{
+	email {$ACME_EMAIL}
+}
+
+{$APP_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy app:3001
+	# No access log on purpose: request logs hold client IPs (personal data).
+	# Add `log` here temporarily when debugging.
+}

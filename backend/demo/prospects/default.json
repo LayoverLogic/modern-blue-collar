@@ -1,0 +1,9 @@
+{
+  "slug": "default",
+  "description": "Generic demo for any trade, in the instance's own country (BRAND_COUNTRY): US → fictional 'Anytown', ZIP-shaped codes, 555-01xx phones; IE → Fingal towns, Eircode-shaped codes, ComReg drama-range phones. Reserved .test/.com example domains. Trade, company name, colours and tax come from the instance's BRAND_* env. Used by seed_jobs.js / the sandbox and Docker demo when DEMO_PROSPECT is unset.",
+  "emailDomain": "demo.test",
+  "counts": {
+    "customers": 10,
+    "jobs": 14
+  }
+}

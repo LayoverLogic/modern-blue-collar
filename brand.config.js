@@ -1,81 +1,47 @@
 /**
  * brand.config.js
-   * ─────────────────────────────────────────────────────────────────────────────
-   * Central branding & trade-type configuration for Modern Blue Collar.
-   *
-   * To white-label this platform for a client, edit ONLY this file.
-   * No other source file should contain client-specific strings.
-   * ─────────────────────────────────────────────────────────────────────────────
-   */
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Central branding & trade-type configuration for Modern Blue Collar.
+ *
+ * White-label promise: a client is configured with BRAND_* environment
+ * variables only — no source edits (not even this file). See the "White-label"
+ * section of SETUP.md for the full list. The rules live in
+ * backend/helpers/brandValidate.js, shared with the seeds and tests.
+ *
+ *   BRAND_TRADE_TYPE   electrical | plumbing | hvac | plumbing-hvac | contracting
+ *                      (case-insensitive; "Plumbing & HVAC", "HVAC" etc. accepted).
+ *                      Anything else stops the server at boot with a clear message.
+ *   BRAND_COMPANY_NAME / _SLOGAN / _PHONE / _EMAIL / _ADDRESS
+ *   BRAND_COLOR_PRIMARY, _PRIMARY_DARK, _SECONDARY, _ACCENT, _NAV_BG, _NAV_TEXT,
+ *     _HEADER_BG, _HEADER_TEXT   (hex; unset → per-trade palette, dark/contrast
+ *                                 shades derived from the primary colour)
+ *   BRAND_LOGO_URL, BRAND_FAVICON_URL   https:// URL, /same-origin/path or data:image
+ *   BRAND_TECH_LABEL, BRAND_INDUSTRY_LABEL, BRAND_DEFAULT_STATE, BRAND_TIMEZONE
+ *
+ * The exported object holds plain values (no getters), so it serialises cleanly:
+ *   companyName, companySlogan, companyPhone, companyEmail, companyAddress,
+ *   tradeType, colors{primary, primaryDark, primaryContrast, secondary, accent,
+ *   navBg, navText, headerBg, headerText}, logoUrl, faviconUrl, defaultState,
+ *   industryLabel, jobTypes[], technicianLabel, timezone
+ *
+ * ── Locale block (Phase 2b) ── brand.locale = helpers/locale.js buildLocale():
+ *   BRAND_COUNTRY (US | IE), BRAND_CURRENCY, BRAND_TAX_RATES ("standard:23,reduced:13.5,zero:0"),
+ *   BRAND_TAX_DEFAULT, BRAND_TAX_LABEL, BRAND_TAX_NUMBER, BRAND_QUOTE_PREFIX,
+ *   BRAND_INVOICE_PREFIX, BRAND_RCT_NOTE. Unset = today's US behaviour (USD, no tax).
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+const { buildBrand, BrandConfigError } = require('./backend/helpers/brandValidate');
 
-module.exports = {
-  // ── Company identity ────────────────────────────────────────────────────────
-  companyName:   process.env.BRAND_COMPANY_NAME   || 'Modern Blue Collar',
-      companySlogan: process.env.BRAND_COMPANY_SLOGAN || 'Field Service Management',
-      companyPhone:  process.env.BRAND_COMPANY_PHONE  || '',
-      companyEmail:  process.env.BRAND_COMPANY_EMAIL  || '',
-      companyAddress:process.env.BRAND_COMPANY_ADDRESS|| '',
+let brand;
+try {
+  brand = buildBrand(process.env);
+  // ── Locale block (Phase 2b, helpers/locale.js) — fails fast like the rest ──
+  brand.locale = require('./backend/helpers/locale').buildLocale(process.env, brand);
+  // ── end locale block ──
+} catch (e) {
+  if (!(e instanceof BrandConfigError)) throw e;
+  console.error(`\n[brand] Invalid white-label configuration — refusing to start.\n[brand] ${e.message}\n`);
+  process.exit(1);
+}
 
-      // ── Trade type ──────────────────────────────────────────────────────────────
-      // Supported values: 'electrical' | 'plumbing' | 'hvac' | 'plumbing-hvac' | 'contracting'
-      tradeType: process.env.BRAND_TRADE_TYPE || 'electrical',
-
-      // ── UI theme colours (CSS custom properties) ────────────────────────────────
-      // Override via BRAND_COLOR_PRIMARY env var or edit defaults below.
-      colors: {
-    // electrical  → yellow/black
-    // plumbing    → blue/silver
-    // hvac        → teal/grey
-    // contracting → orange/dark
-    primary:    process.env.BRAND_COLOR_PRIMARY    || '#f5a623',
-          secondary:  process.env.BRAND_COLOR_SECONDARY  || '#1a1a2e',
-          accent:     process.env.BRAND_COLOR_ACCENT     || '#ffffff',
-          navBg:      process.env.BRAND_COLOR_NAV_BG     || '#1a1a2e',
-          navText:    process.env.BRAND_COLOR_NAV_TEXT   || '#ffffff',
-          headerBg:   process.env.BRAND_COLOR_HEADER_BG  || '#f5a623',
-          headerText: process.env.BRAND_COLOR_HEADER_TEXT|| '#1a1a2e',
-      },
-
-        // ── Default state for address fields ────────────────────────────────────────
-        defaultState: process.env.BRAND_DEFAULT_STATE || 'KS',
-
-            // ── Pricebook industry label ─────────────────────────────────────────────────
-            // Used as the default "industry" value in PriceBookItem records.
-            get industryLabel() {
-    const map = {
-            electrical:     'Electrical',
-                    plumbing:       'Plumbing',
-                    hvac:           'HVAC',
-                    'plumbing-hvac':'Plumbing & HVAC',
-                    contracting:    'General Contracting',
-              };
-    return process.env.BRAND_INDUSTRY_LABEL || map[this.tradeType] || 'Electrical';
-        },
-
-  // ── Trade-specific job types ─────────────────────────────────────────────────
-  get jobTypes() {
-        const map = {
-                electrical:      ['Panel Upgrade', 'Outlet / Switch', 'Lighting', 'EV Charger', 'Generator', 'Inspection', 'Troubleshooting', 'Other'],
-                        plumbing:        ['Leak Repair', 'Drain Cleaning', 'Water Heater', 'Fixture Install', 'Sewer Line', 'Inspection', 'Troubleshooting', 'Other'],
-                        hvac:            ['AC Install', 'Furnace Install', 'AC Repair', 'Furnace Repair', 'Duct Work', 'Tune-Up', 'Inspection', 'Other'],
-                        'plumbing-hvac': ['Leak Repair', 'Drain Cleaning', 'Water Heater', 'Fixture Install', 'Sewer Line', 'AC Install', 'Furnace Install', 'AC Repair', 'Furnace Repair', 'Duct Work', 'Tune-Up', 'Inspection', 'Troubleshooting', 'Other'],
-                        contracting:     ['Framing', 'Drywall', 'Flooring', 'Roofing', 'Painting', 'Demo', 'General Repair', 'Other'],
-                  };
-    return map[this.tradeType] || map.electrical;
-  },
-
-  // ── Trade-specific technician label ──────────────────────────────────────────
-  get technicianLabel() {
-        const map = {
-                electrical:      'Electrician',
-                        plumbing:        'Plumber',
-                        hvac:            'HVAC Technician',
-                        'plumbing-hvac': 'Technician',
-                        contracting:     'Contractor',
-                  };
-    return process.env.BRAND_TECH_LABEL || map[this.tradeType] || 'Technician';
-  },
-
-  // ── Timezone for scheduled jobs & cron tasks ─────────────────────────────────
-  timezone: process.env.BRAND_TIMEZONE || 'America/Chicago',
-    };
+module.exports = brand;

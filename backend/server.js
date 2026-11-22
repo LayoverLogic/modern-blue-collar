@@ -1,112 +1,388 @@
+const path    = require('path');
 const express = require('express');
 const http    = require('http');
 const helmet  = require('helmet');
 const cors    = require('cors');
 const rateLimit = require('express-rate-limit');
-require('dotenv').config();
+require('./helpers/loadEnv');
+
+// Refuse to boot with an unsafe production config (missing/weak/published
+// JWT_SECRET, DEMO_MODE in production) — RT-6, PLAT-8, RT-23.
+const { assertBootConfig, isProduction } = require('./helpers/security');
+assertBootConfig();
 
 const brand = require('../brand.config');
-const app   = express();
+const { requireAuth, userFromToken } = require('./routes/auth');
+const prisma = require('./helpers/prisma');
+const { readsAll, assertJobRead, jobReadScope } = require('./helpers/access');
+const { parseId } = require('./helpers/httpError');
+const { errorHandler } = require('./helpers/errorHandler');
+
+const app    = express();
 const server = http.createServer(app);
+// Flat query strings (RT-28) — must be set before the first app.use().
+app.set('query parser', 'simple');
+
+// Money is Decimal(12,2) in the DB (Phase 2b). helpers/prisma.js already reads
+// money fields back as numbers; this replacer is the safety net that keeps the
+// API contract "money = JSON number" for any Decimal that slips through.
+const { Prisma: PrismaNS } = require('@prisma/client');
+app.set('json replacer', function moneyReplacer(key, value) {
+  const raw = this[key];
+  return raw != null && typeof raw === 'object' && PrismaNS.Decimal.isDecimal(raw) ? raw.toNumber() : value;
+});
+
+// ── Reverse proxy (RT-24) ──────────────────────────────────────────────────
+// Behind a proxy / load balancer set TRUST_PROXY so req.ip (rate limiting,
+// logs) is the client, not the proxy:  1 (one hop — typical), a hop count,
+// "loopback", or a comma-separated list of proxy IPs/CIDRs. Unset = no proxy
+// trusted (X-Forwarded-For ignored). "true" trusts everything — spoofable.
+function parseTrustProxy(raw) {
+  const v = String(raw == null ? '' : raw).trim();
+  if (!v || v === 'false' || v === '0') return false;
+  if (v === 'true') return true;
+  if (/^\d+$/.test(v)) return Number(v);
+  return v.split(',').map((s) => s.trim()).filter(Boolean);
+}
+const trustProxy = parseTrustProxy(process.env.TRUST_PROXY);
+app.set('trust proxy', trustProxy);
+if (trustProxy === true) console.warn('[CONFIG] WARNING: TRUST_PROXY=true trusts any X-Forwarded-For — clients can spoof their IP. Use a hop count (e.g. 1) instead.');
+
+// ── Allowed browser origins (RT-27) ────────────────────────────────────────
+// Same-origin only unless APP_URL and/or CORS_ORIGINS (comma-separated) are set.
+function allowedOrigins() {
+  const list = String(process.env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (process.env.APP_URL) { try { list.push(new URL(process.env.APP_URL).origin); } catch { /* ignore bad APP_URL */ } }
+  return [...new Set(list.map((o) => o.replace(/\/+$/, '')))];
+}
+const ORIGINS = allowedOrigins();
 
 // ── Socket.io — real-time presence ──────────────────────────────────────────
 const { Server } = require('socket.io');
 const io = new Server(server, {
-  cors: { origin: process.env.APP_URL || '*', methods: ['GET', 'POST'] },
+  ...(ORIGINS.length ? { cors: { origin: ORIGINS, methods: ['GET', 'POST'] } } : {}),
+  maxHttpBufferSize: 64 * 1024,
+});
+
+// Handshake auth (RT-14): the client must send its JWT —
+//   io({ auth: { token } })   (or an `Authorization: Bearer` header).
+// The viewer identity comes from that token, never from event payloads.
+io.use((socket, next) => {
+  const hs = socket.handshake || {};
+  const header = hs.headers && typeof hs.headers.authorization === 'string' ? hs.headers.authorization : '';
+  const token = (hs.auth && typeof hs.auth.token === 'string' && hs.auth.token)
+    || (header.startsWith('Bearer ') ? header.slice(7).trim() : '');
+  userFromToken(token)
+    .then((user) => {
+      if (!user) return next(new Error('unauthorized'));
+      socket.data.user = user;
+      next();
+    })
+    .catch(() => next(new Error('unauthorized')));
 });
 
 // In-memory presence: { jobId: { socketId: { userId, firstName, lastName } } }
 const presence = {};
 
-io.on('connection', (socket) => {
-  let currentJobId = null;
-  let currentUser  = null;
+// Socket event payloads come straight from the network: never trust their shape
+// (RT-2 — one malformed `viewing-job` used to crash the whole process).
+function safeHandler(fn) {
+  return (...args) => {
+    try { fn(...args); } catch (e) { console.warn('[SOCKET] handler error:', e.message); }
+  };
+}
 
-  socket.on('viewing-job', ({ jobId, user }) => {
-    // Clean up previous room
+function parseJobId(payload) {
+  const raw = payload && typeof payload === 'object' ? payload.jobId : undefined;
+  const s = typeof raw === 'number' ? String(raw) : raw;
+  if (typeof s !== 'string' || !/^\d{1,15}$/.test(s)) return null;
+  return String(Number(s));
+}
+
+io.on('connection', (socket) => {
+  const me = socket.data.user;
+  let currentJobId = null;
+  // Per-user room: lets routes/users.js drop every socket of a user who is
+  // deactivated, deleted or has their role changed (disconnectUserSockets).
+  socket.join(`user:${me.id}`);
+
+  function leaveCurrent() {
     if (currentJobId && presence[currentJobId]) {
       delete presence[currentJobId][socket.id];
       if (Object.keys(presence[currentJobId]).length === 0) delete presence[currentJobId];
-      socket.leave(`job:${currentJobId}`);
       io.to(`job:${currentJobId}`).emit('presence-update', { jobId: currentJobId, viewers: presence[currentJobId] || {} });
     }
-    currentJobId = String(jobId);
-    currentUser  = user;
+    if (currentJobId) socket.leave(`job:${currentJobId}`);
+    currentJobId = null;
+  }
+
+  // payload: { jobId } — any `user` field is ignored (identity = token).
+  // Only jobs the user may read (L1: TECH_VISIBILITY=own → a technician's own
+  // jobs); anything else is ignored, like a malformed event. `seq` drops the
+  // answer of an older event that resolves after a newer one.
+  let seq = 0;
+  socket.on('viewing-job', safeHandler((payload) => {
+    const jobId = parseJobId(payload);
+    if (!jobId) return; // ignore malformed events
+    const mine = ++seq;
+    // office roles / TECH_VISIBILITY=all: any job id, no lookup (as before)
+    (readsAll(me) ? Promise.resolve() : assertJobRead(me, Number(jobId))).then(() => {
+      if (mine !== seq || !socket.connected) return;
+      joinJob(jobId);
+    }, () => {
+      if (mine === seq) socket.emit('presence-denied', { jobId });
+    }).catch((e) => console.warn('[SOCKET] viewing-job:', e.message));
+  }));
+
+  function joinJob(jobId) {
+    leaveCurrent();
+    currentJobId = jobId;
     if (!presence[currentJobId]) presence[currentJobId] = {};
-    presence[currentJobId][socket.id] = { userId: user.id, firstName: user.firstName, lastName: user.lastName };
+    presence[currentJobId][socket.id] = { userId: me.id, firstName: me.firstName, lastName: me.lastName };
     socket.join(`job:${currentJobId}`);
     io.to(`job:${currentJobId}`).emit('presence-update', { jobId: currentJobId, viewers: presence[currentJobId] });
-  });
+  }
 
-  socket.on('leave-job', () => {
-    if (currentJobId && presence[currentJobId]) {
-      delete presence[currentJobId][socket.id];
-      if (Object.keys(presence[currentJobId]).length === 0) delete presence[currentJobId];
-      io.to(`job:${currentJobId}`).emit('presence-update', { jobId: currentJobId, viewers: presence[currentJobId] || {} });
-      socket.leave(`job:${currentJobId}`);
-    }
-    currentJobId = null;
-    currentUser  = null;
-  });
-
-  socket.on('disconnect', () => {
-    if (currentJobId && presence[currentJobId]) {
-      delete presence[currentJobId][socket.id];
-      if (Object.keys(presence[currentJobId]).length === 0) delete presence[currentJobId];
-      io.to(`job:${currentJobId}`).emit('presence-update', { jobId: currentJobId, viewers: presence[currentJobId] || {} });
-    }
-  });
+  socket.on('leave-job', safeHandler(() => { seq += 1; leaveCurrent(); }));
+  socket.on('disconnect', safeHandler(() => leaveCurrent()));
 });
+
+/**
+ * Disconnect every live socket of a user (deactivated / demoted / deleted).
+ * Their presence entries are removed by the normal 'disconnect' handler; a
+ * reconnect re-runs the handshake, which re-reads the user row (RT-5).
+ */
+function disconnectUserSockets(userId) {
+  if (!Number.isSafeInteger(userId)) return;
+  io.in(`user:${userId}`).disconnectSockets(true);
+}
 
 // Make io accessible to routes
 app.set('io', io);
+app.set('disconnectUserSockets', disconnectUserSockets);
 app.set('presence', presence);
 
-// ── Security headers ────────────────────────────────────────────────────────
-app.use(helmet({ contentSecurityPolicy: false }));
+// ── Security headers (RT-15) ────────────────────────────────────────────────
+// No page in public/ uses inline <script>, inline on* handlers or style=""
+// attributes any more (Phase 2c), so scripts and styles are 'self' only.
+// tests/backend.test.js ("2c CSP …") loads every page under this policy in headless Chrome and
+// fails on any violation. Pages may still set element.style.* from script
+// (CSSOM) — CSP does not restrict that.
+//   img-src     'self' data: blob: + the https origin of BRAND_LOGO_URL /
+//               BRAND_FAVICON_URL when they point at another host
+//   connect-src 'self' + ws(s):// of the same host (socket.io presence)
+const { cspAssetOrigins, sameOriginSockets } = require('./helpers/csp');
+app.use(helmet({
+  contentSecurityPolicy: {
+    useDefaults: false,
+    directives: {
+      defaultSrc:     ["'self'"],
+      scriptSrc:      ["'self'"],
+      scriptSrcAttr:  ["'none'"],
+      styleSrc:       ["'self'"],
+      imgSrc:         ["'self'", 'data:', 'blob:', ...cspAssetOrigins(brand)],
+      fontSrc:        ["'self'", 'data:'],
+      connectSrc:     ["'self'", (req) => sameOriginSockets(req)],
+      objectSrc:      ["'none'"],
+      frameAncestors: ["'none'"],
+      baseUri:        ["'self'"],
+      formAction:     ["'self'"],
+    },
+  },
+}));
 app.disable('x-powered-by');
 
 const PORT = process.env.PORT || 3001;
 
+// TECH_VISIBILITY=own|all (helpers/access.js) — unknown values fall back to own.
+{
+  const tv = String(process.env.TECH_VISIBILITY || '').trim().toLowerCase();
+  if (tv && !['own', 'all'].includes(tv)) console.warn(`[CONFIG] TECH_VISIBILITY="${process.env.TECH_VISIBILITY}" is not own|all — using own.`);
+}
+
 app.use(cors({
-  origin: process.env.APP_URL || '*',
+  origin: ORIGINS.length ? ORIGINS : false,
   methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
 }));
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
+
+// ── Query strings are flat strings (RT-28) ──────────────────────────────────
+// No nested objects (?a[not]=x) that could reach Prisma as operators; a
+// repeated key keeps its first value.
+app.use((req, _res, next) => {
+  for (const [k, v] of Object.entries(req.query)) {
+    if (Array.isArray(v)) req.query[k] = typeof v[0] === 'string' ? v[0] : '';
+    else if (typeof v !== 'string') delete req.query[k];
+  }
+  next();
+});
 
 // ── API key authentication (runs before routes, sets req.user if valid) ────
 const { authenticateApiKey } = require('./middleware/apiKeyAuth');
 app.use('/api/', authenticateApiKey);
 
-// ── Rate limiting ───────────────────────────────────────────────────────────
+// ── Rate limiting (UX-15) ───────────────────────────────────────────────────
+// A whole office often shares one public IP, so signed-in requests are counted
+// per user (valid session JWT) or per API key, not per IP. Anonymous requests
+// stay per IP. The strict login limiter below is still per IP.
+//   RATE_LIMIT_USER_MAX  requests / 15 min per signed-in user or key (default 1000)
+//   RATE_LIMIT_IP_MAX    requests / 15 min per IP for anonymous calls (default 300)
+const { verifyToken } = require('./helpers/security');
+const envInt = (name, fallback) => {
+  const n = Number(process.env[name]);
+  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+};
+const USER_MAX = envInt('RATE_LIMIT_USER_MAX', 1000);
+const IP_MAX   = envInt('RATE_LIMIT_IP_MAX', 300);
+function limiterIdentity(req) {
+  if (req._rlIdentity !== undefined) return req._rlIdentity;
+  let id = null;
+  if (req.apiKey && req.apiKey.id) id = `key:${req.apiKey.id}`;
+  else {
+    const h = req.headers.authorization;
+    if (typeof h === 'string' && h.startsWith('Bearer ')) {
+      try { id = `user:${verifyToken(h.slice(7).trim()).id}`; } catch { id = null; }
+    }
+  }
+  req._rlIdentity = id;
+  return id;
+}
+// Not counted by apiLimiter (M2, Verifier #1): GET /api/brand (every page,
+// incl. the sign-in page, reads it without a token — an office of 30 people
+// loading pages used to exhaust the anonymous per-IP budget and lock everyone
+// out of sign-in) and the sign-in / reset / invite routes, which have their
+// own stricter limiters below. Paths are relative to the /api mount.
+const API_LIMITER_EXEMPT = [
+  ['GET', /^\/brand\/?$/],
+  ['POST', /^\/auth\/login\/?$/],
+  ['*', /^\/auth\/google\/exchange\/?$/],
+  ['*', /^\/auth\/(forgot|reset)\/?$/],
+  ['GET', /^\/invites\/[^/]+\/?$/],
+  ['POST', /^\/invites\/[^/]+\/accept\/?$/],
+];
+const apiLimiterExempt = (req) => API_LIMITER_EXEMPT.some(([m, re]) => (m === '*' || m === req.method || (m === 'GET' && req.method === 'HEAD')) && re.test(req.path));
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 200,
+  skip: apiLimiterExempt,
+  limit: (req) => (limiterIdentity(req) ? USER_MAX : IP_MAX),
+  keyGenerator: (req) => limiterIdentity(req) || `ip:${rateLimit.ipKeyGenerator(req.ip || '')}`,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, please try again later.' },
 });
 
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-  message: { error: 'Too many login attempts, please try again later.' },
+// ── Sign-in limiters (GAP-3) ────────────────────────────────────────────────
+// Only FAILED attempts count (skipSuccessfulRequests: a 2xx/3xx answer is
+// un-counted), so a training room signing in from one office IP is never
+// locked out by its own successful logins. Brute force stays capped twice:
+//   LOGIN_MAX_PER_EMAIL  failed logins / 15 min per IP + email   (default 10)
+//   LOGIN_MAX_PER_IP     failed logins / 15 min per IP, all emails (default 50)
+//                        (password spraying / one office mistyping a lot)
+//   RESET_RATE_MAX       forgot / reset / invite-link requests / 15 min per IP (default 20)
+// Counters are in memory (one process): a restart clears them.
+const LOGIN_WINDOW = 15 * 60 * 1000;
+const LOGIN_MSG = { error: 'Too many login attempts, please try again later.', code: 'RATE_LIMITED' };
+// a 2xx/3xx is a success; a 429 from the other limiter is not charged as a failure either
+const notAFailure = (_req, res) => res.statusCode < 400 || res.statusCode === 429;
+const ipKey = (req) => rateLimit.ipKeyGenerator(req.ip || '');
+const loginEmail = (req) => {
+  const e = req.body && typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase().slice(0, 254) : '';
+  return e || '-';
+};
+const loginPerEmailLimiter = rateLimit({
+  windowMs: LOGIN_WINDOW,
+  limit: envInt('LOGIN_MAX_PER_EMAIL', 10),
+  skipSuccessfulRequests: true,
+  requestWasSuccessful: notAFailure,
+  keyGenerator: (req) => `${ipKey(req)}|${loginEmail(req)}`,
+  standardHeaders: true, legacyHeaders: false,
+  message: LOGIN_MSG,
+});
+const loginPerIpLimiter = rateLimit({
+  windowMs: LOGIN_WINDOW,
+  limit: envInt('LOGIN_MAX_PER_IP', 50),
+  skipSuccessfulRequests: true,
+  requestWasSuccessful: notAFailure,
+  keyGenerator: ipKey,
+  standardHeaders: true, legacyHeaders: false,
+  message: LOGIN_MSG,
+});
+const exchangeLimiter = rateLimit({
+  windowMs: LOGIN_WINDOW,
+  limit: envInt('LOGIN_MAX_PER_IP', 50),
+  skipSuccessfulRequests: true,
+  keyGenerator: ipKey,
+  standardHeaders: true, legacyHeaders: false,
+  message: LOGIN_MSG,
+});
+const resetLimiter = rateLimit({
+  windowMs: LOGIN_WINDOW,
+  limit: envInt('RESET_RATE_MAX', 20),
+  keyGenerator: ipKey,
+  standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.', code: 'RATE_LIMITED' },
+});
+// Wrong current password on PATCH /api/users/me/password (a stolen session
+// must not become a password oracle): per user, failures only.
+const passwordChangeLimiter = rateLimit({
+  windowMs: LOGIN_WINDOW,
+  limit: envInt('LOGIN_MAX_PER_EMAIL', 10),
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => limiterIdentity(req) || `ip:${ipKey(req)}`,
+  standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Too many attempts, please try again later.', code: 'RATE_LIMITED' },
 });
 
 app.use('/api/', apiLimiter);
-app.use('/api/auth/login', authLimiter);
+app.post('/api/auth/login', loginPerIpLimiter, loginPerEmailLimiter);
+app.use('/api/auth/google/exchange', exchangeLimiter);
+app.use(['/api/auth/forgot', '/api/auth/reset'], resetLimiter);
+app.get('/api/invites/:token', resetLimiter);
+app.post('/api/invites/:token/accept', resetLimiter);
+app.patch('/api/users/me/password', passwordChangeLimiter);
 
-app.use(express.static('public'));
-
-// ── Presence REST endpoint (for initial page load) ──────────────────────────
-app.get('/api/presence', (req, res) => {
-  res.json(presence);
+// ── Favicon (WL-7): BRAND_FAVICON_URL (or the logo) — else 204, never a 404 ──
+app.get('/favicon.ico', (_req, res) => {
+  const url = brand.faviconUrl;
+  if (!url) return res.status(204).end();
+  const m = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(url);
+  if (m) {
+    res.setHeader('Content-Type', m[1]);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.send(Buffer.from(m[2], 'base64'));
+  }
+  return res.redirect(302, url);
 });
 
-app.get('/api/presence/:jobId', (req, res) => {
-  const jobId = String(req.params.jobId);
-  res.json({ jobId, viewers: presence[jobId] || {} });
+// HTML is never cached (a deploy or brand change shows up on the next load);
+// other static assets keep the default caching.
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-store');
+  },
+}));
+
+// ── Presence REST endpoints (initial page load) — signed-in users only ──────
+// L1: TECH_VISIBILITY=own → a technician sees presence on their own jobs only.
+app.get('/api/presence', requireAuth, async (req, res, next) => {
+  try {
+    if (readsAll(req.user)) return res.json(presence);
+    const ids = Object.keys(presence).map(Number).filter(Number.isSafeInteger);
+    const own = ids.length ? await prisma.job.findMany({ where: { id: { in: ids }, ...jobReadScope(req.user) }, select: { id: true } }) : [];
+    const out = {};
+    for (const { id } of own) if (presence[String(id)]) out[String(id)] = presence[String(id)];
+    res.json(out);
+  } catch (e) { next(e); }
+});
+
+app.get('/api/presence/:jobId', requireAuth, async (req, res, next) => {
+  try {
+    const id = parseId(req.params.jobId, 'jobId');
+    if (!readsAll(req.user)) await assertJobRead(req.user, id);
+    const jobId = String(id);
+    res.json({ jobId, viewers: presence[jobId] || {} });
+  } catch (e) { next(e); }
 });
 
 // ── API routes ──────────────────────────────────────────────────────────────
@@ -116,30 +392,45 @@ app.use('/api/users',           require('./routes/users'));
 app.use('/api/quotes',          require('./routes/quotes'));
 app.use('/api/invoices',        require('./routes/invoices'));
 app.use('/api/auth',            require('./routes/auth').router);
+// Google sign-in: /api/auth/google, /api/auth/google/callback, /api/auth/google/exchange
+app.use('/api/auth',            require('./routes/googleAuth'));
 app.use('/api/quickbooks',      require('./routes/quickbooks'));
 app.use('/api/sms',             require('./routes/sms'));
 app.use('/api/backup',          require('./routes/backup'));
 app.use('/api/pricebook',       require('./routes/pricebook'));
 app.use('/api/exports',         require('./routes/exports'));
+app.use('/api/imports',         require('./routes/imports'));
 app.use('/api/invites',         require('./routes/invites'));
 app.use('/api/communications',  require('./routes/communications'));
 app.use('/api/api-keys',        require('./routes/apiKeys'));
-// Google OAuth callback — mount invites router at /api/auth so
-// GOOGLE_CALLBACK_URL=/api/auth/google/callback works
-app.use('/api/auth',            require('./routes/invites'));
+app.use('/api/activity',        require('./routes/activity').router);
+
+const demoMode = () => process.env.DEMO_MODE === 'true' && !isProduction();
 
 // ── Brand config endpoint (read-only, safe for front-end consumption) ──────
+// helpers/brandValidate.publicBrand: companyName, companySlogan, tradeType,
+// technicianLabel, industryLabel, jobTypes, colors, logoUrl, faviconUrl,
+// timezone — plus demoMode / demoLogin and the `locale` block (Phase 2b).
+const { publicBrand } = require('./helpers/brandValidate');
+const { publicLocale } = require('./helpers/locale');
+const { integrationStatus } = require('./helpers/integrations');
 app.get('/api/brand', (_req, res) => {
-  res.json({
-    companyName:     brand.companyName,
-    companySlogan:   brand.companySlogan,
-    tradeType:       brand.tradeType,
-    technicianLabel: brand.technicianLabel,
-    industryLabel:   brand.industryLabel,
-    jobTypes:        brand.jobTypes,
-    colors:          brand.colors,
-    demoMode:        process.env.DEMO_MODE === 'true',
-  });
+  res.json(publicBrand(brand, {
+    // Show "Sign in with Google" only when it can work: Google OAuth configured
+    // (GOOGLE_CLIENT_ID / _SECRET / _CALLBACK_URL) and not disabled by SANDBOX_MODE.
+    googleAuth:      integrationStatus('google').enabled,
+    // Shortcuts for pages (same values as in `locale`).
+    country:         brand.locale.country,
+    currency:        brand.locale.currency,
+    weekStart:       brand.locale.weekStart,
+    demoMode:        demoMode(),
+    // Demo sign-in hint for the login page — ONLY in demo mode (never in
+    // production: the server refuses DEMO_MODE there). null otherwise.
+    demoLogin:       demoMode() && process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD
+      ? { email: process.env.ADMIN_EMAIL, password: process.env.ADMIN_PASSWORD }
+      : null,
+    locale:          publicLocale(brand.locale),
+  }));
 });
 
 // ── Health check ────────────────────────────────────────────────────────────
@@ -151,6 +442,12 @@ app.get('/api/health', (_req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+// Unknown API routes → JSON 404 (not the static-file 404 page)
+app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found', code: 'NOT_FOUND' }));
+
+// ── Global error handler (RT-17): helpers/errorHandler.js ───────────────────
+app.use(errorHandler);
 
 // ── Nightly backup cron (03:00) ─────────────────────────────────────────────
 try {
@@ -165,16 +462,22 @@ try {
   console.warn('node-cron not available — nightly backup disabled:', e.message);
 }
 
-server.listen(PORT, () => {
-  console.log(`[${brand.companyName}] Server running on port ${PORT} | trade=${brand.tradeType}`);
-});
+// Document numbers for rows inserted outside the API (seeds, imports) use the
+// prefix stored in "DocumentCounter": keep it in step with BRAND_*_PREFIX.
+require('./helpers/prisma').$executeRaw`UPDATE "DocumentCounter" SET "prefix" = CASE "type" WHEN 'quote' THEN ${brand.locale.quotePrefix} ELSE ${brand.locale.invoicePrefix} END`
+  .catch((e) => console.warn('[BOOT] could not sync document number prefixes:', e.message));
+// Invoice due dates are calendar dates stored at UTC midnight (helpers/calendarDate.js).
+// Rows written earlier as an instant (e.g. seed:demo's 17:00 local → 23:00Z) are
+// rewritten once to their calendar date in the brand time zone. Idempotent.
+require('./helpers/prisma').$executeRawUnsafe(require('./helpers/calendarDate').normaliseDueDatesSql(), brand.timezone)
+  .then((n) => { if (n) console.log(`[BOOT] normalised ${n} invoice due date(s) to calendar dates`); })
+  .catch((e) => console.warn('[BOOT] could not normalise invoice due dates:', e.message));
 
-// ── Global error handler ────────────────────────────────────────────────────
-app.use((err, _req, res, _next) => {
-  console.error('[ERROR]', err.message);
-  res.status(err.status || 500).json({
-    error: process.env.NODE_ENV === 'production' ? 'Internal server error' : err.message,
-  });
+// HOST: interface to listen on. Unset = all interfaces (Docker / production
+// behind a proxy). `npm run sandbox` defaults it to 127.0.0.1.
+const HOST = String(process.env.HOST || '').trim() || undefined;
+server.listen(PORT, HOST, () => {
+  console.log(`[${brand.companyName}] Server running on ${HOST ? `${HOST}:` : 'port '}${PORT} | trade=${brand.tradeType}`);
 });
 
 module.exports = { app, server };

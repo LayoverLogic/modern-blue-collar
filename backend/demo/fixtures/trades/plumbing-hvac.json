@@ -1,0 +1,5 @@
+{
+  "trade": "plumbing-hvac",
+  "notes": "Combined shop: the plumbing and hvac fixtures merged (pricebook + inventory de-duplicated by name; jobs interleaved).",
+  "extends": ["plumbing", "hvac"]
+}

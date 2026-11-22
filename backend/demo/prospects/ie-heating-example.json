@@ -1,0 +1,40 @@
+{
+  "slug": "ie-heating-example",
+  "description": "Example prospect: a FICTIONAL heating & plumbing firm in Co. Kildare, Ireland. Real town names, invented streets, Eircodes with random unique ids, ComReg drama-range phone numbers (020 910 01xx / 089 011 01xx), reserved .example domain. Irish locale: EUR, VAT 23% / 13.5% / 0% (rates are demo configuration — a real client confirms them with their accountant).",
+  "locale": "IE",
+  "brand": {
+    "BRAND_COMPANY_NAME": "Brightwater Heating & Plumbing Ltd",
+    "BRAND_COMPANY_SLOGAN": "Boilers, heat pumps & plumbing",
+    "BRAND_COMPANY_PHONE": "020 910 0100",
+    "BRAND_COMPANY_EMAIL": "office@brightwater-heating.example",
+    "BRAND_COMPANY_ADDRESS": "Unit 3, Fairgreen Road, Naas, Co. Kildare",
+    "BRAND_TRADE_TYPE": "plumbing-hvac",
+    "BRAND_COLOR_PRIMARY": "#0f766e",
+    "BRAND_COLOR_NAV_BG": "#0b2b29",
+    "BRAND_TECH_LABEL": "Engineer",
+    "BRAND_TIMEZONE": "Europe/Dublin",
+    "BRAND_COUNTRY": "IE",
+    "BRAND_CURRENCY": "EUR",
+    "BRAND_TAX_RATES": "standard:23,reduced:13.5,zero:0",
+    "BRAND_TAX_DEFAULT": "reduced",
+    "BRAND_TAX_LABEL": "VAT"
+  },
+  "emailDomain": "brightwater-heating.example",
+  "area": {
+    "state": "Co. Kildare",
+    "towns": [
+      { "name": "Naas",      "routingKey": "W91" },
+      { "name": "Newbridge", "routingKey": "W12" },
+      { "name": "Kildare",   "routingKey": "R51" },
+      { "name": "Maynooth",  "routingKey": "W23" }
+    ]
+  },
+  "team": [
+    { "role": "admin",      "local": "office",   "firstName": "Gráinne", "lastName": "Kavanagh" },
+    { "role": "dispatcher", "local": "dispatch", "firstName": "Orla",    "lastName": "Brennan" },
+    { "role": "technician", "local": "tech1",    "firstName": "Ciarán",  "lastName": "Moran" },
+    { "role": "technician", "local": "tech2",    "firstName": "Eoin",    "lastName": "Healy" },
+    { "role": "technician", "local": "tech3",    "firstName": "Tadhg",   "lastName": "O'Connor" }
+  ],
+  "counts": { "customers": 10, "jobs": 14 }
+}

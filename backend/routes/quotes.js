@@ -1,72 +1,32 @@
 /**
- * routes/quotes.js  — Quote CRUD
+ * routes/quotes.js  — Quote CRUD + email (line items: Phase 2b)
  * status: draft | sent | approved | declined
- * Includes optimistic locking on PATCH (version field).
+ *
+ * Shared logic: helpers/documentRoutes.js (routes, locking, email) and
+ * helpers/documents.js (Decimal totals, numbering, print view).
+ *
+ *   GET    /api/quotes             list (technicians: own jobs only, RT-21), with lines
+ *   GET    /api/quotes/:id         quote + lines + customer + `print` block + `locked`
+ *   POST   /api/quotes             { jobId, lines[] | amount, status?, notes?, reverseCharge?, issuedAt? }
+ *   PATCH  /api/quotes/:id         same fields + version (PUT is an alias)
+ *   DELETE /api/quotes/:id         drafts only (409 DOCUMENT_LOCKED once sent)
+ *   POST   /api/quotes/:id/email   { message? } → customer email (outbox in sandbox), logs a communication,
+ *                                  marks the quote sent
+ * Writes: BILLING roles. A quote may total 0 (free estimate); amounts at most
+ * helpers/validate MONEY_MAX, 2 decimals (RT-11). Locked once sent / not draft.
  */
-const express          = require('express');
-const router           = express.Router();
-const { PrismaClient } = require('@prisma/client');
-const { requireAuth, requireRole } = require('./auth');
-const { optimisticUpdate } = require('../helpers/optimisticUpdate');
-const prisma           = new PrismaClient();
+const express = require('express');
+const router  = express.Router();
+const v = require('../helpers/validate');
+const { mountDocumentRoutes } = require('../helpers/documentRoutes');
 
-// TODO: make this a per-deployment permission setting rather than a hardcoded
-// role list, so clients can map other roles (e.g. `office`) to billing writes.
-const BILLING_ROLES = ['admin', 'super-admin']; // per-deployment knob until permissions are configurable
-
-router.get('/',     requireAuth, async (req, res, next) => {
-  try {
-    const quotes = await prisma.quote.findMany({ include: { job: { include: { customer: true } } }, orderBy: { createdAt: 'desc' } });
-    res.json(quotes);
-  } catch (e) { next(e); }
-});
-
-router.get('/:id',  requireAuth, async (req, res, next) => {
-  try {
-    const q = await prisma.quote.findUnique({ where: { id: Number(req.params.id) }, include: { job: { include: { customer: true } } } });
-    if (!q) return res.status(404).json({ error: 'Quote not found' });
-    res.json(q);
-  } catch (e) { next(e); }
-});
-
-router.post('/',    requireAuth, requireRole(...BILLING_ROLES), async (req, res, next) => {
-  try {
-    const { jobId, amount, notes } = req.body;
-    if (!jobId || amount == null) return res.status(400).json({ error: 'jobId and amount are required' });
-    const q = await prisma.quote.create({ data: { jobId: Number(jobId), amount: Number(amount), notes } });
-    res.status(201).json(q);
-  } catch (e) { next(e); }
-});
-
-router.patch('/:id', requireAuth, requireRole(...BILLING_ROLES), async (req, res, next) => {
-  try {
-    const data = { ...req.body };
-    if (data.amount) data.amount = Number(data.amount);
-    const q = await optimisticUpdate('quote', Number(req.params.id), data);
-    res.json(q);
-  } catch (e) {
-    if (e.status === 409) return res.status(409).json({ error: e.message });
-    next(e);
-  }
-});
-
-router.put('/:id', requireAuth, requireRole(...BILLING_ROLES), async (req, res, next) => {
-  try {
-    const data = { ...req.body };
-    if (data.amount) data.amount = Number(data.amount);
-    const q = await optimisticUpdate('quote', Number(req.params.id), data);
-    res.json(q);
-  } catch (e) {
-    if (e.status === 409) return res.status(409).json({ error: e.message });
-    next(e);
-  }
-});
-
-router.delete('/:id', requireAuth, requireRole(...BILLING_ROLES), async (req, res, next) => {
-  try {
-    await prisma.quote.delete({ where: { id: Number(req.params.id) } });
-    res.json({ success: true });
-  } catch (e) { next(e); }
+mountDocumentRoutes(router, {
+  type: 'quote', model: 'quote', label: 'Quote', lineModel: 'quoteLine', fk: 'quoteId',
+  statuses: v.QUOTE_STATUSES,
+  onStatus(d, current) {
+    // Moving to "sent" for the first time stamps sentAt — the quote stays locked from then on.
+    if (d.status === 'sent' && !(current && current.sentAt)) d.sentAt = new Date();
+  },
 });
 
 module.exports = router;

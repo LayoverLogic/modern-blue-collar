@@ -1,0 +1,36 @@
+{
+  "slug": "ks-plumbing-example",
+  "description": "Example prospect: a FICTIONAL small plumbing company in central Kansas. Real town names, invented streets, reserved .example domain, 555-01xx phones. Copy this file to make a prospect-specific demo.",
+  "locale": "US",
+  "brand": {
+    "BRAND_COMPANY_NAME": "Prairie Line Plumbing Co.",
+    "BRAND_COMPANY_SLOGAN": "Honest plumbing since 1998",
+    "BRAND_COMPANY_PHONE": "(620) 555-0100",
+    "BRAND_COMPANY_EMAIL": "office@prairieline.example",
+    "BRAND_COMPANY_ADDRESS": "210 Main St, Newton, KS 67114",
+    "BRAND_TRADE_TYPE": "plumbing",
+    "BRAND_COLOR_PRIMARY": "#1d4ed8",
+    "BRAND_COLOR_NAV_BG": "#0b1f3a",
+    "BRAND_DEFAULT_STATE": "KS",
+    "BRAND_TIMEZONE": "America/Chicago"
+  },
+  "emailDomain": "prairieline.example",
+  "area": {
+    "state": "KS",
+    "phoneAreaCode": "620",
+    "towns": [
+      { "name": "Newton",    "postcodes": ["67114"] },
+      { "name": "Hesston",   "postcodes": ["67062"] },
+      { "name": "Halstead",  "postcodes": ["67056"] },
+      { "name": "McPherson", "postcodes": ["67460"] }
+    ]
+  },
+  "team": [
+    { "role": "admin",      "local": "office",   "firstName": "Dana",   "lastName": "Whitfield" },
+    { "role": "dispatcher", "local": "dispatch", "firstName": "Kim",    "lastName": "Albright" },
+    { "role": "technician", "local": "tech1",    "firstName": "Travis", "lastName": "Mueller" },
+    { "role": "technician", "local": "tech2",    "firstName": "Jesse",  "lastName": "Ortiz" },
+    { "role": "technician", "local": "tech3",    "firstName": "Cody",   "lastName": "Becker" }
+  ],
+  "counts": { "customers": 10, "jobs": 14 }
+}

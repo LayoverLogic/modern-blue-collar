@@ -1,0 +1,13 @@
+{
+  "sourceSystem": "housecallpro",
+  "dateFormat": "MM/DD/YYYY",
+  "fields": {
+    "sourceId": "Customer ID",
+    "phone": ["Mobile Phone", "Phone"],
+    "phoneAlt": "Home Phone",
+    "addressFull": "Address",
+    "lifetimeValue": "Job revenue"
+  },
+  "typeMap": { "Homeowner": "residential", "Business": "commercial", "Property manager": "commercial" },
+  "options": { "excludeArchived": true, "undecided": "hold", "missingPhone": "error" }
+}

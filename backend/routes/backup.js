@@ -2,38 +2,64 @@
  * routes/backup.js  — Manual backup trigger endpoint
  * POST /api/backup/run   — trigger backup now (admin+)
  * GET  /api/backup/list  — list existing local backup files (admin+)
+ *
+ * Target is chosen by BACKUP_DRIVER (local | s3) — see backup.js. A run also
+ * archives the upload directory when STORAGE_DRIVER=local, and encrypts when
+ * BACKUP_ENCRYPTION_KEY is set. There is deliberately no download/restore
+ * endpoint: restore from a shell with `npm run restore` (scripts/restore.mjs).
  */
 const express = require('express');
 const router  = express.Router();
-const { requireAuth, requireRole } = require('./auth');
+const { requireAuth, requireRole, requireSession } = require('./auth');
+const { ADMIN } = require('../helpers/roles');
+const backup  = require('../backup');
 
-router.post('/run', requireAuth, requireRole('super-admin', 'admin'), async (_req, res, next) => {
+// One backup at a time, and at most one manual run per BACKUP_COOLDOWN_SECONDS
+// (default 300) — pg_dump is expensive (RT-30).
+let running = false;
+let lastRunAt = 0;
+const cooldownMs = () => Math.max(0, Number(process.env.BACKUP_COOLDOWN_SECONDS || 300)) * 1000;
+
+router.post('/run', requireAuth, requireSession, requireRole(...ADMIN), async (_req, res, next) => {
+  if (running) return res.status(409).json({ error: 'A backup is already running', code: 'BACKUP_RUNNING' });
+  const wait = lastRunAt + cooldownMs() - Date.now();
+  if (wait > 0) {
+    res.setHeader('Retry-After', String(Math.ceil(wait / 1000)));
+    return res.status(429).json({ error: `A backup ran recently — try again in ${Math.ceil(wait / 1000)}s`, code: 'BACKUP_COOLDOWN' });
+  }
+  running = true;
   try {
-    const { runBackup } = require('../backup');
-    const result = await runBackup();
+    const result = await backup.runBackup();
+    lastRunAt = Date.now();
+    // Never return server filesystem paths (RT-30): filename only.
     res.json({
       success: true,
       message: 'Backup completed successfully.',
-      local: result.localPath,
-      wasabi: result.wasabi,
+      driver: result.driver,
+      filename: result.filename,
+      size: result.size,
+      encrypted: result.encrypted,
+      uploads: result.uploads,            // { filename, size, files } | null
+      manifest: result.manifest,          // manifest filename | null
+      heartbeat: result.heartbeat,        // ok | failed | skipped
+      remote: result.remote,              // { bucket, key, keys, endpoint } | null
+      wasabi: result.remote,              // legacy alias of `remote`
     });
-  } catch (err) { next(err); }
+  } catch (err) {
+    console.error('[BACKUP] manual run failed:', err.message);
+    res.status(500).json({ error: 'Backup failed — see server logs', code: 'BACKUP_FAILED' });
+  } finally { running = false; }
 });
 
-router.get('/list', requireAuth, requireRole('super-admin', 'admin'), (_req, res, next) => {
+router.get('/list', requireAuth, requireRole(...ADMIN), (_req, res, next) => {
   try {
-    const fs   = require('fs');
-    const path = require('path');
-    const dir  = path.join(__dirname, '..', 'backups');
-    if (!fs.existsSync(dir)) return res.json({ backups: [], wasabiConfigured: !!process.env.WASABI_BUCKET });
-    const files = fs.readdirSync(dir)
-      .filter(f => f.endsWith('.db') || f.endsWith('.zip'))
-      .map(f => {
-        const stat = fs.statSync(path.join(dir, f));
-        return { filename: f, size: stat.size, created: stat.mtime };
-      })
-      .sort((a, b) => new Date(b.created) - new Date(a.created));
-    res.json({ backups: files, wasabiConfigured: !!process.env.WASABI_BUCKET });
+    res.json({
+      driver: backup.getBackupDriver(),
+      backups: backup.listBackups(),
+      s3Configured: backup.s3Configured(),
+      encryption: Boolean(backup.getEncryptionKey()),
+      wasabiConfigured: backup.s3Configured(), // legacy alias
+    });
   } catch (err) { next(err); }
 });
 

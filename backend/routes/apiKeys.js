@@ -13,14 +13,22 @@ const express          = require('express');
 const router           = express.Router();
 const crypto           = require('crypto');
 const bcrypt           = require('bcryptjs');
-const { PrismaClient } = require('@prisma/client');
-const { requireAuth, requireRole } = require('./auth');
+const { requireAuth, requireRole, requireSession } = require('./auth');
+const { PREFIX_LENGTH } = require('../middleware/apiKeyAuth');
+const { ADMIN } = require('../helpers/roles');
+const { parseId, badRequest } = require('../helpers/httpError');
 
-const prisma = new PrismaClient();
+const prisma = require('../helpers/prisma');
 
-// All routes require admin+
+// read  = GET / HEAD, write = POST / PUT / PATCH / DELETE (routes/auth.js requireAuth)
+// export = may also download the whole-company zip GET /api/exports/all (with read;
+//          a write key may too) — a read-only reporting key cannot (B4 Info item)
+const VALID_SCOPES = ['read', 'write', 'export'];
+
+// All routes require a signed-in admin+ (API keys cannot mint or revoke keys)
 router.use(requireAuth);
-router.use(requireRole('super-admin', 'admin'));
+router.use(requireSession);
+router.use(requireRole(...ADMIN));
 
 // ── GET /api/api-keys ─────────────────────────────────────────────────────────
 router.get('/', async (_req, res, next) => {
@@ -46,29 +54,52 @@ router.get('/', async (_req, res, next) => {
 // ── POST /api/api-keys ────────────────────────────────────────────────────────
 router.post('/', async (req, res, next) => {
   try {
-    const { name, scopes, expiresAt } = req.body;
-    if (!name || !name.trim()) {
+    const { name, scopes, expiresAt } = req.body || {};
+    if (typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ error: 'name is required (e.g. "QuickBooks Sync")' });
     }
+    if (name.trim().length > 100) throw badRequest('name must be at most 100 characters');
 
-    // Generate key: mbc_ + 40 random hex chars = 44 chars total
-    const rawHex = crypto.randomBytes(20).toString('hex'); // 40 hex chars
-    const plainKey = `mbc_${rawHex}`;
-    const prefix   = plainKey.substring(0, 8); // "mbc_" + first 4 hex
+    const scopeList = scopes == null || scopes === ''
+      ? ['read', 'write']
+      : (Array.isArray(scopes) ? scopes : String(scopes).split(',')).map((x) => String(x).trim()).filter(Boolean);
+    const unknown = scopeList.filter((x) => !VALID_SCOPES.includes(x));
+    if (!scopeList.length || unknown.length) {
+      throw badRequest(`scopes must be a comma-separated list of: ${VALID_SCOPES.join(', ')}`, { code: 'INVALID_SCOPES' });
+    }
+    let expires = null;
+    if (expiresAt) {
+      expires = new Date(expiresAt);
+      if (Number.isNaN(expires.getTime())) throw badRequest('expiresAt must be a date');
+    }
 
-    // Hash for storage
-    const hashedKey = await bcrypt.hash(plainKey, 12);
-
-    const record = await prisma.apiKey.create({
-      data: {
-        name:        name.trim(),
-        prefix,
-        hashedKey,
-        scopes:      scopes || 'read,write',
-        createdById: req.user.id,
-        expiresAt:   expiresAt ? new Date(expiresAt) : null,
-      },
-    });
+    // Key: mbc_ + 40 random hex chars. Lookup prefix: first 16 chars
+    // ("mbc_" + 12 hex) — wide enough that collisions do not happen in practice;
+    // retried anyway because prefix is UNIQUE.
+    let record;
+    let plainKey;
+    for (let attempt = 0; attempt < 5 && !record; attempt++) {
+      plainKey = `mbc_${crypto.randomBytes(20).toString('hex')}`;
+      const prefix = plainKey.substring(0, PREFIX_LENGTH);
+      // eslint-disable-next-line no-await-in-loop
+      const hashedKey = await bcrypt.hash(plainKey, 12);
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        record = await prisma.apiKey.create({
+          data: {
+            name:        name.trim(),
+            prefix,
+            hashedKey,
+            scopes:      [...new Set(scopeList)].join(','),
+            createdById: req.user.id,
+            expiresAt:   expires,
+          },
+        });
+      } catch (e) {
+        if (e.code !== 'P2002') throw e;
+      }
+    }
+    if (!record) throw new Error('could not allocate a unique API key prefix');
 
     // Return plaintext key ONCE — it cannot be retrieved again
     res.status(201).json({
@@ -87,7 +118,7 @@ router.post('/', async (req, res, next) => {
 // ── DELETE /api/api-keys/:id ──────────────────────────────────────────────────
 router.delete('/:id', async (req, res, next) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseId(req.params.id);
     const key = await prisma.apiKey.findUnique({ where: { id } });
     if (!key) return res.status(404).json({ error: 'API key not found' });
 

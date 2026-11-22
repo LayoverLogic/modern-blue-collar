@@ -3,338 +3,158 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Job Detail</title>
-  <style>
-    :root{--color-primary:#2563eb;--color-primary-dark:#1d4ed8;--color-nav-bg:#1e293b;--color-nav-text:#f1f5f9;--color-accent:#f59e0b;}
-    *{box-sizing:border-box;margin:0;padding:0;}
-    body{font-family:system-ui,sans-serif;background:#f8fafc;color:#1e293b;}
-    nav{background:var(--color-nav-bg);color:var(--color-nav-text);padding:0 1.5rem;display:flex;align-items:center;justify-content:space-between;height:56px;position:sticky;top:0;z-index:100;}
-    .nav-brand{font-weight:700;font-size:1.1rem;display:flex;align-items:center;gap:0.5rem;}
-    .trade-badge{font-size:0.65rem;background:var(--color-accent);color:#1e293b;padding:2px 8px;border-radius:99px;font-weight:700;}
-    .nav-links{display:flex;gap:1.5rem;font-size:0.9rem;}
-    .nav-links a{color:#94a3b8;text-decoration:none;}
-    .nav-links a:hover,.nav-links a.active{color:#fff;}
-    .nav-right{display:flex;align-items:center;gap:1rem;}
-    .nav-user{font-size:0.85rem;color:#94a3b8;}
-    .btn-logout{background:none;border:1px solid #475569;color:#94a3b8;border-radius:6px;padding:0.3rem 0.75rem;cursor:pointer;font-size:0.8rem;}
-    main{max-width:1000px;margin:2rem auto;padding:0 1.5rem;}
-    .back-link{color:#64748b;font-size:0.875rem;text-decoration:none;display:inline-flex;align-items:center;gap:0.3rem;margin-bottom:1.25rem;}
-    .back-link:hover{color:var(--color-primary);}
-    .presence-banner{background:#dcfce7;border:1px solid #86efac;border-radius:8px;padding:0.6rem 1rem;margin-bottom:1rem;font-size:0.875rem;color:#15803d;display:none;align-items:center;gap:0.5rem;}
-    .presence-banner .dot{width:10px;height:10px;border-radius:50%;background:#22c55e;animation:pulse 2s infinite;}
-    @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.5;}}
-    .job-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:1rem;}
-    .job-title h2{font-size:1.4rem;margin-bottom:0.25rem;}
-    .job-title .meta{color:#64748b;font-size:0.875rem;}
-    .status-select{padding:0.4rem 0.8rem;border:1px solid #cbd5e1;border-radius:8px;font-size:0.875rem;background:#fff;}
-    .btn-primary{padding:0.5rem 1.1rem;background:var(--color-primary);color:#fff;border:none;border-radius:8px;font-size:0.9rem;cursor:pointer;font-weight:600;}
-    .btn-sm{padding:0.4rem 0.9rem;background:var(--color-primary);color:#fff;border:none;border-radius:6px;font-size:0.85rem;cursor:pointer;font-weight:600;}
-    .btn-danger{padding:0.4rem 0.9rem;background:#ef4444;color:#fff;border:none;border-radius:6px;font-size:0.85rem;cursor:pointer;}
-    .btn-outline{padding:0.4rem 0.9rem;background:#fff;color:#374151;border:1px solid #cbd5e1;border-radius:6px;font-size:0.85rem;cursor:pointer;}
-    .grid-2{display:grid;grid-template-columns:2fr 1fr;gap:1.5rem;}
-    .card{background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,0.07);padding:1.5rem;margin-bottom:1.25rem;}
-    .card h3{font-size:1rem;font-weight:600;margin-bottom:1rem;padding-bottom:0.75rem;border-bottom:1px solid #f1f5f9;}
-    .info-row{display:flex;justify-content:space-between;padding:0.4rem 0;font-size:0.875rem;border-bottom:1px solid #f8fafc;}
-    .info-row:last-child{border-bottom:none;}
-    .info-label{color:#64748b;font-weight:500;}
-    .info-value{color:#1e293b;}
-    .badge{display:inline-block;padding:2px 10px;border-radius:99px;font-size:0.75rem;font-weight:600;}
-    .badge-pending{background:#dbeafe;color:#1d4ed8;}
-    .badge-scheduled{background:#fef3c7;color:#b45309;}
-    .badge-in-progress{background:#fed7aa;color:#c2410c;}
-    .badge-completed{background:#dcfce7;color:#15803d;}
-    .badge-cancelled{background:#fee2e2;color:#b91c1c;}
-    .notes-area{width:100%;padding:0.65rem;border:1px solid #e2e8f0;border-radius:8px;font-size:0.875rem;resize:vertical;min-height:100px;font-family:inherit;}
-    .line-items table{width:100%;border-collapse:collapse;}
-    .line-items th,.line-items td{padding:0.6rem 0.75rem;text-align:left;font-size:0.85rem;}
-    .line-items th{background:#f8fafc;color:#64748b;font-weight:600;border-bottom:1px solid #e2e8f0;}
-    .line-items td{border-bottom:1px solid #f8fafc;}
-    .total-row td{font-weight:700;border-top:2px solid #e2e8f0;}
-    .action-bar{display:flex;gap:0.75rem;flex-wrap:wrap;}
-    select.inline{padding:0.35rem 0.7rem;border:1px solid #cbd5e1;border-radius:6px;font-size:0.85rem;background:#fff;}
-    .version-info{font-size:0.75rem;color:#94a3b8;margin-top:0.5rem;}
-    .photo-gallery{display:flex;flex-wrap:wrap;gap:0.6rem;}
-    .photo-thumb{position:relative;width:104px;height:104px;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0;background:#f1f5f9;}
-    .photo-thumb img{width:100%;height:100%;object-fit:cover;display:block;}
-    .photo-thumb .del{position:absolute;top:3px;right:3px;background:rgba(0,0,0,0.55);color:#fff;border:none;border-radius:5px;width:22px;height:22px;cursor:pointer;font-size:0.85rem;line-height:1;padding:0;}
-    .photo-upload{margin-top:0.85rem;display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;}
-  </style>
+  <title>Job</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="css/app.css" />
+  <script src="js/format.js"></script>
+  <script src="js/brand.js"></script>
 </head>
 <body>
-<nav>
-  <div class="nav-brand">
-    <span id="nav-company">Dashboard</span>
-    <span class="trade-badge" id="nav-trade">TRADE</span>
-  </div>
-  <div class="nav-links">
-    <a href="index.html">Dashboard</a>
-    <a href="customers.html">Customers</a>
-    <a href="dispatch.html" class="active">Dispatch</a>
-    <a href="schedule.html">Schedule</a>
-    <a href="team.html" id="nav-team-label">Team</a>
-    <a href="pricebook.html">Pricebook</a>
-    <a href="quote-invoice.html">Quotes &amp; Invoices</a>
-    <a href="api-keys.html">API Keys</a>
-  </div>
-  <div class="nav-right">
-    <span class="nav-user" id="nav-user-name"></span>
-    <button class="btn-logout" onclick="logout()">Sign Out</button>
-  </div>
-</nav>
+<nav id="topnav"></nav>
 <main>
-  <a href="dispatch.html" class="back-link">&larr; Back to Dispatch</a>
-  <div class="presence-banner" id="presence-banner">
-    <span class="dot"></span>
-    <span id="presence-text"></span>
-  </div>
-  <div id="job-content" style="display:none;">
+  <a href="dispatch.html" class="back-link" id="back-link">&larr; Back</a>
+  <div class="presence-banner" id="presence-banner"><span class="dot"></span><span id="presence-text"></span></div>
+  <div id="job-content" hidden>
     <div class="job-header">
-      <div class="job-title">
-        <h2 id="job-heading">Job #</h2>
+      <div>
+        <h2 id="job-heading">Job</h2>
         <div class="meta" id="job-meta"></div>
       </div>
       <div class="action-bar">
-        <select class="inline" id="status-select" onchange="updateStatus()">
+        <label for="status-select" class="sr-only">Status</label>
+        <select id="status-select">
           <option value="pending">Pending</option>
           <option value="scheduled">Scheduled</option>
-          <option value="in-progress">In Progress</option>
+          <option value="in-progress">In progress</option>
           <option value="completed">Completed</option>
           <option value="cancelled">Cancelled</option>
         </select>
-        <button class="btn-sm" onclick="saveNotes()">Save Notes</button>
-        <button id="btn-create-invoice" class="btn-sm" onclick="createInvoice()">Create Invoice</button>
-        <button class="btn-outline" onclick="sendSMS()">Send SMS</button>
+        <button class="btn btn-outline" type="button" id="btn-sms-confirm" data-roles="staff" hidden>Send confirmation SMS</button>
       </div>
     </div>
+
+    <div class="card pad">
+      <h3>On site</h3>
+      <div class="big-actions" id="field-actions"></div>
+    </div>
+
     <div class="grid-2">
       <div>
-        <div class="card">
+        <div class="card pad">
           <h3>Job Details</h3>
-          <div class="info-row"><span class="info-label">Customer</span><span class="info-value" id="d-customer">-</span></div>
-          <div class="info-row"><span class="info-label">Job Type</span><span class="info-value" id="d-type">-</span></div>
-          <div class="info-row"><span class="info-label" id="d-tech-label">Technician</span><span class="info-value" id="d-tech">-</span></div>
-          <div class="info-row"><span class="info-label">Scheduled</span><span class="info-value" id="d-scheduled">-</span></div>
-          <div class="info-row"><span class="info-label">Duration</span><span class="info-value" id="d-duration">-</span></div>
-          <div class="info-row"><span class="info-label">Priority</span><span class="info-value" id="d-priority">-</span></div>
-          <div class="info-row"><span class="info-label">Status</span><span class="info-value" id="d-status">-</span></div>
-          <div class="info-row"><span class="info-label">Trade Type</span><span class="info-value" id="d-tradetype">-</span></div>
-          <div class="version-info">Version: <span id="d-version">1</span></div>
+          <div class="info-row"><span class="info-label">Customer</span><span class="info-value" id="d-customer"></span></div>
+          <div class="info-row"><span class="info-label">Job type</span><span class="info-value" id="d-type"></span></div>
+          <div class="info-row"><span class="info-label" data-tech-label>Technician</span><span class="info-value" id="d-tech"></span></div>
+          <div class="info-row"><span class="info-label">Scheduled</span><span class="info-value" id="d-scheduled"></span></div>
+          <div class="info-row"><span class="info-label">Duration</span><span class="info-value" id="d-duration"></span></div>
+          <div class="info-row"><span class="info-label">Priority</span><span class="info-value" id="d-priority"></span></div>
+          <div class="info-row"><span class="info-label">Status</span><span class="info-value" id="d-status"></span></div>
+          <div class="info-row" id="row-completed" hidden><span class="info-label">Completed</span><span class="info-value" id="d-completed"></span></div>
+          <div id="d-description" class="muted small mt-s"></div>
         </div>
-        <div class="card">
-          <h3>Notes</h3>
-          <textarea class="notes-area" id="job-notes" placeholder="Add job notes..."></textarea>
-        </div>
-        <div class="card">
-          <h3>Photos</h3>
-          <div id="photo-gallery" class="photo-gallery"><span style="color:#94a3b8;font-size:0.85rem;">No photos yet.</span></div>
-          <div class="photo-upload">
-            <input type="file" id="photo-input" accept="image/*" style="font-size:0.85rem;" />
-            <button class="btn-sm" id="btn-upload-photo" onclick="uploadPhoto()">Upload Photo</button>
-            <span id="photo-status" style="font-size:0.8rem;color:#64748b;"></span>
+
+        <form class="card pad" id="assign-form" data-roles="staff" hidden novalidate>
+          <h3>Schedule &amp; Assign</h3>
+          <div class="form-group"><label for="a-tech" data-tech-label>Technician</label><select id="a-tech"><option value="">Unassigned</option></select></div>
+          <div class="form-row three">
+            <div class="form-group"><label for="a-date">Date</label><input type="date" id="a-date" /></div>
+            <div class="form-group"><label for="a-time">Time</label><input type="time" id="a-time" step="900" /></div>
+            <div class="form-group"><label for="a-duration">Hours</label><input type="number" id="a-duration" min="0.25" step="0.25" /></div>
           </div>
+          <div class="form-group"><label for="a-priority">Priority</label>
+            <select id="a-priority"><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></div>
+          <div id="assign-error" class="form-error" hidden></div>
+          <button class="btn btn-primary" type="submit" id="btn-assign">Save schedule</button>
+        </form>
+
+        <div class="card pad">
+          <h3>Notes</h3>
+          <label for="job-notes" class="sr-only">Job notes</label>
+          <textarea id="job-notes" placeholder="Add job notes&hellip;"></textarea>
+          <div class="field-actions"><button class="btn" type="button" id="btn-save-notes">Save Notes</button></div>
         </div>
-        <div class="card line-items">
-          <h3>Line Items</h3>
-          <table>
-            <thead><tr><th>Item</th><th>Qty</th><th>Unit Price</th><th>Total</th></tr></thead>
-            <tbody id="line-items-tbody"><tr><td colspan="4" style="text-align:center;color:#94a3b8;padding:1rem;">No line items.</td></tr></tbody>
-            <tfoot><tr class="total-row"><td colspan="3">Total</td><td id="line-total">$0.00</td></tr></tfoot>
-          </table>
+
+        <div class="card pad">
+          <h3>Photos</h3>
+          <div id="photo-gallery" class="photo-gallery"><span class="muted small">No photos yet.</span></div>
+          <div class="photo-upload">
+            <label for="photo-input" class="sr-only">Choose photo</label>
+            <input type="file" id="photo-input" accept="image/*" />
+            <button class="btn" type="button" id="btn-upload-photo">Upload Photo</button>
+          </div>
+          <div id="photo-status" class="muted small mt-s"></div>
         </div>
       </div>
+
       <div>
-        <div class="card">
-          <h3>Customer Info</h3>
-          <div class="info-row"><span class="info-label">Name</span><span class="info-value" id="c-name">-</span></div>
-          <div class="info-row"><span class="info-label">Phone</span><span class="info-value" id="c-phone">-</span></div>
-          <div class="info-row"><span class="info-label">Email</span><span class="info-value" id="c-email">-</span></div>
-          <div class="info-row"><span class="info-label">Address</span><span class="info-value" id="c-address">-</span></div>
-          <div style="margin-top:0.75rem;"><a id="c-link" href="#" class="btn-sm" style="text-decoration:none;">View Customer</a></div>
+        <div class="card pad">
+          <h3>Customer</h3>
+          <div class="info-row"><span class="info-label">Name</span><span class="info-value" id="c-name"></span></div>
+          <div class="info-row" id="row-contact" hidden><span class="info-label">Contact</span><span class="info-value" id="c-contact"></span></div>
+          <div class="info-row"><span class="info-label">Phone</span><span class="info-value" id="c-phone"></span></div>
+          <div class="info-row"><span class="info-label">Email</span><span class="info-value" id="c-email"></span></div>
+          <div class="info-row"><span class="info-label">Address</span><span class="info-value" id="c-address"></span></div>
+          <div class="field-actions" data-roles="staff" hidden><a id="c-link" href="customers.html" class="btn btn-outline">View Customer</a></div>
         </div>
-        <div class="card">
-          <h3>Invoices &amp; Quotes</h3>
-          <div id="inv-list" style="font-size:0.875rem;color:#94a3b8;">None yet.</div>
+
+        <div class="card pad" id="activity-card">
+          <h3>Activity</h3>
+          <ol id="activity-list" class="activity-list" aria-live="polite"><li class="muted small">Loading&hellip;</li></ol>
+          <div class="field-actions"><button class="btn btn-outline btn-sm" type="button" id="activity-more" hidden>Show older</button></div>
         </div>
       </div>
     </div>
+
+    <div class="card pad" id="billing-card" data-roles="staff" hidden>
+      <h3>Quote &amp; Invoice</h3>
+      <div id="rc-banner" class="notice warn small" data-roles="admin" hidden></div>
+      <div class="doc-grid">
+        <section id="quote-card" class="doc-card" aria-label="Quote"></section>
+        <section id="invoice-card" class="doc-card" aria-label="Invoice"></section>
+      </div>
+      <div id="doc-editor-wrap" hidden>
+        <h3 class="mt" id="de-title">Build a quote</h3>
+        <div id="doc-editor"></div>
+      </div>
+    </div>
+    <div class="muted small">Version <span id="d-version"></span></div>
   </div>
-  <div id="loading-msg" style="text-align:center;padding:4rem;color:#94a3b8;">Loading job...</div>
-  <div id="error-msg" style="text-align:center;padding:4rem;color:#ef4444;display:none;">Job not found.</div>
+  <div id="loading-msg" class="empty">Loading job&hellip;</div>
+  <div id="error-msg" class="empty error-text" hidden>Job not found.</div>
 </main>
+
+<div class="modal-overlay" id="email-modal">
+  <form class="modal" id="email-form" novalidate>
+    <h3 id="email-title">Email to customer</h3>
+    <div class="info-row"><span class="info-label">To</span><span class="info-value" id="email-to"></span></div>
+    <p class="muted small" id="email-lock-note"></p>
+    <div class="form-group"><label for="email-message">Message (optional)</label><textarea id="email-message" maxlength="5000" placeholder="Added above the document in the email"></textarea></div>
+    <div id="email-error" class="form-error" hidden></div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" type="button" data-close-modal>Cancel</button>
+      <button class="btn btn-primary" type="submit" id="btn-email-send">Send email</button>
+    </div>
+  </form>
+</div>
+<div class="modal-overlay" id="convert-modal">
+  <form class="modal" id="convert-form" novalidate>
+    <h3 id="convert-title">Convert quote to invoice</h3>
+    <p class="muted small" id="convert-summary"></p>
+    <div class="form-group"><label for="convert-due">Due date</label><input type="date" id="convert-due" /></div>
+    <div class="form-group"><label for="convert-notes">Notes (optional)</label><input type="text" id="convert-notes" maxlength="5000" /></div>
+    <div id="convert-error" class="form-error" hidden></div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" type="button" data-close-modal>Cancel</button>
+      <button class="btn btn-primary" type="submit" id="btn-convert-confirm">Create invoice</button>
+    </div>
+  </form>
+</div>
 <script src="/socket.io/socket.io.js"></script>
-<script>
-const API='';let brand={};let token=localStorage.getItem('token');
-const jobId=new URLSearchParams(window.location.search).get('id');
-let jobVersion=1;let currentUser=null;let socket;
-
-try { socket = io(); } catch(e) { console.warn('Socket.io not available'); }
-
-async function loadBrand(){try{const r=await fetch(API+'/api/brand');brand=await r.json();document.title=brand.companyName+' - Job';document.getElementById('nav-company').textContent=brand.companyName;document.getElementById('nav-trade').textContent=(brand.tradeType||'trade').toUpperCase();const tl=brand.technicianLabel||'Technician';document.getElementById('nav-team-label').textContent=tl+'s';document.getElementById('d-tech-label').textContent=tl;if(brand.colors){const s=document.documentElement.style;if(brand.colors.primary)s.setProperty('--color-primary',brand.colors.primary);if(brand.colors.primaryDark)s.setProperty('--color-primary-dark',brand.colors.primaryDark);if(brand.colors.navBg)s.setProperty('--color-nav-bg',brand.colors.navBg);if(brand.colors.navText)s.setProperty('--color-nav-text',brand.colors.navText);if(brand.colors.accent)s.setProperty('--color-accent',brand.colors.accent);}}catch(e){console.warn(e);}}
-function logout(){localStorage.removeItem('token');location.href='index.html';}
-
-async function init(){
-  await loadBrand();
-  if(!token){location.href='index.html';return;}
-  if(!jobId){document.getElementById('loading-msg').style.display='none';document.getElementById('error-msg').style.display='block';return;}
-  const mr=await fetch(API+'/api/auth/me',{headers:{Authorization:'Bearer '+token}});
-  if(!mr.ok){location.href='index.html';return;}
-  currentUser=await mr.json();
-  // Billing controls are admin-only (mirrors api-keys.html). Server still enforces this.
-  if(currentUser.role!=='admin'&&currentUser.role!=='super-admin'){
-    const b=document.getElementById('btn-create-invoice');
-    if(b)b.style.display='none';
-  }
-  document.getElementById('nav-user-name').textContent=currentUser.firstName+' '+currentUser.lastName;
-
-  // Join presence room
-  if(socket&&currentUser){
-    socket.emit('viewing-job',{jobId,user:{id:currentUser.id,firstName:currentUser.firstName,lastName:currentUser.lastName}});
-    socket.on('presence-update',function(data){
-      if(String(data.jobId)===String(jobId)){updatePresenceBanner(data.viewers);}
-    });
-  }
-
-  loadJob();
-}
-
-function updatePresenceBanner(viewers){
-  const banner=document.getElementById('presence-banner');
-  const text=document.getElementById('presence-text');
-  if(!viewers){banner.style.display='none';return;}
-  const others=Object.values(viewers).filter(v=>v.userId!==currentUser.id);
-  if(others.length===0){banner.style.display='none';return;}
-  const names=others.map(v=>v.firstName+' '+v.lastName).join(', ');
-  text.textContent=names+(others.length===1?' is':' are')+' viewing this job';
-  banner.style.display='flex';
-}
-
-async function loadJob(){
-  try{
-    const r=await fetch(API+'/api/jobs/'+jobId,{headers:{Authorization:'Bearer '+token}});
-    if(!r.ok)throw new Error('not found');
-    const job=await r.json();
-    jobVersion=job.version||1;
-    document.getElementById('loading-msg').style.display='none';
-    document.getElementById('job-content').style.display='block';
-    document.getElementById('job-heading').textContent='Job #'+job.id+(job.title?' - '+job.title:'');
-    document.getElementById('job-meta').textContent='Created '+new Date(job.createdAt).toLocaleDateString();
-    document.getElementById('status-select').value=job.status||'pending';
-    document.getElementById('d-status').innerHTML='<span class="badge badge-'+job.status+'">'+job.status+'</span>';
-    document.getElementById('d-type').textContent=job.type||'-';
-    document.getElementById('d-tech').textContent=job.technician?job.technician.firstName+' '+job.technician.lastName:'-';
-    document.getElementById('d-scheduled').textContent=job.scheduledDate?(job.scheduledDate+(job.scheduledTime?' at '+job.scheduledTime:'')):'-';
-    document.getElementById('d-duration').textContent=job.duration?job.duration+' hours':'-';
-    document.getElementById('d-priority').textContent=job.priority||'-';
-    document.getElementById('d-tradetype').textContent=job.tradeType||brand.tradeType||'-';
-    document.getElementById('d-version').textContent=jobVersion;
-    document.getElementById('job-notes').value=job.notes||'';
-    if(job.customer){
-      const c=job.customer;
-      const name=c.firstName+' '+c.lastName;
-      document.getElementById('d-customer').textContent=name;
-      document.getElementById('c-name').textContent=name;
-      document.getElementById('c-phone').textContent=c.phone||'-';
-      document.getElementById('c-email').textContent=c.email||'-';
-      document.getElementById('c-address').textContent=(c.address||'')+(c.city?', '+c.city:'')+(c.state?' '+c.state:'')||'-';
-      document.getElementById('c-link').href='customer-detail.html?id='+c.id;
-    }
-    if(job.jobParts&&job.jobParts.length){
-      let total=0;
-      document.getElementById('line-items-tbody').innerHTML=job.jobParts.map(li=>{const t=(li.quantity||1)*(li.unitCost||0);total+=t;return '<tr><td>'+(li.inventoryItem?li.inventoryItem.name:'Item')+'</td><td>'+(li.quantity||1)+'</td><td>$'+Number(li.unitCost||0).toFixed(2)+'</td><td>$'+t.toFixed(2)+'</td></tr>';}).join('');
-      document.getElementById('line-total').textContent='$'+total.toFixed(2);
-    }
-    // Show quote/invoice
-    const invEl=document.getElementById('inv-list');
-    let invHtml='';
-    if(job.quote)invHtml+='<div style="padding:0.4rem 0;border-bottom:1px solid #f1f5f9;">Quote #'+job.quote.id+' - $'+Number(job.quote.amount||0).toFixed(2)+' - <span class="badge badge-'+job.quote.status+'">'+job.quote.status+'</span></div>';
-    if(job.invoice)invHtml+='<div style="padding:0.4rem 0;border-bottom:1px solid #f1f5f9;">Invoice #'+job.invoice.id+' - $'+Number(job.invoice.amount||0).toFixed(2)+' - <span class="badge badge-'+job.invoice.status+'">'+job.invoice.status+'</span></div>';
-    if(invHtml)invEl.innerHTML=invHtml;else invEl.textContent='None yet.';
-    // Load initial presence
-    try{const pr=await fetch(API+'/api/presence/'+jobId);const pd=await pr.json();updatePresenceBanner(pd.viewers);}catch(e){}
-    loadPhotos();
-  }catch(e){
-    document.getElementById('loading-msg').style.display='none';
-    document.getElementById('error-msg').style.display='block';
-  }
-}
-
-async function updateStatus(){
-  const status=document.getElementById('status-select').value;
-  try{
-    const r=await fetch(API+'/api/jobs/'+jobId,{method:'PATCH',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({status,version:jobVersion})});
-    if(r.status===409){const d=await r.json();alert(d.error);loadJob();return;}
-    if(!r.ok)throw new Error('Failed');
-    const job=await r.json();jobVersion=job.version;
-    document.getElementById('d-version').textContent=jobVersion;
-    document.getElementById('d-status').innerHTML='<span class="badge badge-'+status+'">'+status+'</span>';
-  }catch(e){alert('Failed to update status');}
-}
-
-async function saveNotes(){
-  const notes=document.getElementById('job-notes').value;
-  try{
-    const r=await fetch(API+'/api/jobs/'+jobId,{method:'PATCH',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({notes,version:jobVersion})});
-    if(r.status===409){const d=await r.json();alert(d.error);loadJob();return;}
-    if(!r.ok)throw new Error('Failed');
-    const job=await r.json();jobVersion=job.version;
-    document.getElementById('d-version').textContent=jobVersion;
-    alert('Notes saved.');
-  }catch(e){alert('Failed to save notes');}
-}
-
-async function createInvoice(){
-  if(!confirm('Create an invoice for this job?'))return;
-  try{const r=await fetch(API+'/api/invoices',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({jobId:parseInt(jobId),amount:0})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Failed');alert('Invoice #'+d.id+' created!');loadJob();}catch(e){alert(e.message);}
-}
-
-async function sendSMS(){
-  try{const r=await fetch(API+'/api/sms/job-confirm/'+jobId,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}});const d=await r.json();if(!r.ok)throw new Error(d.error||'Failed');alert('SMS sent!');}catch(e){alert('SMS failed: '+e.message);}
-}
-
-// ── Job photos (stored in MinIO/S3 via the API) ──────────────────────────────
-async function loadPhotos(){
-  try{
-    const r=await fetch(API+'/api/jobs/'+jobId+'/photos',{headers:{Authorization:'Bearer '+token}});
-    if(!r.ok)return;
-    const photos=await r.json();
-    const g=document.getElementById('photo-gallery');
-    if(!photos.length){g.innerHTML='<span style="color:#94a3b8;font-size:0.85rem;">No photos yet.</span>';return;}
-    g.innerHTML='';
-    for(const p of photos){
-      const wrap=document.createElement('div');wrap.className='photo-thumb';
-      const img=document.createElement('img');img.alt=p.originalName||'photo';img.title=p.originalName||'';
-      // The raw bytes are behind auth, so fetch with the token and render as a blob URL.
-      try{const ir=await fetch(API+p.url,{headers:{Authorization:'Bearer '+token}});if(ir.ok)img.src=URL.createObjectURL(await ir.blob());}catch(e){}
-      const del=document.createElement('button');del.className='del';del.textContent='×';del.title='Delete';del.onclick=function(){deletePhoto(p.id);};
-      wrap.appendChild(img);wrap.appendChild(del);g.appendChild(wrap);
-    }
-  }catch(e){console.warn(e);}
-}
-async function uploadPhoto(){
-  const inp=document.getElementById('photo-input');const status=document.getElementById('photo-status');
-  if(!inp.files||!inp.files[0]){status.textContent='Choose an image first.';return;}
-  const fd=new FormData();fd.append('photo',inp.files[0]);
-  status.textContent='Uploading...';document.getElementById('btn-upload-photo').disabled=true;
-  try{
-    const r=await fetch(API+'/api/jobs/'+jobId+'/photos',{method:'POST',headers:{Authorization:'Bearer '+token},body:fd});
-    const d=await r.json();if(!r.ok)throw new Error(d.error||'Upload failed');
-    inp.value='';status.textContent='Uploaded.';loadPhotos();
-  }catch(e){status.textContent='Failed: '+e.message;}
-  finally{document.getElementById('btn-upload-photo').disabled=false;}
-}
-async function deletePhoto(id){
-  if(!confirm('Delete this photo?'))return;
-  try{
-    const r=await fetch(API+'/api/jobs/'+jobId+'/photos/'+id,{method:'DELETE',headers:{Authorization:'Bearer '+token}});
-    if(!r.ok){const d=await r.json();throw new Error(d.error||'Failed');}
-    loadPhotos();
-  }catch(e){alert('Delete failed: '+e.message);}
-}
-
-// Clean up presence on page leave
-window.addEventListener('beforeunload',function(){if(socket)socket.emit('leave-job');});
-
-init();
-</script>
+<script src="js/api.js"></script>
+<script src="js/nav.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/field.js"></script>
+<script src="js/documents.js"></script>
+<script src="js/pages/job.js"></script>
 </body>
 </html>

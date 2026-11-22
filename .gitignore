@@ -4,6 +4,7 @@ npm-debug.log*
 
 # Environment secrets — never commit these
 backend/.env
+backend/.env.sandbox
 .env
 
 # SQLite databases (prod data)
@@ -13,6 +14,10 @@ backend/prisma/dev.db
 
 # Backups
 backend/backups/
+
+# Sandbox runtime data (STORAGE_DRIVER=local, MAIL_DRIVER=outbox)
+backend/storage/
+backend/outbox/
 
 # OS
 .DS_Store
@@ -25,3 +30,11 @@ logs/
 # Build artifacts
 dist/
 build/
+
+# UI walk output when run outside the team workspace
+backend/tests/ui/out/
+
+# White-label demo tooling (backend/scripts/seed-demo.js, demo-check.js)
+# Generated per-prospect env files and the real client-name denylist
+backend/.env.demo.*
+backend/demo/denylist.local.txt

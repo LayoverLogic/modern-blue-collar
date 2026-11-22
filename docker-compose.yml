@@ -5,12 +5,23 @@
 #     cp .env.example .env
 #     docker compose --profile demo up --build
 #
-#   Production (external Wasabi + real SMTP; edit .env, omit the profile):
-#     docker compose up -d --build
+#   Production: use docker-compose.prod.yml (app + postgres:16 + Caddy/TLS),
+#   set up by deploy/provision.sh — see DEPLOYMENT.md. This file stays the
+#   local demo / dev stack.
 #
 # `minio` + `mailpit` are gated behind the "demo" profile, so a plain
 # `docker compose up` starts only app + postgres, and the app talks to whatever
-# external Wasabi / SMTP you configured in .env.
+# external S3-compatible storage / SMTP you configured in .env.
+#
+# Ports (PLAT-12):
+#   - app: the container always listens on 3001 (PORT is pinned below, so a
+#     PORT in .env can no longer break the mapping); the HOST port is
+#     ${PORT:-3001}, bound on ${APP_BIND:-0.0.0.0} (use 127.0.0.1 behind a
+#     reverse proxy on the same host, and set TRUST_PROXY=1).
+#   - postgres is NOT published — only the app reaches it on the compose
+#     network. To reach it from the host for debugging (localhost only):
+#       docker compose -f docker-compose.yml -f docker-compose.db-port.yml --profile demo up
+#   - demo services (MinIO, Mailpit) are published on 127.0.0.1 only.
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -22,13 +33,19 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      PORT: "3001"   # container port is fixed; change the host port with PORT in .env
+    volumes:
+      - backups:/app/backend/backups   # local backup sets survive rebuilds
     ports:
-      - "${PORT:-3001}:3001"
+      - "${APP_BIND:-0.0.0.0}:${PORT:-3001}:3001"
     depends_on:
       postgres:
         condition: service_healthy
 
   postgres:
+    # Demo stays on 15 so existing demo volumes keep working; the app image's
+    # pg_dump/psql are v16, which back up and restore a 15 server fine.
     image: postgres:15
     restart: unless-stopped
     environment:
@@ -37,8 +54,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-mbc}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+    # No `ports:` — never publish the database (see docker-compose.db-port.yml).
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mbc} -d ${POSTGRES_DB:-mbc}"]
       interval: 5s
@@ -57,8 +73,8 @@ services:
     volumes:
       - minio_data:/data
     ports:
-      - "${MINIO_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
 
   # Creates the demo buckets once MinIO is reachable, then exits.
   createbuckets:
@@ -75,8 +91,8 @@ services:
         echo 'waiting for minio...'; sleep 2;
       done;
       mc mb -p local/${S3_BUCKET:-mbc-uploads};
-      mc mb -p local/${WASABI_BUCKET:-mbc-backups};
-      echo 'MinIO buckets ready: ${S3_BUCKET:-mbc-uploads}, ${WASABI_BUCKET:-mbc-backups}';
+      mc mb -p local/${BACKUP_S3_BUCKET:-${WASABI_BUCKET:-mbc-backups}};
+      echo 'MinIO buckets ready: ${S3_BUCKET:-mbc-uploads}, ${BACKUP_S3_BUCKET:-${WASABI_BUCKET:-mbc-backups}}';
       "
 
   mailpit:
@@ -84,9 +100,10 @@ services:
     profiles: ["demo"]
     restart: unless-stopped
     ports:
-      - "${MAILPIT_SMTP_PORT:-1025}:1025"
-      - "${MAILPIT_UI_PORT:-8025}:8025"
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
 
 volumes:
   pgdata:
   minio_data:
+  backups:

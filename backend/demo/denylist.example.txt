@@ -1,0 +1,17 @@
+# demo/denylist.example.txt — FORMAT EXAMPLE ONLY (placeholder entries).
+#
+# demo:check and the white-label tests fail when any of these terms appears in
+# demo data, /api responses or rendered pages. The REAL list holds the names of
+# actual clients (company names, owners, staff surnames, email domains, home
+# towns) and must not be published in this public repository, so it lives in:
+#
+#     backend/demo/denylist.local.txt      (gitignored)
+#
+# or any file named by DEMO_DENYLIST_FILE=/path/to/file. Copy this file to
+# denylist.local.txt and replace the placeholders with your real clients.
+#
+# One term per line · case-insensitive substring match · '#' starts a comment.
+Example Client Plumbing
+exampleclient-plumbing.com
+Jane Placeholder
+Sometown

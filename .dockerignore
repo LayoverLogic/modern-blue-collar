@@ -5,12 +5,14 @@
 
 # Never bake secrets into the image
 **/.env
-.env
-.env.*
-!.env.example
+**/.env.*
+!**/.env.example
+!**/.env.sandbox.example
 
 # Runtime / local artifacts
 backend/backups/
+backend/storage/
+backend/outbox/
 **/*.db
 **/*.db-journal
 **/*.log
