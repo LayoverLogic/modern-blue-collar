@@ -426,17 +426,16 @@ test('backup: uploads (STORAGE_DRIVER=local) are archived and restored byte-iden
       assert.equal(ok.json.uploads.files, 3);
       assertSameFiles(files, dest);
 
-      // Default target = LOCAL_STORAGE_DIR, which is not empty → refused, DB untouched.
+      // Default target = LOCAL_STORAGE_DIR, which is not empty → refused, DB untouched:
+      // L6 — the target database is not even created when a check refuses.
       const db2 = scratchDb();
       const refused = restore([r.localPath, '--database', db2]);
       assert.equal(refused.status, 2);
       assert.match(refused.json.error, /Uploads directory .* is not empty/);
-      const { Client } = require('pg');
-      const c = new Client({ connectionString: scratchUrl(db2) });
-      await c.connect();
-      const n = (await c.query("SELECT count(*)::int n FROM information_schema.tables WHERE table_schema='public'")).rows[0].n;
-      await c.end();
-      assert.equal(n, 0, 'database not restored when the uploads check refuses');
+      assert.match(refused.json.error, /--uploads-dir <empty dir> \/ --no-uploads/);
+      assert.equal(await dbExists(db2), false, 'L6: database created although the uploads check refused');
+      // D5: the target is named first (stderr, also with --json)
+      assert.match(refused.stderr, new RegExp(`\\[restore\\] target: database "${db2}" on .*DATABASE_URL from the shell environment`));
 
       // --no-uploads restores the DB only.
       const dbOnly = restore([r.localPath, '--database', db2, '--no-uploads']);
@@ -712,3 +711,18 @@ test.after(async () => {
 });
 
 test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+test('D5 backup:run names the database it backs up (and where DATABASE_URL came from) before it starts', { skip: skipRestore }, () => {
+  const envFile = path.join(tmp, 'd5.env');
+  fs.writeFileSync(envFile, `DATABASE_URL=${process.env.DATABASE_URL}\n`);
+  const env = { ...process.env, BACKUP_DRIVER: 'local', BACKUP_DIR: path.join(tmp, 'rt-d5'), BACKUP_ENCRYPTION_KEY: '', STORAGE_DRIVER: 's3', BACKUP_HEARTBEAT_URL: '' };
+  const db = require('../helpers/databaseUrl').parseDatabaseUrl(process.env.DATABASE_URL).database;
+  const fromShell = spawnSync(process.execPath, [path.join(__dirname, '..', 'scripts', 'backup-run.js')], { env, encoding: 'utf8', timeout: 120000 });
+  assert.equal(fromShell.status, 0, fromShell.stderr);
+  assert.match(fromShell.stderr.split('\n')[0], new RegExp(`^\\[backup:run\\] database "${db}" on .*\\(DATABASE_URL from the shell environment\\)`));
+  assert.match(fromShell.stdout, /"ok": true/, 'the JSON summary is still printed');
+  const { DATABASE_URL, ...noUrl } = env; // eslint-disable-line no-unused-vars
+  const fromFile = spawnSync(process.execPath, [path.join(__dirname, '..', 'scripts', 'backup-run.js')], { env: { ...noUrl, ENV_FILE: envFile }, encoding: 'utf8', timeout: 120000 });
+  assert.equal(fromFile.status, 0, fromFile.stderr);
+  assert.match(fromFile.stderr, /DATABASE_URL from .*d5\.env\)/);
+});

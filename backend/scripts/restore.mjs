@@ -36,9 +36,14 @@
  *   --key-file <file>     read the encryption key from a file
  *   --json                print the final summary as JSON (row counts included)
  *
- * Safety: every check (download, sha256 against the manifest, decryption tag,
- * target emptiness) happens before anything is written. Exit codes: 0 ok,
- * 1 error, 2 refused (non-empty target without --force).
+ * Safety: the target database (name, server, and where DATABASE_URL came from:
+ * the shell or which env file — e.g. backend/.env.sandbox) is printed first.
+ * Every check (download, sha256 against the manifest, decryption tag, target
+ * database emptiness, uploads dir emptiness) happens before anything is
+ * written — a refused restore does not even create the target database (L6).
+ * In the sandbox (STORAGE_DRIVER=local) photos go to LOCAL_STORAGE_DIR, which
+ * is usually not empty: pass --uploads-dir <empty dir> or --no-uploads (L5).
+ * Exit codes: 0 ok, 1 error, 2 refused (non-empty target without --force).
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -51,6 +56,7 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const backendDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const dbUrlFromShell = process.env.DATABASE_URL !== undefined; // before the env file is read (D5)
 require(path.join(backendDir, 'helpers', 'loadEnv.js'));
 const backup = require(path.join(backendDir, 'backup.js'));
 const { parseDatabaseUrl } = require(path.join(backendDir, 'helpers', 'databaseUrl.js'));
@@ -204,16 +210,29 @@ function targetUrl() {
 
 const qi = (s) => `"${String(s).replace(/"/g, '""')}"`;
 
-async function ensureDatabase(target) {
+async function adminClient(target) {
   const admin = new URL(target.connectionString);
   admin.pathname = '/postgres';
   const c = new Client({ connectionString: admin.toString() });
   await c.connect();
-  try {
-    const r = await c.query('SELECT 1 FROM pg_database WHERE datname = $1', [target.database]);
-    if (!r.rowCount) { await c.query(`CREATE DATABASE ${qi(target.database)}`); log(`created database ${target.database}`); return true; }
-    return false;
-  } finally { await c.end().catch(() => {}); }
+  return c;
+}
+
+async function databaseExists(target) {
+  const c = await adminClient(target);
+  try { return (await c.query('SELECT 1 FROM pg_database WHERE datname = $1', [target.database])).rowCount > 0; } finally { await c.end().catch(() => {}); }
+}
+
+async function createDatabase(target) {
+  const c = await adminClient(target);
+  try { await c.query(`CREATE DATABASE ${qi(target.database)}`); log(`created database ${target.database}`); } finally { await c.end().catch(() => {}); }
+}
+
+/** Where the target came from, for the first log line (D5). */
+function targetSource() {
+  if (args['target-url']) return '--target-url';
+  const file = process.env.MBC_ENV_FILE ? path.relative(process.cwd(), process.env.MBC_ENV_FILE) || process.env.MBC_ENV_FILE : null;
+  return `--database on the DATABASE_URL server (DATABASE_URL from ${dbUrlFromShell ? 'the shell environment' : file || 'nowhere'})`;
 }
 
 async function userTableCount(target) {
@@ -309,6 +328,11 @@ async function main() {
   const spec = args._[0] || (args['s3-key'] ? 's3' : null);
   if (!spec) throw new Error('Usage: restore.mjs <backup|latest|latest-remote|s3:<key>> --database <name> [--force] (see the header of this script)');
 
+  // 0. Say which database this will write to, before doing anything (D5)
+  const target = targetUrl();
+  // stderr, also with --json (stdout stays pure JSON)
+  console.error(`[restore] target: database "${target.database}" on ${new URL(target.connectionString).host} — ${targetSource()}`);
+
   // 1. Fetch + verify + decrypt (nothing written to the target yet)
   const set = await resolveSet(spec);
   log(`backup set ${set.stamp}: ${path.basename(set.database)}${set.uploads ? ` + ${path.basename(set.uploads)}` : ''}`);
@@ -326,19 +350,19 @@ async function main() {
     uploadFiles = await checkArchive(uploadsTarGz);
   }
 
-  // 2. Target checks
-  const target = targetUrl();
+  // 2. Target checks — all before anything is created or written (L6)
   const live = process.env.DATABASE_URL ? parseDatabaseUrl(process.env.DATABASE_URL) : null;
   const isLive = live && new URL(live.connectionString).host === new URL(target.connectionString).host && live.database === target.database;
-  await ensureDatabase(target);
-  const tables = await userTableCount(target);
+  const exists = await databaseExists(target);
+  const tables = exists ? await userTableCount(target) : 0;
   if (tables > 0 && !args.force) {
     throw new Refused(`Database "${target.database}" is not empty (${tables} table(s)). Refusing to overwrite it; re-run with --force to DROP schema "${schema}" and restore over it.`);
   }
   if (uploadsTarGz && dirNonEmpty(upDir) && !args.force) {
-    throw new Refused(`Uploads directory ${upDir} is not empty. Refusing; re-run with --force to extract over it (existing files with the same names are replaced), or use --uploads-dir / --no-uploads.`);
+    throw new Refused(`Uploads directory ${upDir} is not empty. Refusing; re-run with --force to extract over it (existing files with the same names are replaced), or use --uploads-dir <empty dir> / --no-uploads.`);
   }
   if (isLive) log(`WARNING: "${target.database}" is the database in DATABASE_URL (the live app database).`);
+  if (!exists) await createDatabase(target);
 
   // 3. Restore
   const t0 = Date.now();
