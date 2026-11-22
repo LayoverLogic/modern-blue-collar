@@ -1,33 +1,37 @@
 #!/usr/bin/env node
 /**
- * tests/ui/walk.js — headless-Chrome UI walk of every page in backend/public/.
+ * tests/ui/walk.js — headless-Chrome UI regression walk of every page in backend/public/.
  *
  * What it does
  *   1. Page audit: every page x role (admin, technician, dispatcher) x viewport
  *      (desktop 1440x900, mobile 390x844). For each it saves a full-page PNG and
- *      records console errors, page (JS) errors, failed / 4xx / 5xx requests,
- *      external hosts, broken same-origin links, dead onclick buttons (handler
- *      not defined), placeholder text ("undefined", "NaN", "Invalid Date",
- *      "[object Object]", "-" cells, "$0.00"), horizontal overflow and
- *      white-label branding (company name, primary colour, logo, <title>).
+ *      checks: console errors, page (JS) errors, any 4xx/5xx response, failed
+ *      requests, external hosts, placeholder text ("undefined", "NaN",
+ *      "Invalid Date", "[object Object]", "null"), inline event-handler
+ *      attributes and inline <script> (CSP readiness), and on mobile: horizontal
+ *      overflow and tap targets under 44px.
  *   2. Main-flow walk by clicking (no API shortcuts): login, create customer,
- *      create job, schedule/dispatch, technician opens the job on mobile and
- *      uploads a photo, build a quote, convert to invoice, invite a team
- *      member, export CSV. Every step is recorded as pass / fail / no-ui-path.
- *   3. Preview: re-renders the 5 pages whose inline script has a quoting
- *      SyntaxError with that one bug fixed in-flight (request interception, no
- *      source edits), to expose the field-name mismatches hiding behind it.
- *   4. Writes results.json next to the screenshots.
+ *      create job, open it from the board, assign technician + date/time, build
+ *      a quote from the pricebook, approve it, create the invoice (refuses 0),
+ *      invite + add a team member, export CSV from three pages, technician on
+ *      mobile: Today view with Navigate / Call / Text / On My Way, open the job,
+ *      change status, upload a photo; dispatcher nav has no admin items.
+ *   3. XSS: stores `<img src=x onerror=...>`-style payloads in a customer, job,
+ *      quote, communication and pricebook item (via the API), opens every page
+ *      that shows them and asserts nothing executed / no payload element exists.
+ *      The payload records are deleted afterwards.
+ *   4. Final screenshots (named PNGs) into UI_FINAL_DIR.
+ *   5. Writes results.json next to the audit screenshots.
  *
- * The walk is an inspection tool: it exits 0 even when it finds problems
- * (pass --strict to exit 1 when any flow step fails).
+ * It is a REGRESSION TEST: it exits 1 when any audit check, flow step or XSS
+ * check fails. Set UI_REPORT_ONLY=1 to always exit 0 (inspection mode).
  *
  * ── How to run ──────────────────────────────────────────────────────────────
  *   1. cd backend && npm install            (installs puppeteer-core, a devDependency)
  *   2. Make sure a Chrome / Chromium binary exists. Default: /usr/bin/google-chrome
  *      On a Mac: export CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
  *   3. Set up a throwaway sandbox database (the walk creates customers, jobs,
- *      quotes and invoices in it):
+ *      quotes, invoices and team members in it):
  *        DATABASE_URL=postgresql://mbc:mbc_sandbox@localhost:5432/mbc_frontend?schema=public \
  *        PORT=3121 npm run sandbox:setup
  *   4. Run the walk. By default it starts its own server (node server.js) on
@@ -38,13 +42,16 @@
  *        UI_PORT=3121 npm run test:ui
  *      To test an already-running server instead (no restarts; expect 429s on
  *      long runs):  UI_BASE_URL=http://localhost:3121 npm run test:ui
- *   5. Output: PNGs + results.json in UI_OUT_DIR
- *      (default /home/claude/mbc-team/screenshots/phase1, else backend/tests/ui/out).
+ *   5. Output: PNGs + results.json in UI_OUT_DIR (default
+ *      /home/claude/mbc-team/screenshots/phase2 if that folder's parent exists,
+ *      else backend/tests/ui/out); final named PNGs in UI_FINAL_DIR (default the
+ *      parent screenshots folder, else backend/tests/ui/out/final).
  *
  * Options (env): UI_ROLES=admin,technician  UI_VIEWPORTS=desktop,mobile
- *                UI_PAGES=index,dispatch    UI_SKIP_AUDIT=1  UI_SKIP_FLOW=1  UI_SKIP_PREVIEW=1
- * Logins (seeded, password demo1234): admin@demo.test, mike@allproplumbinghvac.com
- * (technician), lisa@allproplumbinghvac.com (dispatcher).
+ *                UI_PAGES=index,dispatch    UI_SKIP_AUDIT=1  UI_SKIP_FLOW=1  UI_SKIP_XSS=1  UI_SKIP_FINAL=1
+ *                UI_REPORT_ONLY=1   UI_KEEP_DATA=1 (keep the customer/job/quote/invoice/users the flow created)
+ * Logins (seeded, password demo1234): admin@demo.test, plus a technician and a
+ * dispatcher — override with UI_TECH_EMAIL / UI_DISP_EMAIL / UI_PASSWORD.
  */
 'use strict';
 
@@ -59,9 +66,11 @@ const CHROME = process.env.CHROME_PATH || '/usr/bin/google-chrome';
 const PORT = Number(process.env.UI_PORT || 3121);
 const EXTERNAL = process.env.UI_BASE_URL || '';
 const BASE = (EXTERNAL || `http://localhost:${PORT}`).replace(/\/$/, '');
-const DEFAULT_OUT = fs.existsSync('/home/claude/mbc-team') ? '/home/claude/mbc-team/screenshots/phase1' : path.join(__dirname, 'out');
-const OUT = process.env.UI_OUT_DIR || DEFAULT_OUT;
-const STRICT = process.argv.includes('--strict');
+const TEAM_SHOTS = '/home/claude/mbc-team/screenshots';
+const HAS_TEAM = fs.existsSync(path.dirname(TEAM_SHOTS));
+const OUT = process.env.UI_OUT_DIR || (HAS_TEAM ? path.join(TEAM_SHOTS, 'phase2') : path.join(__dirname, 'out'));
+const FINAL = process.env.UI_FINAL_DIR || (HAS_TEAM ? TEAM_SHOTS : path.join(__dirname, 'out', 'final'));
+const REPORT_ONLY = !!process.env.UI_REPORT_ONLY;
 const PASSWORD = process.env.UI_PASSWORD || 'demo1234';
 
 const USERS = {
@@ -78,9 +87,12 @@ const ROLES = pick('UI_ROLES', Object.keys(USERS));
 const VPS = pick('UI_VIEWPORTS', Object.keys(VIEWPORTS));
 const ALL_PAGES = fs.readdirSync(path.join(BACKEND, 'public')).filter((f) => f.endsWith('.html')).map((f) => f.replace(/\.html$/, ''));
 const PAGES = pick('UI_PAGES', ALL_PAGES);
+const BAD_TOKENS = ['undefined', 'NaN', 'Invalid Date', '[object Object]', 'null'];
 
 fs.mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const localISO = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const TODAY = localISO();
 
 // ── Server management ────────────────────────────────────────────────────────
 let server = null;
@@ -97,23 +109,31 @@ async function startServer() {
   await stopServer();
   const env = { ...process.env, PORT: String(PORT), APP_URL: process.env.APP_URL || BASE };
   if (!env.ENV_FILE && fs.existsSync(path.join(BACKEND, '.env.sandbox')) && !fs.existsSync(path.join(BACKEND, '.env'))) env.ENV_FILE = '.env.sandbox';
+  // Wait until nothing answers on the port any more (a previous server must be gone).
+  for (let i = 0; i < 50; i++) { try { await fetch(`${BASE}/api/health`); await sleep(200); } catch { break; } }
   server = spawn(process.execPath, ['server.js'], { cwd: BACKEND, env, stdio: ['ignore', 'pipe', 'pipe'] });
-  server.stdout.on('data', () => {});
-  server.stderr.on('data', () => {});
-  await waitHealthy();
+  const logFile = path.join(OUT, 'server.log');
+  server.stdout.on('data', (d) => fs.appendFileSync(logFile, d));
+  server.stderr.on('data', (d) => fs.appendFileSync(logFile, d));
+  try { await waitHealthy(); } catch (e) { await stopServer(); throw e; }
 }
 async function stopServer() {
   if (!server) return;
   const s = server; server = null;
-  await new Promise((r) => { s.once('exit', r); s.kill('SIGTERM'); setTimeout(r, 3000); });
+  if (s.exitCode !== null) return;
+  await new Promise((r) => {
+    const t = setTimeout(() => { s.kill('SIGKILL'); setTimeout(r, 500); }, 5000);
+    s.once('exit', () => { clearTimeout(t); r(); });
+    s.kill('SIGTERM');
+  });
 }
 
-// ── Small API helpers (fixtures + seeded-data lookup only, never the walked flow) ─
+// ── Small API helpers (fixtures, XSS payloads, lookups — never the walked flow) ─
 async function apiLogin(email) {
   const r = await fetch(`${BASE}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password: PASSWORD }) });
   const d = await r.json();
   if (!r.ok) throw new Error(`API login ${email}: ${r.status} ${JSON.stringify(d)}`);
-  return d.token;
+  return d;
 }
 async function api(token, method, url, body) {
   const r = await fetch(BASE + url, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: body ? JSON.stringify(body) : undefined });
@@ -121,33 +141,47 @@ async function api(token, method, url, body) {
   return { status: r.status, body: d };
 }
 
-// Ensures at least one quote and one invoice with real amounts exist so the
-// list pages can be checked for "-"/"$0.00" where data exists.
-async function ensureBillingFixtures() {
-  const t = await apiLogin(USERS.admin);
-  const jobs = (await api(t, 'GET', '/api/jobs')).body || [];
-  const fx = { quote: null, invoice: null };
-  const qJob = jobs.find((j) => j.quote) || jobs.find((j) => !j.quote && j.status !== 'completed');
+// Makes sure the pages have something to show: a quote and an invoice with real
+// amounts, and jobs TODAY for the technician (seeded demo dates may be stale).
+async function ensureFixtures() {
+  const { token: t } = await apiLogin(USERS.admin);
+  const tech = await apiLogin(USERS.technician);
+  const techId = tech.user.id;
+  let jobs = (await api(t, 'GET', '/api/jobs')).body || [];
+  const customers = (await api(t, 'GET', '/api/customers')).body || [];
+  const fx = { quote: null, invoice: null, todayJobs: [] };
+  const qJob = jobs.find((j) => j.quote) || jobs.find((j) => !j.quote && !j.invoice && j.status !== 'completed');
   if (qJob && !qJob.quote) fx.quote = (await api(t, 'POST', '/api/quotes', { jobId: qJob.id, amount: 1450, notes: 'UI-walk fixture quote' })).body;
   else if (qJob) fx.quote = qJob.quote;
   const iJob = jobs.find((j) => j.invoice) || jobs.find((j) => !j.invoice && j.status === 'completed');
-  if (iJob && !iJob.invoice) fx.invoice = (await api(t, 'POST', '/api/invoices', { jobId: iJob.id, amount: 185.5, dueDate: '2026-12-15', notes: 'UI-walk fixture invoice' })).body;
+  if (iJob && !iJob.invoice) fx.invoice = (await api(t, 'POST', '/api/invoices', { jobId: iJob.id, amount: 185.5, dueDate: localISO(new Date(Date.now() + 14 * 864e5)), notes: 'UI-walk fixture invoice' })).body;
   else if (iJob) fx.invoice = iJob.invoice;
+  const mineToday = jobs.filter((j) => j.technicianId === techId && j.scheduledDate === TODAY);
+  const slots = [['09:00', 'Water heater not heating'], ['13:30', 'Kitchen drain slow']];
+  for (let i = mineToday.length; i < 2 && customers.length; i++) {
+    const c = customers[i % customers.length];
+    const r = await api(t, 'POST', '/api/jobs', { title: slots[i][1], customerId: c.id, technicianId: techId, status: 'scheduled', scheduledDate: TODAY, scheduledTime: slots[i][0], duration: 1.5 });
+    if (r.status === 201) fx.todayJobs.push(r.body.id);
+  }
+  jobs = (await api(t, 'GET', '/api/jobs')).body || [];
+  const techJob = jobs.find((j) => j.technicianId === techId && j.scheduledDate === TODAY) || jobs.find((j) => j.technicianId === techId);
+  const billed = jobs.find((j) => j.quote && j.invoice) || jobs.find((j) => j.quote) || jobs[0];
   const brand = await (await fetch(BASE + '/api/brand')).json();
-  return { fixtures: fx, brand, sampleJobId: (jobs[0] || {}).id, sampleCustomerId: (jobs[0] || {}).customerId };
+  return { fixtures: fx, brand, techId, adminJobId: (billed || {}).id, techJobId: (techJob || {}).id, sampleCustomerId: (billed || jobs[0] || {}).customerId };
 }
 
 // ── Browser helpers ─────────────────────────────────────────────────────────
 function instrument(page, log) {
   const host = new URL(BASE).host;
-  page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warn') log.console.push(`[${m.type()}] ${m.text()}`.slice(0, 400)); });
+  page.on('console', (m) => { if (m.type() === 'error') log.console.push(m.text().slice(0, 400)); else if (m.type() === 'warn') log.warnings.push(m.text().slice(0, 400)); });
   page.on('pageerror', (e) => log.pageErrors.push(String(e.message || e).split('\n')[0].slice(0, 300)));
-  page.on('requestfailed', (req) => log.failed.push(`${req.method()} ${req.url()} — ${req.failure() && req.failure().errorText}`));
+  page.on('requestfailed', (req) => { const f = req.failure() && req.failure().errorText; if (f !== 'net::ERR_ABORTED') log.failed.push(`${req.method()} ${req.url()} — ${f}`); });
   page.on('request', (req) => { try { const u = new URL(req.url()); if (/^https?:$/.test(u.protocol) && u.host !== host) log.external.push(req.url()); } catch { /* data: etc */ } });
   page.on('response', (res) => { if (res.status() >= 400) log.httpErrors.push(`${res.status()} ${res.request().method()} ${res.url().replace(BASE, '')}`); });
   page.on('dialog', async (d) => { log.dialogs.push(`${d.type()}: ${d.message()}`.slice(0, 300)); await d.accept().catch(() => {}); });
 }
-function newLog() { return { console: [], pageErrors: [], failed: [], external: [], httpErrors: [], dialogs: [] }; }
+function detach(page) { for (const ev of ['console', 'pageerror', 'requestfailed', 'request', 'response', 'dialog']) page.removeAllListeners(ev); }
+function newLog() { return { console: [], warnings: [], pageErrors: [], failed: [], external: [], httpErrors: [], dialogs: [] }; }
 
 async function newPage(browser, vp) {
   const ctx = await browser.createBrowserContext();
@@ -156,406 +190,457 @@ async function newPage(browser, vp) {
   if (vp === 'mobile') await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1');
   return { ctx, page };
 }
-async function settle(page, ms = 900) { await page.waitForNetworkIdle({ idleTime: 400, timeout: 8000 }).catch(() => {}); await sleep(ms); }
-const shot = async (page, name) => { const f = `${name}.png`; await page.screenshot({ path: path.join(OUT, f), fullPage: true }); return f; };
+async function settle(page, ms = 700) { await page.waitForNetworkIdle({ idleTime: 400, timeout: 8000 }).catch(() => {}); await sleep(ms); }
+const shot = async (page, name, dir = OUT) => { const f = `${name}.png`; await page.screenshot({ path: path.join(dir, f), fullPage: true }); return f; };
+const visibleText = (page, sel) => page.$eval(sel, (e) => (e.offsetParent !== null || getComputedStyle(e).position === 'fixed' ? e.innerText : '')).catch(() => '');
+const isVisible = (page, sel) => page.$eval(sel, (e) => { const s = getComputedStyle(e); const r = e.getBoundingClientRect(); return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0; }).catch(() => false);
 
-// In-page inspection: placeholders, overflow, dead buttons, branding, links.
-async function inspect(page, brand, designWidth) {
-  return page.evaluate((brand, designWidth) => {
+// In-page inspection: placeholders, overflow, tap targets, inline handlers, branding.
+async function inspect(page, brand, vp) {
+  return page.evaluate((brand, badTokens, designWidth, mobile) => {
     const vis = (el) => { const s = getComputedStyle(el); const r = el.getBoundingClientRect(); return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0; };
     const text = document.body ? document.body.innerText : '';
     const tokens = {};
-    for (const t of ['undefined', 'NaN', 'Invalid Date', '[object Object]', 'null']) {
+    for (const t of badTokens) {
       const m = text.match(new RegExp('(^|[^A-Za-z])' + t.replace(/[[\]]/g, '\\$&') + '([^A-Za-z]|$)', 'g'));
       if (m) tokens[t] = m.length;
     }
-    const tds = [...document.querySelectorAll('td')].filter(vis);
-    const dashCells = tds.filter((td) => td.innerText.trim() === '-').length;
-    const zeroMoney = (text.match(/\$0\.00/g) || []).length;
-    // Compare against the emulated device width: with isMobile Chrome zooms out and
-    // widens window.innerWidth to fit overflowing content, which would hide the overflow.
-    const docW = document.documentElement.scrollWidth; const vw = designWidth || window.innerWidth;
+    const docW = document.documentElement.scrollWidth;
     const overflowEls = [];
-    if (docW > vw + 1) {
-      for (const el of document.querySelectorAll('nav, nav *, main > *, table, .modal, .controls, .filters, .action-bar')) {
+    if (docW > designWidth + 1) {
+      for (const el of document.querySelectorAll('body *')) {
         const r = el.getBoundingClientRect();
-        if (vis(el) && r.right > vw + 1) overflowEls.push((el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (el.className && typeof el.className === 'string' ? '.' + el.className.split(' ')[0] : '')) + ` right=${Math.round(r.right)}`);
+        if (vis(el) && r.right > designWidth + 1) overflowEls.push(el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (typeof el.className === 'string' && el.className ? '.' + el.className.split(' ')[0] : '') + ` right=${Math.round(r.right)}`);
         if (overflowEls.length > 6) break;
       }
     }
-    // Dead buttons / clickables: onclick handler names that are not defined on window.
-    const dead = [];
-    for (const el of document.querySelectorAll('[onclick],[onchange],[oninput]')) {
-      const code = el.getAttribute('onclick') || el.getAttribute('onchange') || el.getAttribute('oninput');
-      const m = code.match(/^\s*([A-Za-z_$][\w$]*)\s*\(/);
-      if (m && typeof window[m[1]] !== 'function' && !['confirm', 'alert'].includes(m[1])) dead.push(`${(el.innerText || el.id || el.tagName).trim().slice(0, 30)} -> ${m[1]}()`);
+    const smallTargets = [];
+    if (mobile) {
+      const sel = 'main button, main a.btn, main select, main input:not([type=checkbox]):not([type=radio]):not([type=file]), #topnav button, #topnav a, .modal-overlay.open button';
+      for (const el of document.querySelectorAll(sel)) {
+        if (!vis(el) || el.closest('.calendar-grid.month')) continue;
+        const r = el.getBoundingClientRect();
+        if (r.height < 43.5) smallTargets.push(`${(el.innerText || el.id || el.getAttribute('aria-label') || el.tagName).trim().slice(0, 24)}:${Math.round(r.height)}px`);
+      }
     }
+    const inlineHandlers = [...document.querySelectorAll('*')].filter((el) => [...el.attributes].some((a) => /^on/i.test(a.name))).map((el) => el.tagName.toLowerCase() + (el.id ? '#' + el.id : '')).slice(0, 10);
+    const inlineScripts = [...document.querySelectorAll('script:not([src])')].length;
     const rootStyle = getComputedStyle(document.documentElement);
-    const primary = (document.documentElement.style.getPropertyValue('--color-primary') || rootStyle.getPropertyValue('--color-primary')).trim();
+    const primary = rootStyle.getPropertyValue('--color-primary').trim();
     const navCompany = document.getElementById('nav-company');
-    const links = [...document.querySelectorAll('a[href]')].map((a) => a.getAttribute('href')).filter((h) => h && !h.startsWith('#') && !h.startsWith('javascript:'));
-    const navLinks = [...document.querySelectorAll('nav a[href]')].map((a) => a.getAttribute('href'));
-    const loginVisible = !!document.getElementById('login-screen') && vis(document.getElementById('login-screen'));
+    const navLinks = [...document.querySelectorAll('#topnav .nav-links a')].map((a) => a.textContent.trim());
     return {
       title: document.title, url: location.pathname + location.search, h2: (document.querySelector('h2') || {}).innerText || '',
-      tokens, dashCells, zeroMoney, docWidth: docW, viewportWidth: vw, overflow: docW > vw + 1, overflowEls,
-      deadHandlers: [...new Set(dead)],
+      tokens, docWidth: docW, viewportWidth: designWidth, overflow: docW > designWidth + 1, overflowEls, smallTargets,
+      inlineHandlers, inlineScripts, navLinks,
       branding: {
         navCompany: navCompany ? navCompany.innerText : null,
-        companyNameShown: !!brand.companyName && text.includes(brand.companyName),
         titleHasCompany: !!brand.companyName && document.title.includes(brand.companyName),
         primaryCss: primary, brandPrimary: brand.colors && brand.colors.primary,
         primaryApplied: !!(brand.colors && primary.toLowerCase() === String(brand.colors.primary).toLowerCase()),
-        logo: !!document.querySelector('img[src*="logo" i], img.logo, .logo img, svg.logo, link[rel~="icon"]'),
+        favicon: !!document.querySelector('link[rel~="icon"][href^="data:image"], link[rel~="icon"][href$=".png"], link[rel~="icon"][href$=".ico"], link[rel~="icon"][href$=".svg"]'),
+        industryBadge: (document.getElementById('nav-trade') || {}).innerText || null,
       },
-      links: [...new Set(links)], navLinks, loginVisible,
-      snippet: text.replace(/\s+/g, ' ').slice(0, 300), layoutWidth: window.innerWidth,
+      snippet: text.replace(/\s+/g, ' ').slice(0, 240),
     };
-  }, brand, designWidth);
+  }, brand, BAD_TOKENS, VIEWPORTS[vp].width, vp === 'mobile');
 }
 
-async function checkLinks(hrefs, fromPath) {
-  const broken = [];
-  for (const h of hrefs) {
-    let u; try { u = new URL(h, BASE + fromPath); } catch { broken.push(h + ' (unparseable)'); continue; }
-    if (u.origin !== new URL(BASE).origin) continue;
-    try { const r = await fetch(u.href, { method: 'GET', redirect: 'manual' }); if (r.status >= 400) broken.push(`${h} -> ${r.status}`); } catch (e) { broken.push(`${h} -> ${e.message}`); }
-  }
-  return broken;
+function auditProblems(info, log, vp) {
+  const p = [];
+  if (log.pageErrors.length) p.push(`JS errors: ${log.pageErrors.slice(0, 3).join(' | ')}`);
+  if (log.console.length) p.push(`console errors: ${log.console.slice(0, 3).join(' | ')}`);
+  if (log.httpErrors.length) p.push(`HTTP errors: ${log.httpErrors.slice(0, 4).join(', ')}`);
+  if (log.failed.length) p.push(`failed requests: ${log.failed.slice(0, 3).join(', ')}`);
+  if (log.external.length) p.push(`external hosts: ${log.external.slice(0, 3).join(', ')}`);
+  if (info.error) p.push(`inspect failed: ${info.error}`);
+  if (info.tokens && Object.keys(info.tokens).length) p.push(`placeholder text: ${JSON.stringify(info.tokens)}`);
+  if (info.inlineHandlers && info.inlineHandlers.length) p.push(`inline on* handlers: ${info.inlineHandlers.join(', ')}`);
+  if (info.inlineScripts) p.push(`${info.inlineScripts} inline <script> block(s)`);
+  if (vp === 'mobile' && info.overflow) p.push(`horizontal overflow ${info.docWidth}px: ${info.overflowEls.join(', ')}`);
+  if (vp === 'mobile' && info.smallTargets && info.smallTargets.length) p.push(`tap targets < 44px: ${info.smallTargets.slice(0, 8).join(', ')}`);
+  if (info.branding && !info.branding.primaryApplied) p.push(`brand primary colour not applied (css ${info.branding.primaryCss} vs ${info.branding.brandPrimary})`);
+  if (info.branding && !info.branding.favicon) p.push('no favicon');
+  return p;
 }
 
-// UI login by typing + clicking. Returns { ok, reason }.
+// UI login by typing + clicking. Technicians are sent on to today.html.
 async function uiLogin(page, email) {
   await page.goto(BASE + '/index.html', { waitUntil: 'domcontentloaded' });
-  await settle(page, 300);
+  await settle(page, 200);
+  await page.waitForSelector('#email-input', { visible: true, timeout: 8000 });
   await page.type('#email-input', email);
   await page.type('#password-input', PASSWORD);
   await page.click('.login-card .btn-primary');
   await settle(page, 600);
   const state = await page.evaluate(() => ({
     token: !!localStorage.getItem('token'),
-    appVisible: getComputedStyle(document.getElementById('app')).display !== 'none',
+    path: location.pathname,
+    appVisible: !!document.getElementById('app') && getComputedStyle(document.getElementById('app')).display !== 'none',
+    todayVisible: !!document.getElementById('today-list'),
     err: (document.getElementById('error-msg') || {}).innerText || '',
   }));
-  return { ok: state.token && state.appVisible, ...state };
-}
-// Fallback used only so the per-page audit can proceed when the UI login is broken.
-async function injectToken(page, token) {
-  await page.goto(BASE + '/api/health', { waitUntil: 'domcontentloaded' });
-  await page.evaluate((t) => localStorage.setItem('token', t), token);
+  return { ok: state.token && (state.appVisible || state.todayVisible), ...state };
 }
 
 // ── 1. Page audit ───────────────────────────────────────────────────────────
 async function pageAudit(browser, ctxInfo, results) {
-  const { brand, fixtures, sampleJobId, sampleCustomerId } = ctxInfo;
-  const query = { job: `?id=${sampleJobId}`, 'customer-detail': `?id=${sampleCustomerId}` };
+  const { brand } = ctxInfo;
   for (const role of ROLES) {
+    const query = { job: `?id=${role === 'technician' ? ctxInfo.techJobId : ctxInfo.adminJobId}`, 'customer-detail': `?id=${ctxInfo.sampleCustomerId}` };
     for (const vp of VPS) {
       await startServer(); // fresh rate-limit window per segment
-      const token = await apiLogin(USERS[role]);
       const { ctx, page } = await newPage(browser, vp);
-      // Try the real login once per segment so the result is visible per role/viewport.
       const lg = newLog(); instrument(page, lg);
       const login = await uiLogin(page, USERS[role]).catch((e) => ({ ok: false, reason: e.message }));
-      results.logins.push({ role, viewport: vp, ...login, pageErrors: lg.pageErrors.slice(0, 3), screenshot: await shot(page, `login-${role}-${vp}`) });
-      page.removeAllListeners('console'); page.removeAllListeners('pageerror'); page.removeAllListeners('requestfailed');
-      page.removeAllListeners('request'); page.removeAllListeners('response'); page.removeAllListeners('dialog');
-      if (!login.ok) await injectToken(page, token);
+      const loginProblems = auditProblems({}, lg, vp).filter((x) => !/brand primary|favicon/.test(x));
+      if (!login.ok) loginProblems.push(`login failed: ${JSON.stringify(login)}`);
+      results.logins.push({ role, viewport: vp, ...login, problems: loginProblems, screenshot: await shot(page, `login-${role}-${vp}`) });
+      detach(page);
       for (const p of PAGES) {
         const log = newLog(); instrument(page, log);
         const url = `/${p}.html${query[p] || ''}`;
         await page.goto(BASE + url, { waitUntil: 'domcontentloaded' }).catch((e) => log.failed.push('goto ' + e.message));
         await settle(page);
-        const info = await inspect(page, brand, VIEWPORTS[vp].width).catch((e) => ({ error: e.message }));
+        const info = await inspect(page, brand, vp).catch((e) => ({ error: e.message }));
         const file = await shot(page, `${p}-${role}-${vp}`);
-        const brokenLinks = vp === 'desktop' ? await checkLinks(info.links || [], url) : [];
-        results.pages.push({ page: p, role, viewport: vp, url, screenshot: file, ...info, brokenLinks, ...log });
-        page.removeAllListeners('console'); page.removeAllListeners('pageerror'); page.removeAllListeners('requestfailed');
-        page.removeAllListeners('request'); page.removeAllListeners('response'); page.removeAllListeners('dialog');
-        process.stdout.write(`  ${p.padEnd(16)} ${role.padEnd(10)} ${vp.padEnd(7)} jsErr=${log.pageErrors.length} http4xx5xx=${log.httpErrors.length} overflow=${info.overflow ? 'Y' : 'n'} dead=${(info.deadHandlers || []).length}\n`);
+        const problems = auditProblems(info, log, vp);
+        results.pages.push({ page: p, role, viewport: vp, url, screenshot: file, problems, ...info, ...log });
+        detach(page);
+        process.stdout.write(`  ${(problems.length ? 'FAIL' : 'ok  ')} ${p.padEnd(16)} ${role.padEnd(10)} ${vp.padEnd(7)} ${problems.join(' ; ').slice(0, 220)}\n`);
       }
       await ctx.close();
     }
   }
-  results.fixtures = fixtures;
 }
 
 // ── 2. Main-flow walk (clicking) ────────────────────────────────────────────
 async function flowWalk(browser, ctxInfo, results) {
   await startServer();
   const steps = results.flow;
-  const step = (name, status, detail, extra = {}) => { steps.push({ step: name, status, detail, ...extra }); console.log(`  [${status}] ${name} — ${detail}`); };
+  const step = (name, ok, detail, extra = {}) => { const status = ok === true ? 'pass' : (ok === null ? 'skip' : 'fail'); steps.push({ step: name, status, detail, ...extra }); console.log(`  [${status}] ${name} — ${detail}`); };
   const stamp = Date.now().toString().slice(-5);
+  const { brand } = ctxInfo;
+  results.flowCreated = { customerLast: `Walsh-${stamp}`, jobTitle: `Leaking outside tap ${stamp}`, emails: [`niamh${stamp}@example.test`, `niamh.b${stamp}@example.test`] };
 
   // Admin on desktop.
   const A = await newPage(browser, 'desktop'); const alog = newLog(); instrument(A.page, alog); const page = A.page;
   const login = await uiLogin(page, USERS.admin);
-  step('1. Login (admin, desktop, typed credentials + Sign In)', login.ok ? 'pass' : 'fail',
-    login.ok ? 'dashboard shown' : `no token / dashboard after clicking Sign In; JS errors: ${alog.pageErrors.slice(0, 2).join(' | ') || 'none'}`, { screenshot: await shot(page, 'flow-01-login-admin') });
-  if (!login.ok) await injectToken(page, await apiLogin(USERS.admin));
+  step('1. Login (admin, desktop, typed credentials + Sign In)', login.ok, login.ok ? 'dashboard shown' : JSON.stringify(login), { screenshot: await shot(page, 'flow-01-login-admin') });
 
   // Create customer.
+  const first = 'Siobhan', last = `Walsh-${stamp}`;
   await page.goto(BASE + '/customers.html'); await settle(page);
-  const custName = `Siobhan Walsh-${stamp}`;
   try {
-    await page.click('.page-header .btn-primary');
-    await sleep(300);
-    const modalOpen = await page.$eval('#modal', (m) => m.classList.contains('open'));
-    if (!modalOpen) throw new Error('"+ New Customer" did not open the modal (handler not defined)');
-    await page.type('#f-name', custName); await page.type('#f-phone', '620-555-0142'); await page.type('#f-email', `siobhan${stamp}@example.test`);
-    await page.type('#f-address', '12 Main St'); await page.type('#f-city', 'Hutchinson'); await page.type('#f-state', 'KS'); await page.type('#f-zip', '67501');
-    await page.click('#modal .btn-primary'); await settle(page, 500);
-    const err = await page.$eval('#modal-error', (e) => (e.style.display !== 'none' ? e.innerText : ''));
-    step('2. Create customer (Customers > + New Customer)', err ? 'fail' : 'pass', err ? `modal error: "${err}"` : 'customer created', { screenshot: await shot(page, 'flow-02-create-customer') });
-  } catch (e) { step('2. Create customer (Customers > + New Customer)', 'fail', e.message, { screenshot: await shot(page, 'flow-02-create-customer') }); }
+    await page.click('#btn-new'); await sleep(250);
+    if (!(await isVisible(page, '#modal'))) throw new Error('"+ New Customer" did not open the modal');
+    await page.type('#f-first', first); await page.type('#f-last', last);
+    await page.type('#f-phone', '620-555-0142'); await page.type('#f-email', `siobhan${stamp}@example.test`);
+    await page.type('#f-address', '12 Main St'); await page.type('#f-city', 'Hutchinson'); await page.type('#f-state', 'Reno County'); await page.type('#f-zip', '67501');
+    await page.click('#modal .btn-primary'); await settle(page, 400);
+    const err = await visibleText(page, '#modal-error');
+    const row = await page.$$eval('#customers-tbody tr', (rs, n) => rs.some((r) => r.innerText.includes(n)), last);
+    step('2. Create customer (Customers > + New Customer)', !err && row, err ? `modal error: "${err}"` : `created; row shown: ${row}; state field accepted a county name`, { screenshot: await shot(page, 'flow-02-create-customer') });
+  } catch (e) { step('2. Create customer', false, e.message, { screenshot: await shot(page, 'flow-02-create-customer') }); }
 
   // Create job.
+  const jobTitle = `Leaking outside tap ${stamp}`;
   await page.goto(BASE + '/dispatch.html'); await settle(page);
   try {
-    await page.click('.page-header .btn-primary'); await sleep(300);
-    const modalOpen = await page.$eval('#modal', (m) => m.classList.contains('open'));
-    if (!modalOpen) throw new Error('"+ New Job" did not open the modal (handler not defined)');
-    const opts = await page.$$eval('#f-customer option', (os) => os.map((o) => [o.value, o.textContent]));
-    const techOpts = await page.$$eval('#f-tech option', (os) => os.length);
-    const typeOpts = await page.$$eval('#f-type option', (os) => os.length);
-    const custOpt = opts.find((o) => o[0]);
-    if (!custOpt) throw new Error(`customer dropdown is empty (options: ${JSON.stringify(opts)})`);
-    await page.select('#f-customer', custOpt[0]);
-    if (typeOpts > 1) await page.select('#f-type', await page.$eval('#f-type option:nth-child(2)', (o) => o.value));
-    await page.type('#f-notes', 'UI walk: leaking outside tap');
-    await page.click('#modal .btn-primary'); await settle(page, 500);
-    const err = await page.$eval('#modal-error', (e) => (e.style.display !== 'none' ? e.innerText : ''));
-    step('3. Create job (Dispatch > + New Job)', err ? 'fail' : 'pass', (err ? `modal error: "${err}"` : 'job created') + `; customer options labelled ${JSON.stringify(custOpt[1])}; technician options=${techOpts - 1}`, { screenshot: await shot(page, 'flow-03-create-job') });
-  } catch (e) { step('3. Create job (Dispatch > + New Job)', 'fail', e.message, { screenshot: await shot(page, 'flow-03-create-job') }); }
+    await page.click('#btn-new'); await sleep(250);
+    const custVal = await page.$$eval('#f-customer option', (os, n) => (os.find((o) => o.textContent.includes(n)) || {}).value, last);
+    if (!custVal) throw new Error('new customer not in the dropdown');
+    await page.select('#f-customer', custVal);
+    await page.type('#f-title', jobTitle);
+    await page.type('#f-notes', 'UI walk: tap drips constantly');
+    await page.click('#modal .btn-primary'); await settle(page, 400);
+    const err = await visibleText(page, '#modal-error');
+    const row = await page.$$eval('#jobs-tbody tr', (rs, t) => rs.some((r) => r.innerText.includes(t)), jobTitle);
+    step('3. Create job (Dispatch > + New Job)', !err && row, err ? `modal error: "${err}"` : `created; row on board: ${row}`, { screenshot: await shot(page, 'flow-03-create-job') });
+  } catch (e) { step('3. Create job', false, e.message, { screenshot: await shot(page, 'flow-03-create-job') }); }
 
-  // Schedule + dispatch: open a job from the board, set status / technician.
-  let jobUrl = null; let monthLabel = '';
+  // Open from the board, assign technician + date/time.
+  let jobUrl = null;
   try {
     const rows = await page.$$('#jobs-tbody tr');
-    const before = page.url();
-    if (rows.length) { await rows[0].click(); await settle(page, 300); }
-    if (page.url() === before) {
-      // Board rows are not clickable; try the Schedule page chips instead.
-      await page.goto(BASE + '/schedule.html'); await settle(page);
-      await page.click('#btn-month').catch(() => {});
-      await page.evaluate((d) => { const el = document.getElementById('date-picker'); el.value = d; el.dispatchEvent(new Event('change')); }, '2026-04-02');
-      await settle(page, 300);
-      monthLabel = await page.$eval('#nav-label', (e) => e.innerText);
-      await shot(page, 'flow-04a-schedule-month-jump');
-      await page.click('#btn-day').catch(() => {});
-      await page.evaluate((d) => { const el = document.getElementById('date-picker'); el.value = d; el.dispatchEvent(new Event('change')); }, '2026-04-02');
-      await settle(page, 300);
-      const chip = await page.$('.day-job, .job-chip');
-      step('4a. Open a job from the Dispatch board', 'fail', `clicking a board row did nothing (rows rendered: ${rows.length}); fell back to Schedule; month view after picking 2026-04-02 in the date picker shows "${monthLabel}"; day view 2026-04-02 > ${chip ? 'job chip' : 'no chip found'}`, { screenshot: await shot(page, 'flow-04a-schedule-month') });
-      if (chip) { await chip.click(); await settle(page); }
-    } else step('4a. Open a job from the Dispatch board', 'pass', 'row click opened job page');
+    let target = null;
+    for (const r of rows) if ((await r.evaluate((e) => e.innerText)).includes(jobTitle)) { target = r; break; }
+    if (!target) throw new Error('job row not found');
+    await target.$eval('td:nth-child(2)', (td) => td.click()); await settle(page);
     jobUrl = page.url();
-    const jobHeading = await page.$eval('#job-heading', (e) => e.innerText).catch(() => '');
-    if (!/job\.html\?id=\d+/.test(jobUrl)) throw new Error('could not reach a job page by clicking');
-    const hasTechPicker = await page.$('#job-content select:not(#status-select)');
-    const hasDatePicker = await page.$('#job-content input[type=date], #job-content input[type=datetime-local], #job-content input[type=time]');
-    await page.select('#status-select', 'scheduled'); await settle(page, 400);
-    const st = await page.$eval('#d-status', (e) => e.innerText);
-    step('4b. Schedule & dispatch the job (job page)', hasTechPicker && hasDatePicker ? 'pass' : 'no-ui-path',
-      `${jobHeading}: status select -> "${st}"; technician picker on job page: ${hasTechPicker ? 'yes' : 'NO'}; date/time picker: ${hasDatePicker ? 'yes' : 'NO'} (Schedule page is read-only, no drag/drop or assign)`, { screenshot: await shot(page, 'flow-04b-job-admin') });
-  } catch (e) { step('4. Schedule & dispatch', 'fail', e.message, { screenshot: await shot(page, 'flow-04-dispatch') }); }
+    step('4a. Open the job from the Dispatch board (row click)', /job\.html\?id=\d+/.test(jobUrl), jobUrl.replace(BASE, ''));
+    await page.waitForSelector('#job-content', { visible: true, timeout: 8000 });
+    await page.waitForSelector('#a-tech option:not([value=""])', { timeout: 8000 });
+    const techVal = await page.$$eval('#a-tech option', (os) => (os.find((o) => o.value) || {}).value);
+    const techName = await page.$$eval('#a-tech option', (os, v) => (os.find((o) => o.value === v) || {}).textContent, techVal);
+    await page.select('#a-tech', techVal);
+    await page.$eval('#a-date', (el, d) => { el.value = d; }, TODAY);
+    // Pick a slot this technician is free (the API rejects double-booking).
+    const busy = ((await api((await apiLogin(USERS.admin)).token, 'GET', `/api/jobs?technicianId=${techVal}&date=${TODAY}`)).body || [])
+      .filter((j) => j.scheduledTime && ['pending', 'scheduled', 'in-progress'].includes(j.status)).map((j) => parseInt(j.scheduledTime, 10));
+    const hour = [10, 15, 7, 17, 12, 19, 6].find((h) => busy.every((b) => Math.abs(b - h) >= 3)) || 21;
+    await page.$eval('#a-time', (el, v) => { el.value = v; }, `${String(hour).padStart(2, '0')}:30`);
+    await page.click('#btn-assign'); await settle(page, 400);
+    const tech = await visibleText(page, '#d-tech'); const sched = await visibleText(page, '#d-scheduled'); const st = await visibleText(page, '#d-status');
+    step('4b. Assign technician + date/time on the job page', tech === techName && /:30/.test(sched) && /Scheduled/i.test(st), `technician "${tech}", scheduled "${sched}", status "${st}"`, { screenshot: await shot(page, 'flow-04b-assign') });
+  } catch (e) { step('4. Open + assign', false, e.message, { screenshot: await shot(page, 'flow-04-assign') }); }
 
-  // Build a quote.
-  await page.goto(BASE + '/quote-invoice.html'); await settle(page);
+  // Build a quote from the pricebook.
+  let quoteTotal = null;
   try {
-    const btns = await page.$$eval('main button', (bs) => bs.map((b) => b.innerText.trim()));
-    const quoteBtn = btns.find((b) => /quote/i.test(b) && /new|create|\+/i.test(b));
-    await page.click('.page-header .btn-primary'); await settle(page, 400);
-    const landed = page.url().replace(BASE, '');
-    const notFound = await page.$eval('#error-msg', (e) => getComputedStyle(e).display !== 'none').catch(() => false);
-    const onJob = jobUrl ? (await page.goto(jobUrl), await settle(page), await page.$$eval('button', (bs) => bs.map((b) => b.innerText.trim()))) : [];
-    const jobQuoteBtn = onJob.find((b) => /quote/i.test(b));
-    step('5. Build a quote', quoteBtn || jobQuoteBtn ? 'pass' : 'no-ui-path',
-      `no "New Quote" control on Quotes & Invoices (buttons: ${JSON.stringify(btns)}) or job page (buttons: ${JSON.stringify(onJob)}); "+ From Job" goes to ${landed}${notFound ? ' which shows "Job not found."' : ''}; no line-item editor (Line Items card is read-only, reads jobParts)`,
-      { screenshot: await shot(page, 'flow-05-quote') });
-  } catch (e) { step('5. Build a quote', 'fail', e.message); }
+    await page.goto(BASE + '/quote-invoice.html'); await settle(page);
+    await page.click('#btn-new-quote'); await settle(page, 200);
+    const jobId = jobUrl && jobUrl.match(/id=(\d+)/)[1];
+    const has = await page.$$eval('#f-job option', (os, id) => os.some((o) => o.value === id), jobId);
+    if (!has) throw new Error('job not offered in "New Quote"');
+    await page.select('#f-job', jobId);
+    await page.click('#new-quote-form .btn-primary'); await settle(page);
+    if (!(await isVisible(page, '#quote-builder'))) throw new Error('quote builder did not open on the job page');
+    const item = await page.$$eval('#qb-item option', (os) => { const o = os.find((x) => /^\d+$/.test(x.value)); return o && { v: o.value, t: o.textContent }; });
+    if (!item) throw new Error('pricebook is empty');
+    await page.select('#qb-item', item.v);
+    await page.$eval('#qb-qty', (el) => { el.value = '2'; });
+    await page.click('#qb-add');
+    await page.select('#qb-item', 'custom');
+    await page.type('#qb-desc', 'Call-out fee'); await page.type('#qb-price', '49.50');
+    await page.click('#qb-add'); await sleep(150);
+    const lines = await page.$$eval('#qb-lines tr', (rs) => rs.length);
+    quoteTotal = await visibleText(page, '#qb-total');
+    await shot(page, 'flow-05a-quote-builder');
+    await page.click('#qb-save'); await settle(page, 400);
+    const inv = await visibleText(page, '#inv-list');
+    step('5. Build a quote (New Quote > job > pricebook lines)', lines === 2 && inv.includes('Quote #') && inv.includes(quoteTotal), `lines ${lines}, total ${quoteTotal}; card: "${inv.replace(/\s+/g, ' ').slice(0, 160)}"`, { screenshot: await shot(page, 'flow-05-quote') });
+    await page.select('#quote-status', 'approved'); await settle(page, 400);
+    const st = await page.$eval('#quote-status', (s) => s.value).catch(() => '');
+    step('5b. Approve the quote', st === 'approved', `quote status now "${st}"`);
+  } catch (e) { step('5. Build a quote', false, e.message, { screenshot: await shot(page, 'flow-05-quote') }); }
 
-  // Convert to invoice (job page "Create Invoice").
+  // Create the invoice from the quote.
   try {
     if (!jobUrl) throw new Error('no job page reached');
-    // Re-runs: find (by clicking Schedule day-view chips) a job that has no invoice yet.
-    // (Day view: the date picker lands on the wrong week/month in week and month views.)
-    let found = false;
-    for (const day of ['2026-04-01', '2026-04-02', '2026-04-03', '2026-04-04', '2026-04-07']) {
-      for (let i = 0; i < 6 && !found; i++) {
-        await page.goto(BASE + '/schedule.html'); await settle(page, 300);
-        await page.click('#btn-day');
-        await page.evaluate((d) => { const el = document.getElementById('date-picker'); el.value = d; el.dispatchEvent(new Event('change')); }, day);
-        await settle(page, 200);
-        const chips = await page.$$('.day-job');
-        if (i >= chips.length) break;
-        await chips[i].click(); await settle(page);
-        found = !(await page.$eval('#inv-list', (e) => /Invoice #/.test(e.innerText)).catch(() => true));
-      }
-      if (found) break;
-    }
-    if (!found) throw new Error('every job in the week of 2026-04-01 already has an invoice — reset the sandbox DB and re-run');
-    jobUrl = page.url();
-    const n = alog.dialogs.length;
-    const hadInvoice = await page.$eval('#inv-list', (e) => /Invoice #/.test(e.innerText));
-    await page.click('#btn-create-invoice'); await settle(page, 700);
-    const dialogs = alog.dialogs.slice(n);
-    const inv = await page.$eval('#inv-list', (e) => e.innerText);
-    step('6. Convert to invoice (job page > Create Invoice)', /\$0\.00/.test(inv) ? 'fail' : (dialogs.some((d) => /created/i.test(d)) ? 'pass' : 'fail'),
-      `job already had invoice: ${hadInvoice}; dialogs: ${JSON.stringify(dialogs.map((d) => d.slice(0, 160)))}; Invoices & Quotes card now: "${inv.replace(/\s+/g, ' ')}" (no amount prompt, quote not used)`, { screenshot: await shot(page, 'flow-06-invoice') });
-  } catch (e) { step('6. Convert to invoice', 'fail', e.message); }
-  try {
-    if (!jobUrl) throw new Error('no job page reached');
-    const n = alog.dialogs.length;
-    const visible = await page.$eval('#btn-create-invoice', (b) => getComputedStyle(b).display !== 'none');
-    await page.click('#btn-create-invoice'); await settle(page, 700);
-    const dialogs = alog.dialogs.slice(n);
-    const raw = dialogs.some((d) => /prisma|invocation|\.js:\d+/i.test(d));
-    step('6b. Click Create Invoice again on the same job', raw ? 'fail' : 'pass', `button still visible: ${visible}; dialogs: ${JSON.stringify(dialogs.map((d) => d.slice(0, 160)))}${raw ? ' (raw Prisma error + server file path shown to the user)' : ''}`, { screenshot: await shot(page, 'flow-06b-invoice-again') });
-  } catch (e) { step('6b. Create Invoice again', 'fail', e.message); }
+    await page.goto(jobUrl); await settle(page);
+    await page.click('#btn-create-invoice'); await sleep(200);
+    const prefill = await page.$eval('#inv-amount', (e) => e.value);
+    await page.$eval('#inv-amount', (e) => { e.value = '0'; });
+    await page.click('#btn-confirm-invoice'); await sleep(250);
+    const zeroErr = await visibleText(page, '#inv-error');
+    await page.$eval('#inv-amount', (e, v) => { e.value = v; }, prefill);
+    await page.click('#btn-confirm-invoice'); await settle(page, 500);
+    const inv = await visibleText(page, '#inv-list');
+    const btnHidden = !(await isVisible(page, '#btn-create-invoice'));
+    const ok = !!prefill && Number(prefill) > 0 && /greater than 0/i.test(zeroErr) && inv.includes('Invoice #') && btnHidden && (!quoteTotal || inv.split('Invoice #')[1].includes(quoteTotal));
+    step('6. Create invoice (prefilled from approved quote, refuses 0, hides afterwards)', ok, `prefill ${prefill}; zero → "${zeroErr}"; card "${inv.replace(/\s+/g, ' ').slice(0, 200)}"; Create Invoice hidden: ${btnHidden}`, { screenshot: await shot(page, 'flow-06-invoice') });
+  } catch (e) { step('6. Create invoice', false, e.message, { screenshot: await shot(page, 'flow-06-invoice') }); }
 
-  // Invite a team member.
+  // Invite + add a team member.
   await page.goto(BASE + '/team.html'); await settle(page);
   try {
-    await page.click('.page-header .btn-primary'); await sleep(300);
-    await page.type('#f-email', `niamh${stamp}@example.test`); await page.type('#f-name', 'Niamh Byrne'); await page.select('#f-role', 'technician');
+    await page.click('#btn-invite'); await sleep(250);
+    await page.type('#f-first', 'Niamh'); await page.type('#f-last', `Invited-${stamp}`);
+    await page.type('#f-email', `niamh${stamp}@example.test`);
     const n = alog.httpErrors.length;
-    await page.click('#modal .btn-primary'); await settle(page, 500);
-    const err = await page.$eval('#modal-error', (e) => (e.style.display !== 'none' ? e.innerText : ''));
-    step('7. Invite a team member (Team > + Invite Member)', err ? 'fail' : 'pass', `${err ? `modal error: "${err}"` : 'invite sent'}; HTTP: ${JSON.stringify(alog.httpErrors.slice(n))}`, { screenshot: await shot(page, 'flow-07-invite') });
-  } catch (e) { step('7. Invite a team member', 'fail', e.message, { screenshot: await shot(page, 'flow-07-invite') }); }
+    await page.click('#invite-form .btn-primary'); await settle(page, 400);
+    const res = await visibleText(page, '#invite-result');
+    const err = await visibleText(page, '#modal-error');
+    step('7. Invite a team member (Team > + Invite Member)', !err && /outbox|not set up|emailed/i.test(res) && /api\/auth\/google/.test(res), `${err ? 'error: ' + err : res.replace(/\s+/g, ' ').slice(0, 220)}; HTTP errors: ${JSON.stringify(alog.httpErrors.slice(n))}`, { screenshot: await shot(page, 'flow-07-invite') });
+    await page.click('#modal [data-close-modal]');
+    await page.click('#btn-add'); await sleep(250);
+    await page.type('#a-first', 'Niamh'); await page.type('#a-last', `Byrne-${stamp}`); await page.type('#a-email', `niamh.b${stamp}@example.test`);
+    await page.select('#a-role', 'technician'); await page.type('#a-password', 'temporary-pass-123');
+    await page.click('#add-form .btn-primary'); await settle(page, 400);
+    const added = await page.$$eval('.team-card', (cs, n) => cs.some((c) => c.innerText.includes(n)), `Byrne-${stamp}`);
+    step('7b. Add a team member with a temporary password', added, added ? 'card shown' : `error: ${await visibleText(page, '#add-error')}`, { screenshot: await shot(page, 'flow-07b-add-member') });
+  } catch (e) { step('7. Team', false, e.message, { screenshot: await shot(page, 'flow-07-invite') }); }
 
-  // Export.
-  const exportHits = [];
-  for (const p of ALL_PAGES) {
-    await page.goto(`${BASE}/${p}.html`, { waitUntil: 'domcontentloaded' }); await settle(page, 200);
-    const hits = await page.$$eval('a, button', (els) => els.filter((e) => /export|csv|download/i.test(e.innerText + (e.getAttribute('href') || ''))).map((e) => e.innerText.trim()));
-    if (hits.length) exportHits.push(`${p}: ${hits.join(', ')}`);
+  // Export CSV from three pages.
+  const exp = [];
+  for (const [p, btn] of [['customers', '#btn-export'], ['dispatch', '#btn-export'], ['quote-invoice', '#btn-export']]) {
+    await page.goto(`${BASE}/${p}.html`); await settle(page, 200);
+    const resP = page.waitForResponse((r) => r.url().includes('/api/exports/'), { timeout: 8000 }).catch(() => null);
+    await page.click(btn).catch(() => {});
+    const r = await resP;
+    exp.push({ page: p, status: r && r.status(), type: r && r.headers()['content-type'], url: r && r.url().replace(BASE, '') });
   }
-  step('8. Run an export (CSV)', exportHits.length ? 'pass' : 'no-ui-path', exportHits.length ? exportHits.join('; ') : 'no Export/CSV/Download control on any page; /api/exports/{customers,jobs,invoices} exist API-only');
+  step('8. Export CSV (Customers, Dispatch, Quotes & Invoices)', exp.every((e) => e.status === 200 && /csv/.test(e.type || '')), JSON.stringify(exp));
   results.flowAdminLog = alog;
   await A.ctx.close();
 
-  // Technician on mobile: open the job, upload a photo.
+  // Technician on mobile.
   await startServer();
   const T = await newPage(browser, 'mobile'); const tlog = newLog(); instrument(T.page, tlog); const tp = T.page;
   const tl = await uiLogin(tp, USERS.technician);
-  step('9a. Login (technician, mobile)', tl.ok ? 'pass' : 'fail', tl.ok ? 'dashboard shown' : 'login button does nothing', { screenshot: await shot(tp, 'flow-09a-login-tech-mobile') });
-  if (!tl.ok) await injectToken(tp, await apiLogin(USERS.technician));
+  step('9a. Login (technician, mobile) lands on Today', tl.ok && /today\.html/.test(tl.path), `path ${tl.path}`, { screenshot: await shot(tp, 'flow-09a-tech-today') });
   try {
-    await tp.goto(BASE + '/index.html'); await settle(tp);
-    const myJobsVisible = await tp.evaluate(() => /my jobs|today/i.test(document.body.innerText));
-    await tp.goto(BASE + '/schedule.html'); await settle(tp);
-    await tp.click('#btn-day').catch(() => {});
-    await tp.evaluate((d) => { const el = document.getElementById('date-picker'); el.value = d; el.dispatchEvent(new Event('change')); }, '2026-04-01');
-    await settle(tp, 300);
-    const navFits = await tp.evaluate(() => document.documentElement.scrollWidth <= 390 && document.querySelector('nav').scrollWidth <= 390);
-    const layoutW = await tp.evaluate(() => document.documentElement.scrollWidth);
-    const chip = await tp.$('.day-job, .job-chip');
-    await shot(tp, 'flow-09b-tech-schedule-mobile');
-    if (!chip) throw new Error('no job visible on Schedule day view for 2026-04-01');
-    await chip.click(); await settle(tp);
-    const head = await tp.$eval('#job-heading', (e) => e.innerText).catch(() => '');
-    const tapTargets = await tp.$$eval('#job-content button, #job-content select', (els) => els.map((e) => { const r = e.getBoundingClientRect(); return `${(e.innerText || e.id).trim().slice(0, 18)}:${Math.round(r.height)}px`; }));
-    step('9b. Technician opens the job on mobile', head ? 'pass' : 'fail', `${head || 'job not shown'}; dashboard has a "my jobs/today" view: ${myJobsVisible ? 'yes' : 'NO'}; page/nav fits 390px: ${navFits ? 'yes' : `NO (laid out ${layoutW}px wide, browser zooms out)`}; tap targets ${tapTargets.join(', ')}`, { screenshot: await shot(tp, 'flow-09b-tech-job-mobile') });
+    await tp.goto(BASE + '/today.html'); await settle(tp);
+    const cards = await tp.$$eval('.today-card', (cs) => cs.map((c) => ({
+      text: c.innerText.replace(/\s+/g, ' ').slice(0, 120),
+      buttons: [...c.querySelectorAll('.big-actions .btn')].map((b) => ({ label: b.innerText.trim(), href: b.getAttribute('href') || '', h: Math.round(b.getBoundingClientRect().height) })),
+    })));
+    if (!cards.length) throw new Error('no jobs on the technician Today view');
+    const c0 = cards[0];
+    const lbl = (l) => c0.buttons.find((b) => b.label === l) || {};
+    const omw = decodeURIComponent(lbl('On My Way').href || '');
+    const txt = decodeURIComponent(lbl('Text Customer').href || '');
+    const ok = /maps/.test(lbl('Navigate').href) && /^tel:/.test(lbl('Call').href) && /^sms:/.test(txt) && /^sms:/.test(omw) &&
+      omw.includes(brand.companyName) && /on my way/i.test(omw) && c0.buttons.every((b) => b.h >= 44);
+    step('9b. Technician Today view: Navigate / Call / Text Customer / On My Way', ok, `${cards.length} job(s); first: ${c0.text}; buttons ${c0.buttons.map((b) => `${b.label}:${b.h}px`).join(', ')}; On My Way → "${omw.slice(0, 160)}"`, { screenshot: await shot(tp, 'flow-09b-tech-today') });
+    await tp.click('.today-card .title a'); await settle(tp);
+    const head = await visibleText(tp, '#job-heading');
+    await tp.select('#status-select', 'in-progress'); await settle(tp, 400);
+    const st = await visibleText(tp, '#d-status');
+    step('9c. Technician opens the job on mobile and starts it', !!head && /in progress/i.test(st), `${head}; status "${st}"`, { screenshot: await shot(tp, 'flow-09c-tech-job') });
     const png = path.join(os.tmpdir(), 'mbc-ui-walk-photo.png');
     fs.writeFileSync(png, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAJklEQVR4nGP8z4AKGBkZGRgYGBj+M2ADjEwMjAwMDAwMjIwMDAAA7RQHAW1sZ8gAAAAASUVORK5CYII=', 'base64'));
     const input = await tp.$('#photo-input');
     await input.uploadFile(png);
-    const btn = await tp.$('#btn-upload-photo');
-    await btn.click().catch(async () => { await btn.evaluate((b) => b.click()); });
-    await settle(tp, 800);
-    const status = await tp.$eval('#photo-status', (e) => e.innerText);
+    await tp.click('#btn-upload-photo'); await settle(tp, 800);
+    const status = await visibleText(tp, '#photo-status');
     const thumbs = await tp.$$eval('.photo-thumb img', (is) => is.filter((i) => i.naturalWidth > 0).length);
-    step('10. Upload a photo (technician, mobile)', /Uploaded/i.test(status) && thumbs > 0 ? 'pass' : 'fail', `status "${status}", rendered thumbnails ${thumbs}`, { screenshot: await shot(tp, 'flow-10-photo-upload') });
-  } catch (e) { step('9b/10. Technician job + photo', 'fail', e.message, { screenshot: await shot(tp, 'flow-09-tech-error') }); }
+    step('10. Upload a photo (technician, mobile)', /Uploaded/i.test(status) && thumbs > 0, `status "${status}", rendered thumbnails ${thumbs}`, { screenshot: await shot(tp, 'flow-10-photo-upload') });
+  } catch (e) { step('9/10. Technician', false, e.message, { screenshot: await shot(tp, 'flow-09-tech-error') }); }
   results.flowTechLog = tlog;
   await T.ctx.close();
+
+  // Dispatcher: no admin-only nav items, can reach dispatch.
+  const D = await newPage(browser, 'desktop'); const dlog = newLog(); instrument(D.page, dlog);
+  const dl = await uiLogin(D.page, USERS.dispatcher);
+  const nav = await D.page.$$eval('#topnav .nav-links a', (as) => as.map((a) => a.textContent.trim())).catch(() => []);
+  const adminItems = nav.filter((n) => /Team|API Keys|Quotes/.test(n));
+  step('11. Dispatcher nav has no admin-only items', dl.ok && !adminItems.length && nav.includes('Dispatch') && nav.includes('Communications'), `nav: ${nav.join(', ')}`);
+  await D.ctx.close();
+
+  for (const [who, log] of [['admin', alog], ['technician', tlog], ['dispatcher', dlog]]) {
+    const bad = [...log.pageErrors, ...log.console];
+    step(`12. No JS/console errors during the ${who} flow`, bad.length === 0, bad.slice(0, 4).join(' | ') || 'none');
+  }
 }
 
-// ── 3. Preview: what the 5 syntax-broken pages render once the quoting bug is fixed ──
-// The fix is applied in-flight via request interception (no source edits) so the
-// next layer of problems (field-name mismatches) is visible now, before Phase 2.
-function fixInlineQuoting(html) {
-  return html
-    .replace(/location\.href='([\w.-]+\.html\?\w+=)'\+/g, "location.href=\\'$1'+")
-    .replace(/\+''"/g, "+'\\'\"");
-}
-async function previewFixedPages(browser, ctxInfo, results) {
+// ── 3. XSS: stored payloads must render as text everywhere ────────────────────
+async function xssCheck(browser, ctxInfo, results) {
   await startServer();
-  const { brand, sampleCustomerId } = ctxInfo;
-  const token = await apiLogin(USERS.admin);
-  const targets = { index: '', customers: '', 'customer-detail': `?id=${sampleCustomerId}`, dispatch: '', 'quote-invoice': '' };
-  for (const vp of ['desktop']) {
-    const { ctx, page } = await newPage(browser, vp);
-    await page.setRequestInterception(true);
-    page.on('request', async (req) => {
-      const m = req.url().match(/\/([\w-]+)\.html(\?|$)/);
-      if (req.resourceType() === 'document' && m && targets[m[1]] !== undefined) {
-        const r = await fetch(req.url()); const body = fixInlineQuoting(await r.text());
-        return req.respond({ status: 200, contentType: 'text/html; charset=utf-8', body });
-      }
-      req.continue();
-    });
-    await injectToken(page, token);
-    for (const [p, q] of Object.entries(targets)) {
-      const log = newLog(); instrument(page, log);
-      await page.goto(`${BASE}/${p}.html${q}`, { waitUntil: 'domcontentloaded' });
-      await settle(page);
-      const extra = {};
-      if (p === 'quote-invoice') {
-        extra.quotesTab = await page.$$eval('#list-tbody tr', (rs) => rs.map((r) => r.innerText.replace(/\s+/g, ' | ')));
-        await shot(page, `preview-quote-invoice-quotes-${vp}`);
-        await page.click('.tab:nth-child(2)'); await settle(page, 300);
-        extra.invoicesTab = await page.$$eval('#list-tbody tr', (rs) => rs.map((r) => r.innerText.replace(/\s+/g, ' | ')));
-      }
-      if (p === 'index' || p === 'dispatch') extra.rows = await page.$$eval('#jobs-tbody tr', (rs) => rs.slice(0, 3).map((r) => r.innerText.replace(/\s+/g, ' | ')));
-      if (p === 'index') extra.stats = await page.$$eval('.stat-card', (cs) => cs.map((c) => c.innerText.replace(/\s+/g, ' ')));
-      if (p === 'customers') extra.rows = await page.$$eval('#customers-tbody tr', (rs) => rs.slice(0, 3).map((r) => r.innerText.replace(/\s+/g, ' | ')));
-      if (p === 'dispatch') {
-        extra.techOptions = await page.$$eval('#tech-filter option', (os) => os.map((o) => o.textContent));
-        extra.customerOptions = await page.$$eval('#f-customer option', (os) => os.slice(0, 3).map((o) => o.textContent));
-      }
-      if (p === 'customer-detail') extra.detail = await page.evaluate(() => ({ jobs: [...document.querySelectorAll('#jobs-tbody tr')].map((r) => r.innerText.replace(/\s+/g, ' | ')), invoiced: (document.getElementById('stat-invoiced') || {}).innerText, invoices: (document.getElementById('invoices-tbody') || {}).innerText }));
-      if (p === 'customers' || p === 'dispatch') {
-        // Submit the create form as a user would, to see what the API says once the page runs.
-        await page.click('.page-header .btn-primary'); await sleep(300);
-        if (p === 'customers') {
-          await page.type('#f-name', 'Aoife Kelly'); await page.type('#f-phone', '620-555-0199'); await page.type('#f-address', '4 Elm St');
-          await page.type('#f-city', 'Hutchinson'); await page.type('#f-state', 'KS'); await page.type('#f-zip', '67501');
-        } else {
-          const v = await page.$eval('#f-customer option:nth-child(2)', (o) => o.value).catch(() => '');
-          if (v) await page.select('#f-customer', v);
-          await page.select('#f-type', await page.$eval('#f-type option:nth-child(2)', (o) => o.value));
-          await page.type('#f-notes', 'Preview: burst pipe');
-        }
-        await page.click('#modal .btn-primary'); await settle(page, 400);
-        extra.createResult = await page.$eval('#modal-error', (e) => (e.style.display !== 'none' ? 'error: ' + e.innerText : 'no error shown'));
-        await shot(page, `preview-${p}-create-admin-${vp}`);
-        await page.evaluate(() => { const m = document.getElementById('modal'); if (m) m.classList.remove('open'); });
-      }
-      const info = await inspect(page, brand, VIEWPORTS[vp].width);
-      const file = await shot(page, `preview-${p}-admin-${vp}`);
-      results.preview.push({ page: p, viewport: vp, screenshot: file, tokens: info.tokens, dashCells: info.dashCells, zeroMoney: info.zeroMoney, deadHandlers: info.deadHandlers, pageErrors: log.pageErrors, httpErrors: log.httpErrors, console: log.console.slice(0, 5), ...extra });
-      for (const ev of ['console', 'pageerror', 'requestfailed', 'response', 'dialog']) page.removeAllListeners(ev);
-      console.log(`  preview ${p.padEnd(16)} dash=${info.dashCells} $0=${info.zeroMoney} tokens=${JSON.stringify(info.tokens)} jsErr=${log.pageErrors.length}`);
+  const { token: t } = await apiLogin(USERS.admin);
+  const P = (n) => `<img src=x onerror="window.__xss=(window.__xss||[]).concat(${n})">`;
+  const created = {};
+  const cust = await api(t, 'POST', '/api/customers', {
+    firstName: P(1), lastName: `"><svg onload="window.__xss=(window.__xss||[]).concat(2)">`, phone: '620-555-0100',
+    email: 'xss@example.test', address: P(3), city: `<b onmouseover=alert(1)>Town</b>`, zip: '<i>67501</i>', notes: P(5),
+  });
+  created.customer = cust.body && cust.body.id;
+  const job = await api(t, 'POST', '/api/jobs', { customerId: created.customer, title: `<script>window.__xss=[6]</script>${P(7)}`, type: P(8), description: P(9), notes: P(10), status: 'scheduled', scheduledDate: TODAY, scheduledTime: '11:00', technicianId: ctxInfo.techId });
+  created.job = job.body && job.body.id;
+  const quote = await api(t, 'POST', '/api/quotes', { jobId: created.job, amount: 99, notes: P(11) });
+  created.quote = quote.body && quote.body.id;
+  const comm = await api(t, 'POST', '/api/communications', { customerId: created.customer, type: 'note', direction: 'outbound', subject: P(12), body: P(13) });
+  created.comm = comm.body && comm.body.id;
+  const pb = await api(t, 'POST', '/api/pricebook', { category: P(14), name: P(15), description: P(16), price: 1 });
+  created.pricebook = pb.body && pb.body.id;
+  const setupOk = created.customer && created.job;
+  const pages = ['index', 'customers', `customer-detail?id=${created.customer}`, 'dispatch', `job?id=${created.job}`, 'schedule', 'today', `communications?customerId=${created.customer}`, 'communications', 'quote-invoice', 'pricebook'];
+  const out = [];
+  for (const role of ['admin', 'technician']) {
+    const { ctx, page } = await newPage(browser, 'desktop');
+    const login = await apiLogin(USERS[role]);
+    await page.goto(BASE + '/api/health'); await page.evaluate((tk) => localStorage.setItem('token', tk), login.token);
+    for (const p of (role === 'admin' ? pages : ['today', `job?id=${created.job}`, 'schedule'])) {
+      const [name, q] = p.split('?');
+      const reqs = [];
+      page.on('request', (r) => { if (/\/x$/.test(r.url())) reqs.push(r.url()); });
+      await page.goto(`${BASE}/${name}.html${q ? '?' + q : ''}`); await settle(page, 300);
+      if (name === 'schedule') { await page.click('#btn-day').catch(() => {}); await sleep(200); }
+      if (name === 'job' && role === 'admin') { await page.click('#btn-build-quote').catch(() => {}); await settle(page, 300); }
+      const r = await page.evaluate(() => ({
+        executed: window.__xss || null,
+        injected: document.querySelectorAll('img[src="x"], svg[onload], b[onmouseover], script:not([src])').length,
+        shownAsText: /onerror=/.test(document.body.innerText),
+      }));
+      page.removeAllListeners('request');
+      out.push({ role, page: p, ...r, imgRequests: reqs.length, ok: !r.executed && !r.injected && !reqs.length });
     }
     await ctx.close();
   }
+  // Clean up the payload records.
+  if (created.comm) await api(t, 'DELETE', `/api/communications/${created.comm}`);
+  if (created.quote) await api(t, 'DELETE', `/api/quotes/${created.quote}`);
+  if (created.job) await api(t, 'DELETE', `/api/jobs/${created.job}`);
+  if (created.customer) await api(t, 'DELETE', `/api/customers/${created.customer}`);
+  if (created.pricebook) await api(t, 'DELETE', `/api/pricebook/${created.pricebook}`);
+  results.xss = { setupOk: !!setupOk, created, checks: out };
+  for (const c of out) console.log(`  [${c.ok ? 'pass' : 'FAIL'}] XSS ${c.role.padEnd(10)} ${c.page.padEnd(28)} executed=${JSON.stringify(c.executed)} injectedNodes=${c.injected} shownAsText=${c.shownAsText}`);
+  if (!setupOk) console.log('  [FAIL] XSS fixtures could not be created: ' + JSON.stringify({ cust: cust.body, job: job.body }));
+}
+
+// ── 4. Final named screenshots ────────────────────────────────────────────────
+async function finalShots(browser, ctxInfo, results) {
+  await startServer();
+  fs.mkdirSync(FINAL, { recursive: true });
+  const { token: at } = await apiLogin(USERS.admin);
+  const jobs = (await api(at, 'GET', '/api/jobs')).body || [];
+  const billed = jobs.filter((j) => j.quote && j.invoice).pop() || jobs.find((j) => j.quote) || jobs[0];
+  const quotable = jobs.find((j) => !j.quote && !j.invoice && j.status !== 'cancelled') || billed;
+  const techJob = jobs.find((j) => j.technicianId === ctxInfo.techId && j.scheduledDate === TODAY) || jobs.find((j) => j.technicianId === ctxInfo.techId);
+  const shots = [];
+  const take = async (vp, role, url, name, prep) => {
+    const { ctx, page } = await newPage(browser, vp);
+    const log = newLog(); instrument(page, log);
+    const { token } = await apiLogin(USERS[role]);
+    await page.goto(BASE + '/api/health'); await page.evaluate((tk) => localStorage.setItem('token', tk), token);
+    await page.goto(BASE + url); await settle(page);
+    if (prep) await prep(page);
+    await page.evaluate(() => window.scrollTo(0, 0)); await sleep(100); // sticky nav renders at the scroll position
+    await shot(page, name, FINAL);
+    shots.push({ file: path.join(FINAL, name + '.png'), url, role, viewport: vp, jsErrors: log.pageErrors.length + log.console.length });
+    await ctx.close();
+  };
+  await take('desktop', 'admin', '/index.html', 'dashboard');
+  await take('desktop', 'admin', '/schedule.html', 'schedule');
+  await take('desktop', 'admin', '/dispatch.html', 'dispatch');
+  await take('desktop', 'admin', `/job.html?id=${billed.id}`, 'job');
+  await take('desktop', 'admin', `/job.html?id=${quotable.id}#quote`, 'quote', async (page) => {
+    const opts = await page.$$eval('#qb-item option', (os) => os.filter((o) => /^\d+$/.test(o.value)).slice(0, 3).map((o) => o.value));
+    for (const [i, v] of opts.entries()) { await page.select('#qb-item', v); await page.$eval('#qb-qty', (e, q) => { e.value = q; }, String(i + 1)); await page.click('#qb-add'); }
+    await sleep(200);
+  });
+  await take('desktop', 'admin', '/quote-invoice.html?tab=invoices', 'invoice');
+  await take('desktop', 'admin', '/customers.html', 'customers');
+  await take('desktop', 'admin', '/team.html', 'team');
+  await take('mobile', 'dispatcher', '/index.html', 'dashboard-mobile');
+  if (techJob) await take('mobile', 'technician', `/job.html?id=${techJob.id}`, 'job-mobile-technician');
+  await take('mobile', 'technician', '/today.html', 'today-mobile-technician');
+  results.finalShots = shots;
+  for (const s of shots) console.log(`  ${s.file}${s.jsErrors ? '  (JS/console errors: ' + s.jsErrors + ')' : ''}`);
+}
+
+// ── 5. Remove what the flow created, so re-runs start clean (no schedule clashes) ─
+async function cleanupFlow(results) {
+  const fc = results.flowCreated; if (!fc) return;
+  await startServer();
+  const { token: t } = await apiLogin(USERS.admin);
+  const jobs = (await api(t, 'GET', '/api/jobs')).body || [];
+  for (const j of jobs.filter((x) => x.title === fc.jobTitle)) {
+    if (j.invoice) await api(t, 'DELETE', `/api/invoices/${j.invoice.id}`);
+    if (j.quote) await api(t, 'DELETE', `/api/quotes/${j.quote.id}`);
+    await api(t, 'DELETE', `/api/jobs/${j.id}`);
+  }
+  const custs = (await api(t, 'GET', '/api/customers')).body || [];
+  for (const c of custs.filter((x) => x.lastName === fc.customerLast)) await api(t, 'DELETE', `/api/customers/${c.id}`);
+  const users = (await api(t, 'GET', '/api/users')).body || [];
+  for (const u of users.filter((x) => fc.emails.includes(x.email))) await api(t, 'DELETE', `/api/users/${u.id}`);
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
 (async () => {
-  const results = { base: BASE, startedAt: new Date().toISOString(), roles: ROLES, viewports: VPS, pages: [], logins: [], flow: [], preview: [] };
+  const results = { base: BASE, startedAt: new Date().toISOString(), roles: ROLES, viewports: VPS, pages: [], logins: [], flow: [], xss: null };
   let browser;
   try {
     await startServer();
-    const ctxInfo = await ensureBillingFixtures();
-    results.brand = ctxInfo.brand;
+    const ctxInfo = await ensureFixtures();
+    results.brand = ctxInfo.brand; results.fixtures = ctxInfo.fixtures;
     browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', '--no-first-run'] });
     if (!process.env.UI_SKIP_AUDIT) { console.log('Page audit'); await pageAudit(browser, ctxInfo, results); }
     if (!process.env.UI_SKIP_FLOW) { console.log('Main flow'); await flowWalk(browser, ctxInfo, results); }
-    if (!process.env.UI_SKIP_PREVIEW) { console.log('Preview (quoting bug fixed in-flight)'); await previewFixedPages(browser, ctxInfo, results); }
+    if (!process.env.UI_SKIP_XSS) { console.log('XSS'); await xssCheck(browser, ctxInfo, results); }
+    if (!process.env.UI_SKIP_FINAL) { console.log('Final screenshots'); await finalShots(browser, ctxInfo, results); }
+    if (!process.env.UI_KEEP_DATA) await cleanupFlow(results);
   } catch (e) {
     results.fatal = String(e.stack || e);
     console.error('FATAL', e);
@@ -563,10 +648,22 @@ async function previewFixedPages(browser, ctxInfo, results) {
     if (browser) await browser.close().catch(() => {});
     await stopServer();
     results.finishedAt = new Date().toISOString();
+    const failPages = results.pages.filter((p) => p.problems.length);
+    const failLogins = results.logins.filter((l) => l.problems.length);
+    const failSteps = results.flow.filter((s) => s.status === 'fail');
+    const failXss = results.xss ? results.xss.checks.filter((c) => !c.ok).length + (results.xss.setupOk ? 0 : 1) : 0;
+    const count = (k) => results.pages.reduce((s, p) => s + (p[k] ? p[k].length : 0), 0);
+    results.summary = {
+      captures: results.pages.length, failingCaptures: failPages.length, failingLogins: failLogins.length,
+      consoleErrors: count('console'), pageErrors: count('pageErrors'), httpErrors: count('httpErrors'),
+      placeholderCaptures: results.pages.filter((p) => p.tokens && Object.keys(p.tokens).length).length,
+      flowSteps: results.flow.length, flowFailures: failSteps.length, xssFailures: failXss,
+    };
     fs.writeFileSync(path.join(OUT, 'results.json'), JSON.stringify(results, null, 2));
-    const failedSteps = results.flow.filter((s) => s.status !== 'pass').length;
-    const jsErrPages = new Set(results.pages.filter((p) => p.pageErrors.length).map((p) => p.page));
-    console.log(`\nWrote ${path.join(OUT, 'results.json')} — ${results.pages.length} page captures, flow steps not passing: ${failedSteps}, pages with JS errors: ${[...jsErrPages].join(', ') || 'none'}`);
-    process.exit(results.fatal || (STRICT && failedSteps) ? 1 : 0);
+    console.log(`\nWrote ${path.join(OUT, 'results.json')}`);
+    console.log('Summary', JSON.stringify(results.summary));
+    const failed = !!results.fatal || failPages.length || failLogins.length || failSteps.length || failXss;
+    if (failed) console.log(REPORT_ONLY ? 'FAILURES (report-only mode, exit 0)' : 'FAILED');
+    process.exit(failed && !REPORT_ONLY ? 1 : 0);
   }
 })();

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Today</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="css/app.css" />
+  <script src="js/format.js"></script>
+  <script src="js/brand.js"></script>
+</head>
+<body>
+<nav id="topnav"></nav>
+<main>
+  <div class="page-header">
+    <div>
+      <h2 id="today-heading">Today</h2>
+      <div class="muted small" id="today-date"></div>
+    </div>
+    <div class="page-actions">
+      <label for="day-picker" class="sr-only">Day</label>
+      <input type="date" id="day-picker" />
+    </div>
+  </div>
+  <div class="filters" id="tech-filter-row" hidden>
+    <select id="tech-filter" aria-label="Technician"><option value="">Everyone</option></select>
+  </div>
+  <div class="today-list" id="today-list"><div class="card"><div class="empty">Loading&hellip;</div></div></div>
+</main>
+<script src="js/api.js"></script>
+<script src="js/nav.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/field.js"></script>
+<script src="js/pages/today.js"></script>
+</body>
+</html>
