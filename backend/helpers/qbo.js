@@ -52,7 +52,7 @@ function endpoint(envName, fallback) {
   if (!v) return fallback;
   let u;
   try { u = new URL(v); } catch { throw new QboError(500, `${envName} is not a URL`, { code: 'QBO_CONFIG' }); }
-  if (process.env.NODE_ENV === 'production' && u.protocol !== 'https:') throw new QboError(500, `${envName} must be https in production`, { code: 'QBO_CONFIG' });
+  if (require('./security').isProduction() && u.protocol !== 'https:') throw new QboError(500, `${envName} must be https in production`, { code: 'QBO_CONFIG' });
   return v.replace(/\/+$/, '');
 }
 

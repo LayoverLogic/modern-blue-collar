@@ -99,7 +99,7 @@ function revokeTokens(tx, userId, kind) {
 function appBase(req) {
   const fromEnv = String(process.env.APP_URL || '').trim().replace(/\/+$/, '');
   if (fromEnv) return fromEnv;
-  if (process.env.NODE_ENV === 'production' || !req || typeof req.get !== 'function') return '';
+  if (require('./security').isProduction() || !req || typeof req.get !== 'function') return '';
   const host = req.get('host');
   return host && /^[a-z0-9.:[\]-]+$/i.test(host) ? `${req.protocol}://${host}` : '';
 }

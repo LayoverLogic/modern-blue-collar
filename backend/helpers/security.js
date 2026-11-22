@@ -30,7 +30,8 @@ const MIN_SECRET_LENGTH = 32;
 // Values that have appeared in this repo (examples, docs, tests). Never secret.
 const { PUBLISHED_SECRETS, isKnownSecret } = require('./publishedSecrets');
 
-const isProduction = () => process.env.NODE_ENV === 'production';
+// Any spelling / padding of "production" counts (L7; helpers/loadEnv.js also normalises it).
+const isProduction = () => /^\s*production\s*$/i.test(String(process.env.NODE_ENV || ''));
 
 /** @returns {string|null} why the secret is unacceptable for production, or null */
 function jwtSecretProblem(secret) {

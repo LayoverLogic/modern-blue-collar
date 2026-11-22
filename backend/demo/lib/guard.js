@@ -30,7 +30,7 @@ function assertDemoDatabase(databaseUrl, { allowDb = process.env.SEED_DEMO_ALLOW
   try { ({ database } = parseDatabaseUrl(databaseUrl)); } catch (e) { throw new DemoGuardError(e.message); }
   if (!database) throw new DemoGuardError('DATABASE_URL has no database name.');
   const allowed = allowDb && allowDb === database;
-  if (nodeEnv === 'production' && !allowed) {
+  if (/^\s*production\s*$/i.test(String(nodeEnv || '')) && !allowed) {
     throw new DemoGuardError(`NODE_ENV=production — refusing to write demo data to "${database}". ` +
       `If this really is a demo instance, pass --allow-db ${database}.`);
   }

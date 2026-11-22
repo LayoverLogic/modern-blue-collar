@@ -1190,3 +1190,20 @@ test('M2 the anonymous limiter still counts other anonymous /api calls; brand + 
   assert.ok(limited, 'the sign-in limiter still stops guessing');
   await s.stop();
 });
+
+test('L7 NODE_ENV is case-insensitive: "Production" / " PRODUCTION " get every production check', async () => {
+  for (const spelling of ['Production', ' PRODUCTION ']) {
+    const s = await bootServer({ NODE_ENV: spelling, JWT_SECRET: 'short', SANDBOX_MODE: null });
+    await sleep(300);
+    assert.equal(s.alive(), false, `NODE_ENV="${spelling}" booted with a weak JWT_SECRET`);
+    assert.match(s.output(), /read as "production"/);
+    assert.match(s.output(), /\[CONFIG\] FATAL/);
+  }
+  const demo = await bootServer({ NODE_ENV: 'PRODUCTION', DEMO_MODE: 'true', SANDBOX_MODE: null });
+  await sleep(300);
+  assert.equal(demo.alive(), false);
+  assert.match(demo.output(), /DEMO_MODE=true is not allowed/);
+  await withEnv({ NODE_ENV: 'Production' }, () => assert.equal(require('../helpers/security').isProduction(), true));
+  const { assertDemoDatabase } = require('../demo/lib/guard');
+  assert.throws(() => assertDemoDatabase('postgresql://u:p@localhost/mbc_demo_x', { nodeEnv: 'Production', allowDb: null }), /NODE_ENV=production/);
+});
