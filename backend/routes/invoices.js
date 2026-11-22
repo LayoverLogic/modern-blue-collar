@@ -1,84 +1,88 @@
 /**
  * routes/invoices.js  — Invoice CRUD
  * status: unpaid | paid | overdue | void
- * Includes optimistic locking on PATCH/PUT (version field).
+ *
+ * Reads: office roles see all; technicians see invoices of their own jobs (RT-21).
+ * Writes: BILLING roles only. Amounts must be finite, > 0, at most
+ * helpers/validate MONEY_MAX, 2 decimals (RT-11). PATCH/PUT need `version`.
+ * Money is still stored as Float — moving to Decimal is a later schema change.
  */
-const express          = require('express');
-const router           = express.Router();
+const express = require('express');
+const router  = express.Router();
 const { requireAuth, requireRole } = require('./auth');
 const { optimisticUpdate } = require('../helpers/optimisticUpdate');
-const prisma           = require('../helpers/prisma');
+const { BILLING } = require('../helpers/roles');
+const { jobScope, assertJobAccess } = require('../helpers/access');
+const { parseId, badRequest, notFound } = require('../helpers/httpError');
+const v = require('../helpers/validate');
+const prisma = require('../helpers/prisma');
 
-// TODO: make this a per-deployment permission setting rather than a hardcoded
-// role list, so clients can map other roles (e.g. `office`) to billing writes.
-const BILLING_ROLES = ['admin', 'super-admin']; // per-deployment knob until permissions are configurable
+const INCLUDE = { job: { include: { customer: true } } };
+
+function invoiceFields(body, { create = false } = {}) {
+  const d = {};
+  if (create || body.amount !== undefined) d.amount = v.money(body.amount, 'amount', { min: 0, exclusive: true });
+  if (body.status !== undefined) d.status = v.oneOf(body.status, v.INVOICE_STATUSES, 'status', { required: true });
+  if (body.dueDate !== undefined) d.dueDate = v.date(body.dueDate, 'dueDate');
+  if (body.notes !== undefined) d.notes = v.str(body.notes, 'notes', { max: 5000 });
+  return d;
+}
 
 router.get('/', requireAuth, async (req, res, next) => {
   try {
-    const { status } = req.query;
-    const where = status ? { status } : {};
-    const invoices = await prisma.invoice.findMany({
-      where,
-      include: { job: { include: { customer: true } } },
-      orderBy: { createdAt: 'desc' },
-    });
+    const where = {};
+    if (typeof req.query.status === 'string' && req.query.status) where.status = req.query.status;
+    const scope = jobScope(req.user);
+    if (Object.keys(scope).length) where.job = scope;
+    const invoices = await prisma.invoice.findMany({ where, include: INCLUDE, orderBy: { createdAt: 'desc' } });
     res.json(invoices);
   } catch (e) { next(e); }
 });
 
 router.get('/:id', requireAuth, async (req, res, next) => {
   try {
-    const inv = await prisma.invoice.findUnique({
-      where: { id: Number(req.params.id) },
-      include: { job: { include: { customer: true } } },
-    });
-    if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+    const inv = await prisma.invoice.findUnique({ where: { id: parseId(req.params.id) }, include: INCLUDE });
+    if (!inv) throw notFound('Invoice not found');
+    await assertJobAccess(req.user, inv.jobId);
     res.json(inv);
   } catch (e) { next(e); }
 });
 
-router.post('/', requireAuth, requireRole(...BILLING_ROLES), async (req, res, next) => {
+router.post('/', requireAuth, requireRole(...BILLING), async (req, res, next) => {
   try {
-    const { jobId, amount, dueDate, notes } = req.body;
-    if (!jobId || amount == null) return res.status(400).json({ error: 'jobId and amount are required' });
-    const inv = await prisma.invoice.create({
-      data: { jobId: Number(jobId), amount: Number(amount), dueDate: dueDate ? new Date(dueDate) : null, notes },
-    });
+    const body = req.body || {};
+    if (body.jobId == null || body.jobId === '') throw badRequest('jobId and amount are required', { code: 'REQUIRED', field: 'jobId' });
+    const jobId = parseId(body.jobId, 'jobId');
+    const d = invoiceFields(body, { create: true });
+    const job = await prisma.job.findUnique({ where: { id: jobId }, select: { id: true } });
+    if (!job) throw badRequest('jobId does not match a job', { code: 'UNKNOWN_JOB', field: 'jobId' });
+    if (d.status === 'paid') d.paidAt = new Date();
+    const inv = await prisma.invoice.create({ data: { jobId, ...d } }); // duplicate per job → P2002 → 409
     res.status(201).json(inv);
   } catch (e) { next(e); }
 });
 
-router.patch('/:id', requireAuth, requireRole(...BILLING_ROLES), async (req, res, next) => {
+async function updateInvoice(req, res, next) {
   try {
-    const data = { ...req.body };
-    if (data.amount)  data.amount  = Number(data.amount);
-    if (data.dueDate) data.dueDate = new Date(data.dueDate);
-    if (data.status === 'paid' && !data.paidAt) data.paidAt = new Date();
-    const inv = await optimisticUpdate('invoice', Number(req.params.id), data);
+    const id = parseId(req.params.id);
+    const body = req.body || {};
+    const d = invoiceFields(body);
+    if (d.status) {
+      const current = await prisma.invoice.findUnique({ where: { id }, select: { status: true } });
+      if (!current) throw notFound('Invoice not found');
+      if (d.status === 'paid' && current.status !== 'paid') d.paidAt = new Date();
+      if (d.status !== 'paid' && current.status === 'paid') d.paidAt = null;
+    }
+    const inv = await optimisticUpdate('invoice', id, { ...d, version: body.version });
     res.json(inv);
-  } catch (e) {
-    if (e.status === 409) return res.status(409).json({ error: e.message });
-    next(e);
-  }
-});
+  } catch (e) { next(e); }
+}
+router.patch('/:id', requireAuth, requireRole(...BILLING), updateInvoice);
+router.put('/:id', requireAuth, requireRole(...BILLING), updateInvoice);
 
-router.put('/:id', requireAuth, requireRole(...BILLING_ROLES), async (req, res, next) => {
+router.delete('/:id', requireAuth, requireRole(...BILLING), async (req, res, next) => {
   try {
-    const data = { ...req.body };
-    if (data.amount)  data.amount  = Number(data.amount);
-    if (data.dueDate) data.dueDate = new Date(data.dueDate);
-    if (data.status === 'paid' && !data.paidAt) data.paidAt = new Date();
-    const inv = await optimisticUpdate('invoice', Number(req.params.id), data);
-    res.json(inv);
-  } catch (e) {
-    if (e.status === 409) return res.status(409).json({ error: e.message });
-    next(e);
-  }
-});
-
-router.delete('/:id', requireAuth, requireRole(...BILLING_ROLES), async (req, res, next) => {
-  try {
-    await prisma.invoice.delete({ where: { id: Number(req.params.id) } });
+    await prisma.invoice.delete({ where: { id: parseId(req.params.id) } });
     res.json({ success: true });
   } catch (e) { next(e); }
 });

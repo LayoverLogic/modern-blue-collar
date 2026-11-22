@@ -203,3 +203,22 @@ model JobPhoto {
   uploadedById Int?
   createdAt    DateTime @default(now())
 }
+
+// ─── IntegrationToken ─────────────────────────────────────────────────────────
+// OAuth tokens for third-party integrations (one row per provider, e.g.
+// "quickbooks"). accessToken / refreshToken are encrypted at rest
+// (helpers/secretBox.js, AES-256-GCM). Migration: 20261121120000_add_integration_tokens
+model IntegrationToken {
+  id               Int       @id @default(autoincrement())
+  provider         String    @unique
+  realmId          String?
+  accessToken      String
+  refreshToken     String
+  tokenType        String?
+  expiresAt        DateTime?
+  refreshExpiresAt DateTime?
+  // User id that connected the integration (no FK — user may be deleted)
+  connectedById    Int?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+}

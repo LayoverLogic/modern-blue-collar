@@ -1,9 +1,44 @@
 /**
  * tests/api.test.js
- * 83-test API test suite covering auth, guards, CRUD, and admin roles.
+ * 68-test Prisma-level suite: auth helpers, CRUD, optimistic-locking counters,
+ * price book, role guards, deletes. (HTTP-level suites: tests/redteam.test.js,
+ * tests/backend.test.js.)
  *
- * Usage: npm test
+ * DESTRUCTIVE: it deletes ALL customers, jobs, quotes, invoices and
+ * communications in the target database. So it only runs against
+ * TEST_DATABASE_URL, and refuses to run when that is the app's DATABASE_URL
+ * (from the environment or backend/.env / .env.sandbox) or when the database
+ * name does not contain "test" (override: ALLOW_DESTRUCTIVE_TESTS=1).
+ *
+ * Usage:
+ *   TEST_DATABASE_URL=postgresql://mbc:mbc_sandbox@localhost:5432/mbc_backend_test?schema=public npm test
  */
+
+// ── PLAT-6: pick + guard the database BEFORE anything loads Prisma ──────────
+(function guardDatabase() {
+  const path = require('path');
+  const { spawnSync } = require('child_process');
+  const TEST_DB = process.env.TEST_DATABASE_URL;
+  const refuse = (msg) => { console.error(`[api.test] REFUSING TO RUN: ${msg}`); process.exit(1); };
+  if (!TEST_DB) refuse('TEST_DATABASE_URL is not set. This suite wipes tables — point it at a throwaway database, e.g. .../mbc_test.');
+
+  require('../helpers/loadEnv'); // app config (env vars, then .env / .env.sandbox)
+  const { parseDatabaseUrl } = require('../helpers/databaseUrl');
+  const id = (u) => { const { url, database } = parseDatabaseUrl(u); return `${url.hostname}:${url.port || 5432}/${database}`; };
+  const testId = id(TEST_DB);
+  if (process.env.DATABASE_URL && id(process.env.DATABASE_URL) === testId) {
+    refuse(`TEST_DATABASE_URL (${testId}) is the app database (DATABASE_URL).`);
+  }
+  if (!/test/i.test(testId.split('/').pop()) && process.env.ALLOW_DESTRUCTIVE_TESTS !== '1') {
+    refuse(`database "${testId.split('/').pop()}" does not look like a test database (name must contain "test"; override with ALLOW_DESTRUCTIVE_TESTS=1).`);
+  }
+  process.env.DATABASE_URL = TEST_DB;
+  const r = spawnSync(process.execPath, [path.join(__dirname, '..', 'scripts', 'migrate-deploy.mjs'), '--quiet'], {
+    env: { ...process.env, ENV_FILE: '/dev/null' }, encoding: 'utf8',
+  });
+  if (r.status !== 0) refuse(`could not migrate the test database:\n${r.stdout}\n${r.stderr}`);
+}());
+
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { requireRole } = require('../routes/auth');

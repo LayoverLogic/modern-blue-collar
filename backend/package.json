@@ -1,7 +1,7 @@
 {
     "name": "modern-blue-collar-backend",
     "version": "2.0.0",
-    "description": "White-label field service management backend — electrical, plumbing, HVAC, contracting",
+    "description": "White-label field service management backend \u2014 electrical, plumbing, HVAC, contracting",
     "main": "server.js",
     "scripts": {
         "start": "node scripts/migrate-deploy.mjs && node server.js",
@@ -24,7 +24,8 @@
         "studio": "npx prisma studio",
         "test:platform": "node --test tests/platform.test.js",
         "test:redteam": "node --test --test-concurrency=1 tests/redteam.test.js",
-        "test:ui": "node tests/ui/walk.js"
+        "test:ui": "node tests/ui/walk.js",
+        "test:backend": "node --test --test-concurrency=1 tests/backend.test.js"
     },
     "dependencies": {
         "@aws-sdk/client-s3": "^3.1024.0",
@@ -41,9 +42,9 @@
         "helmet": "^7.1.0",
         "intuit-oauth": "^4.0.0",
         "jsonwebtoken": "^9.0.0",
-        "multer": "^1.4.5-lts.2",
-        "node-cron": "^3.0.3",
-        "nodemailer": "^6.9.3",
+        "multer": "^2.5.0",
+        "node-cron": "^4.6.0",
+        "nodemailer": "^10.6.1",
         "passport": "^0.6.0",
         "passport-google-oauth20": "^2.0.0",
         "pg": "^8.16.3",
@@ -58,5 +59,9 @@
     "engines": {
         "node": "^20.19 || ^22.12 || >=24.0"
     },
-    "license": "MIT"
+    "license": "MIT",
+    "overrides": {
+        "qs": "^6.16.2",
+        "effect": "^3.22.5"
+    }
 }

@@ -62,7 +62,9 @@ async function main() {
     return;
   }
 
-  const defaultPassword = process.env.DEFAULT_PASSWORD || 'changeme123!';
+  // No published fallback (RT-23): unset DEFAULT_PASSWORD → random, printed once.
+  const defaultPassword = process.env.DEFAULT_PASSWORD || require('crypto').randomBytes(12).toString('base64url');
+  if (!process.env.DEFAULT_PASSWORD) console.log(`DEFAULT_PASSWORD not set — seeded team members get this generated password: ${defaultPassword}`);
   const hash = await bcrypt.hash(defaultPassword, 10);
 
   // Create team members

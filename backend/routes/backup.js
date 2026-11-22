@@ -8,25 +8,43 @@
  */
 const express = require('express');
 const router  = express.Router();
-const { requireAuth, requireRole } = require('./auth');
+const { requireAuth, requireRole, requireSession } = require('./auth');
+const { ADMIN } = require('../helpers/roles');
 const backup  = require('../backup');
 
-router.post('/run', requireAuth, requireRole('super-admin', 'admin'), async (_req, res, next) => {
+// One backup at a time, and at most one manual run per BACKUP_COOLDOWN_SECONDS
+// (default 300) — pg_dump is expensive (RT-30).
+let running = false;
+let lastRunAt = 0;
+const cooldownMs = () => Math.max(0, Number(process.env.BACKUP_COOLDOWN_SECONDS || 300)) * 1000;
+
+router.post('/run', requireAuth, requireSession, requireRole(...ADMIN), async (_req, res, next) => {
+  if (running) return res.status(409).json({ error: 'A backup is already running', code: 'BACKUP_RUNNING' });
+  const wait = lastRunAt + cooldownMs() - Date.now();
+  if (wait > 0) {
+    res.setHeader('Retry-After', String(Math.ceil(wait / 1000)));
+    return res.status(429).json({ error: `A backup ran recently — try again in ${Math.ceil(wait / 1000)}s`, code: 'BACKUP_COOLDOWN' });
+  }
+  running = true;
   try {
     const result = await backup.runBackup();
+    lastRunAt = Date.now();
+    // Never return server filesystem paths (RT-30): filename only.
     res.json({
       success: true,
       message: 'Backup completed successfully.',
       driver: result.driver,
-      local: result.localPath,
       filename: result.filename,
       size: result.size,
       wasabi: result.wasabi,
     });
-  } catch (err) { next(err); }
+  } catch (err) {
+    console.error('[BACKUP] manual run failed:', err.message);
+    res.status(500).json({ error: 'Backup failed — see server logs', code: 'BACKUP_FAILED' });
+  } finally { running = false; }
 });
 
-router.get('/list', requireAuth, requireRole('super-admin', 'admin'), (_req, res, next) => {
+router.get('/list', requireAuth, requireRole(...ADMIN), (_req, res, next) => {
   try {
     res.json({
       driver: backup.getBackupDriver(),

@@ -5,9 +5,9 @@
 
 # Never bake secrets into the image
 **/.env
-.env
-.env.*
-!.env.example
+**/.env.*
+!**/.env.example
+!**/.env.sandbox.example
 
 # Runtime / local artifacts
 backend/backups/
