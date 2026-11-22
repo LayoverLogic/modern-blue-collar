@@ -16,6 +16,8 @@ const { customerScope, jobScope, assertCustomerAccess } = require('../helpers/ac
 const { parseId, notFound, badRequest } = require('../helpers/httpError');
 const { isPlaceholder } = require('../helpers/integrations');
 const v = require('../helpers/validate');
+// WL-10: money in the timeline uses the document's currency + locale format
+const { formatMoney } = require('../helpers/locale');
 const prisma           = require('../helpers/prisma');
 
 // GET /api/communications?customerId=X — timeline for a customer
@@ -66,8 +68,8 @@ router.get('/', requireAuth, async (req, res, next) => {
           timeline.push({
             id: `quote-${j.quote.id}`,
             type: 'quote',
-            subject: `Quote #${j.quote.id} for Job #${j.id}`,
-            body: `Amount: $${Number(j.quote.amount).toFixed(2)} — Status: ${j.quote.status}`,
+            subject: `Quote ${j.quote.number || `#${j.quote.id}`} for Job #${j.id}`,
+            body: `Amount: ${formatMoney(j.quote.amount, j.quote.currency)} — Status: ${j.quote.status}`,
             createdAt: j.quote.createdAt,
             category: 'financial',
             jobId: j.id,
@@ -77,8 +79,8 @@ router.get('/', requireAuth, async (req, res, next) => {
           timeline.push({
             id: `invoice-${j.invoice.id}`,
             type: 'invoice',
-            subject: `Invoice #${j.invoice.id} for Job #${j.id}`,
-            body: `Amount: $${Number(j.invoice.amount).toFixed(2)} — Status: ${j.invoice.status}`,
+            subject: `Invoice ${j.invoice.number || `#${j.invoice.id}`} for Job #${j.id}`,
+            body: `Amount: ${formatMoney(j.invoice.amount, j.invoice.currency)} — Status: ${j.invoice.status}`,
             createdAt: j.invoice.createdAt,
             category: 'financial',
             jobId: j.id,

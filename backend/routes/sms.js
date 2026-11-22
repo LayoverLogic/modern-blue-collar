@@ -22,6 +22,7 @@ const { parseId, badRequest, notFound } = require('../helpers/httpError');
 const v = require('../helpers/validate');
 const { integrationStatus, disabledMessage } = require('../helpers/integrations');
 const brand            = require('../../brand.config');
+const { getLocale, formatDate, formatTime } = require('../helpers/locale');
 
 const prisma = require('../helpers/prisma');
 
@@ -56,6 +57,26 @@ async function deliverSms(to, body) {
 }
 
 const MAX_SMS = 1600;
+
+// WL-8: human trade label ("Plumbing & HVAC", not the slug "plumbing-hvac"),
+// and the appointment date in the brand's locale / time zone.
+function serviceLabel() {
+  return brand.industryLabel || brand.tradeType;
+}
+
+/** { date, time } for the SMS: scheduledDate (calendar date) / scheduledAt (brand time zone). */
+function whenText(job) {
+  const loc = getLocale();
+  if (job.scheduledDate) {
+    return { date: formatDate(job.scheduledDate, loc, brand.timezone, { year: false }), time: job.scheduledTime ? formatTime(job.scheduledTime, loc) : '' };
+  }
+  if (job.scheduledAt) {
+    const at = new Date(job.scheduledAt);
+    const hhmm = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: brand.timezone }).format(at);
+    return { date: formatDate(at, loc, brand.timezone, { year: false }), time: job.scheduledTime ? formatTime(job.scheduledTime, loc) : formatTime(hhmm, loc) };
+  }
+  return { date: 'TBD', time: '' };
+}
 
 /** Digits-only forms of a phone number we treat as equal (US +1 optional). */
 function phoneVariants(raw) {
@@ -107,7 +128,7 @@ router.post('/customer/:customerId', requireAuth, requireRole(...SMS), async (re
     if (!customer.phone) throw badRequest('Customer has no phone number', { sent: false });
     const given = (req.body || {}).body;
     const body = given !== undefined && given !== '' ? smsBody(given)
-      : `Hi ${customer.firstName}, this is ${brand.companyName}. Questions about your ${brand.tradeType} service? Call us at ${brand.companyPhone || 'our office'}.`;
+      : `Hi ${customer.firstName}, this is ${brand.companyName}. Questions about your ${serviceLabel()} service? Call us at ${brand.companyPhone || 'our office'}.`;
     const msg = await deliverSms(customer.phone, body);
     res.json({ sid: msg.sid, status: msg.status, sent: msg.sent, message: msg.message, sentTo: customer.phone });
   } catch (err) { next(err); }
@@ -123,10 +144,9 @@ router.post('/job-confirm/:jobId', requireAuth, requireRole(...SMS), async (req,
     if (!job) return res.status(404).json({ error: 'Job not found' });
     if (!job.customer.phone) return res.status(400).json({ error: 'Customer has no phone number' });
 
-    const dateStr = job.scheduledDate || 'TBD';
-    const timeStr = job.scheduledTime || '';
+    const { date: dateStr, time: timeStr } = whenText(job);
     const body = `Hi ${job.customer.firstName}, this is ${brand.companyName}. ` +
-      `Your ${brand.tradeType} service is confirmed for ${dateStr}${timeStr ? ' at ' + timeStr : ''}. ` +
+      `Your ${serviceLabel()} service is confirmed for ${dateStr}${timeStr ? ' at ' + timeStr : ''}. ` +
       `Questions? Call us at ${brand.companyPhone || 'our office'}.`;
 
     const msg = await deliverSms(job.customer.phone, body);
@@ -135,3 +155,5 @@ router.post('/job-confirm/:jobId', requireAuth, requireRole(...SMS), async (req,
 });
 
 module.exports = router;
+module.exports.whenText = whenText;
+module.exports.serviceLabel = serviceLabel;

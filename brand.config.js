@@ -23,6 +23,11 @@
  *   tradeType, colors{primary, primaryDark, primaryContrast, secondary, accent,
  *   navBg, navText, headerBg, headerText}, logoUrl, faviconUrl, defaultState,
  *   industryLabel, jobTypes[], technicianLabel, timezone
+ *
+ * ── Locale block (Phase 2b) ── brand.locale = helpers/locale.js buildLocale():
+ *   BRAND_COUNTRY (US | IE), BRAND_CURRENCY, BRAND_TAX_RATES ("standard:23,reduced:13.5,zero:0"),
+ *   BRAND_TAX_DEFAULT, BRAND_TAX_LABEL, BRAND_TAX_NUMBER, BRAND_QUOTE_PREFIX,
+ *   BRAND_INVOICE_PREFIX, BRAND_RCT_NOTE. Unset = today's US behaviour (USD, no tax).
  * ─────────────────────────────────────────────────────────────────────────────
  */
 const { buildBrand, BrandConfigError } = require('./backend/helpers/brandValidate');
@@ -30,6 +35,9 @@ const { buildBrand, BrandConfigError } = require('./backend/helpers/brandValidat
 let brand;
 try {
   brand = buildBrand(process.env);
+  // ── Locale block (Phase 2b, helpers/locale.js) — fails fast like the rest ──
+  brand.locale = require('./backend/helpers/locale').buildLocale(process.env, brand);
+  // ── end locale block ──
 } catch (e) {
   if (!(e instanceof BrandConfigError)) throw e;
   console.error(`\n[brand] Invalid white-label configuration — refusing to start.\n[brand] ${e.message}\n`);

@@ -1,6 +1,9 @@
 /**
  * routes/pricebook.js
- * PriceBook CRUD. Filters by brand.industryLabel by default.
+ * PriceBook CRUD. One database = one company, so GET lists every active item
+ * (WL-4: switching BRAND_TRADE_TYPE / BRAND_INDUSTRY_LABEL no longer hides the
+ * book). ?industry=<label> filters explicitly. POST stamps brand.industryLabel.
+ * taxRateKey (Phase 2b) must be one of the BRAND_TAX_RATES keys (or blank).
  *
  * Reads: anyone signed in. Writes: PRICING roles (admin / super-admin) only —
  * technicians and dispatchers cannot change prices (RT-8). Fields are
@@ -15,6 +18,7 @@ const { PRICING } = require('../helpers/roles');
 const { parseId, notFound } = require('../helpers/httpError');
 const v = require('../helpers/validate');
 const brand = require('../../brand.config');
+const { getLocale } = require('../helpers/locale');
 
 const prisma = require('../helpers/prisma');
 
@@ -31,24 +35,28 @@ function itemFields(body, { create = false } = {}) {
   if (body.cost !== undefined)        d.cost        = v.money(body.cost, 'cost', { required: false, min: 0 });
   if (body.taxable !== undefined)     d.taxable     = v.bool(body.taxable, 'taxable');
   if (body.active !== undefined)      d.active      = v.bool(body.active, 'active');
+  if (body.taxRateKey !== undefined) {
+    const keys = getLocale().taxRates.map((r) => r.key);
+    const k = v.str(body.taxRateKey, 'taxRateKey', { max: 30 });
+    d.taxRateKey = k == null ? null : v.oneOf(k.toLowerCase(), keys, 'taxRateKey');
+  }
   for (const k of Object.keys(d)) if (d[k] === undefined) delete d[k];
   return d;
 }
 
-// GET /api/pricebook — filtered to current trade industry by default
+// GET /api/pricebook — every item of this company; ?industry= filters explicitly
 router.get('/', requireAuth, async (req, res, next) => {
   try {
     const q = req.query;
     const s = (x) => (typeof x === 'string' ? x : '');
-    const where = {
-      industry: s(q.industry) || brand.industryLabel,
-      active:   s(q.active) === 'false' ? false : true,
-    };
+    const where = { active: s(q.active) === 'false' ? false : true };
+    if (s(q.industry)) where.industry = s(q.industry);
     if (s(q.category)) where.category = s(q.category);
     if (s(q.search))   where.name = { contains: s(q.search).slice(0, 100), mode: 'insensitive' };
 
     const items = await prisma.priceBookItem.findMany({ where, orderBy: [{ category: 'asc' }, { name: 'asc' }] });
-    res.json({ industry: where.industry, tradeType: brand.tradeType, items });
+    // `industry` keeps its old meaning for the UI: the label being shown
+    res.json({ industry: where.industry || brand.industryLabel, tradeType: brand.tradeType, items });
   } catch (err) { next(err); }
 });
 

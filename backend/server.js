@@ -20,6 +20,15 @@ const server = http.createServer(app);
 // Flat query strings (RT-28) — must be set before the first app.use().
 app.set('query parser', 'simple');
 
+// Money is Decimal(12,2) in the DB (Phase 2b). helpers/prisma.js already reads
+// money fields back as numbers; this replacer is the safety net that keeps the
+// API contract "money = JSON number" for any Decimal that slips through.
+const { Prisma: PrismaNS } = require('@prisma/client');
+app.set('json replacer', function moneyReplacer(key, value) {
+  const raw = this[key];
+  return raw != null && typeof raw === 'object' && PrismaNS.Decimal.isDecimal(raw) ? raw.toNumber() : value;
+});
+
 // ── Reverse proxy (RT-24) ──────────────────────────────────────────────────
 // Behind a proxy / load balancer set TRUST_PROXY so req.ip (rate limiting,
 // logs) is the client, not the proxy:  1 (one hop — typical), a hop count,
@@ -169,10 +178,36 @@ app.use((req, _res, next) => {
 const { authenticateApiKey } = require('./middleware/apiKeyAuth');
 app.use('/api/', authenticateApiKey);
 
-// ── Rate limiting ───────────────────────────────────────────────────────────
+// ── Rate limiting (UX-15) ───────────────────────────────────────────────────
+// A whole office often shares one public IP, so signed-in requests are counted
+// per user (valid session JWT) or per API key, not per IP. Anonymous requests
+// stay per IP. The strict login limiter below is still per IP.
+//   RATE_LIMIT_USER_MAX  requests / 15 min per signed-in user or key (default 1000)
+//   RATE_LIMIT_IP_MAX    requests / 15 min per IP for anonymous calls (default 300)
+const { verifyToken } = require('./helpers/security');
+const envInt = (name, fallback) => {
+  const n = Number(process.env[name]);
+  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+};
+const USER_MAX = envInt('RATE_LIMIT_USER_MAX', 1000);
+const IP_MAX   = envInt('RATE_LIMIT_IP_MAX', 300);
+function limiterIdentity(req) {
+  if (req._rlIdentity !== undefined) return req._rlIdentity;
+  let id = null;
+  if (req.apiKey && req.apiKey.id) id = `key:${req.apiKey.id}`;
+  else {
+    const h = req.headers.authorization;
+    if (typeof h === 'string' && h.startsWith('Bearer ')) {
+      try { id = `user:${verifyToken(h.slice(7).trim()).id}`; } catch { id = null; }
+    }
+  }
+  req._rlIdentity = id;
+  return id;
+}
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 200,
+  limit: (req) => (limiterIdentity(req) ? USER_MAX : IP_MAX),
+  keyGenerator: (req) => limiterIdentity(req) || `ip:${rateLimit.ipKeyGenerator(req.ip || '')}`,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, please try again later.' },
@@ -188,7 +223,26 @@ app.use('/api/', apiLimiter);
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/google/exchange', authLimiter);
 
-app.use(express.static(path.join(__dirname, 'public')));
+// ── Favicon (WL-7): BRAND_FAVICON_URL (or the logo) — else 204, never a 404 ──
+app.get('/favicon.ico', (_req, res) => {
+  const url = brand.faviconUrl;
+  if (!url) return res.status(204).end();
+  const m = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(url);
+  if (m) {
+    res.setHeader('Content-Type', m[1]);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.send(Buffer.from(m[2], 'base64'));
+  }
+  return res.redirect(302, url);
+});
+
+// HTML is never cached (a deploy or brand change shows up on the next load);
+// other static assets keep the default caching.
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-store');
+  },
+}));
 
 // ── Presence REST endpoints (initial page load) — signed-in users only ──────
 app.get('/api/presence', requireAuth, (_req, res) => {
@@ -221,22 +275,21 @@ app.use('/api/api-keys',        require('./routes/apiKeys'));
 const demoMode = () => process.env.DEMO_MODE === 'true' && !isProduction();
 
 // ── Brand config endpoint (read-only, safe for front-end consumption) ──────
+// helpers/brandValidate.publicBrand: companyName, companySlogan, tradeType,
+// technicianLabel, industryLabel, jobTypes, colors, logoUrl, faviconUrl,
+// timezone — plus demoMode / demoLogin and the `locale` block (Phase 2b).
+const { publicBrand } = require('./helpers/brandValidate');
+const { publicLocale } = require('./helpers/locale');
 app.get('/api/brand', (_req, res) => {
-  res.json({
-    companyName:     brand.companyName,
-    companySlogan:   brand.companySlogan,
-    tradeType:       brand.tradeType,
-    technicianLabel: brand.technicianLabel,
-    industryLabel:   brand.industryLabel,
-    jobTypes:        brand.jobTypes,
-    colors:          brand.colors,
+  res.json(publicBrand(brand, {
     demoMode:        demoMode(),
     // Demo sign-in hint for the login page — ONLY in demo mode (never in
     // production: the server refuses DEMO_MODE there). null otherwise.
     demoLogin:       demoMode() && process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD
       ? { email: process.env.ADMIN_EMAIL, password: process.env.ADMIN_PASSWORD }
       : null,
-  });
+    locale:          publicLocale(brand.locale),
+  }));
 });
 
 // ── Health check ────────────────────────────────────────────────────────────
@@ -267,6 +320,11 @@ try {
 } catch (e) {
   console.warn('node-cron not available — nightly backup disabled:', e.message);
 }
+
+// Document numbers for rows inserted outside the API (seeds, imports) use the
+// prefix stored in "DocumentCounter": keep it in step with BRAND_*_PREFIX.
+require('./helpers/prisma').$executeRaw`UPDATE "DocumentCounter" SET "prefix" = CASE "type" WHEN 'quote' THEN ${brand.locale.quotePrefix} ELSE ${brand.locale.invoicePrefix} END`
+  .catch((e) => console.warn('[BOOT] could not sync document number prefixes:', e.message));
 
 server.listen(PORT, () => {
   console.log(`[${brand.companyName}] Server running on port ${PORT} | trade=${brand.tradeType}`);
