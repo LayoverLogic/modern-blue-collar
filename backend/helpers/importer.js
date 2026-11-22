@@ -388,7 +388,7 @@ function prepareRow(cells, ctx) {
   }
   if (!country) country = locale.country;
 
-  // Names / company — company names are never split (Kraft lesson 3)
+  // Names / company — company names are never split into first / last name (a lesson from earlier customer imports)
   let company = get('company') || null;
   let firstName = get('firstName');
   let lastName = get('lastName');
