@@ -1,0 +1,2 @@
+/* css/page-letter.css — US Letter paper for print.html (US / Canada brands). */
+@page { size: letter; margin: 14mm 14mm 16mm; }

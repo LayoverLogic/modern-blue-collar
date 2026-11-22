@@ -5,6 +5,7 @@
   const $ = ui.$;
   const id = new URLSearchParams(location.search).get('id');
   let customer = null;
+  let addrForm = null;
 
   function fail(msg) { $('loading-msg').hidden = true; $('customer-content').hidden = true; $('error-msg').textContent = msg; $('error-msg').hidden = false; }
 
@@ -15,7 +16,7 @@
     MBC.brand.apply(MBC.brand.current, name);
     $('e-first').value = c.firstName || ''; $('e-last').value = c.lastName || '';
     $('e-phone').value = c.phone || ''; $('e-email').value = c.email || '';
-    $('e-address').value = c.address || ''; $('e-city').value = c.city || '';
+    $('e-address').value = c.address || ''; $('e-address2').value = c.addressLine2 || ''; $('e-city').value = c.city || '';
     $('e-state').value = c.state || ''; $('e-zip').value = c.zip || ''; $('e-notes').value = c.notes || '';
     const digits = fmt.phoneDigits(c.phone);
     $('btn-call').hidden = !digits; $('btn-text').hidden = !digits;
@@ -40,11 +41,11 @@
     $('stat-invoiced').textContent = fmt.money(invoices.filter((i) => i.status !== 'void').reduce((s, i) => s + (fmt.num(i.amount) || 0), 0));
     $('invoices-tbody').innerHTML = invoices.length ? invoices.map((i) => {
       const href = 'job.html?id=' + encodeURIComponent(i.jobId);
-      return '<tr class="clickable" data-href="' + href + '"><td data-label="#">#' + fmt.esc(i.id) + '</td>' +
+      return '<tr class="clickable" data-href="' + href + '"><td data-label="Number">' + fmt.esc(i.number || '#' + i.id) + '</td>' +
         '<td data-label="Job"><a class="row-link" href="' + href + '">' + fmt.text(i.jobTitle) + '</a></td>' +
         '<td data-label="Status">' + fmt.badge(i.status) + '</td>' +
-        '<td data-label="Amount" class="num">' + fmt.money(i.amount) + '</td>' +
-        '<td data-label="Due">' + fmt.esc(fmt.date(i.dueDate)) + '</td></tr>';
+        '<td data-label="Total" class="num">' + fmt.esc(fmt.money(i.amount, i.currency)) + '</td>' +
+        '<td data-label="Due">' + fmt.esc(i.dueDate ? fmt.date(String(i.dueDate).slice(0, 10)) : fmt.DASH) + '</td></tr>';
     }).join('') : '<tr><td colspan="5" class="empty">No invoices.</td></tr>';
     $('loading-msg').hidden = true;
     $('customer-content').hidden = false;
@@ -60,10 +61,13 @@
     const v = (k) => $(k).value.trim();
     const body = {
       firstName: v('e-first'), lastName: v('e-last'), phone: v('e-phone'), email: v('e-email') || null,
-      address: v('e-address'), city: v('e-city'), state: v('e-state'), zip: v('e-zip'), notes: v('e-notes') || null,
+      address: v('e-address'), addressLine2: v('e-address2') || null, city: v('e-city') || null, state: v('e-state') || null, zip: v('e-zip') || null, notes: v('e-notes') || null,
       version: customer.version,
     };
     if (!body.firstName || !body.lastName || !body.phone) { ui.formError('edit-error', 'First name, last name and phone are required.'); return; }
+    const bad = addrForm.check(addrForm.read());
+    if (bad === 'BAD_POSTCODE') { ui.formError('edit-error', addrForm.postcodeMessage()); return; }
+    if (bad) { ui.formError('edit-error', 'Please fill in: ' + bad.join(', ') + '.'); return; }
     ui.formError('edit-error', null);
     $('btn-save').disabled = true;
     try {
@@ -78,8 +82,7 @@
   MBC.page({
     active: 'customers', title: 'Customer', roles: 'staff',
     async run() {
-      const labels = fmt.addressLabels();
-      $('l-state').textContent = labels.region; $('l-zip').textContent = labels.postal;
+      addrForm = ui.addressForm('e');
       ui.applyRoleVisibility();
       if (!id) { fail('No customer selected.'); return; }
       $('edit-form').addEventListener('submit', save);

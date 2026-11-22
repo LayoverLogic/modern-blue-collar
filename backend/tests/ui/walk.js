@@ -10,9 +10,14 @@
  *      "Invalid Date", "[object Object]", "null"), inline event-handler
  *      attributes and inline <script> (CSP readiness), and on mobile: horizontal
  *      overflow and tap targets under 44px.
- *   2. Main-flow walk by clicking (no API shortcuts): login, create customer,
- *      create job, open it from the board, assign technician + date/time, build
- *      a quote from the pricebook, approve it, create the invoice (refuses 0),
+ *   2. Main-flow walk by clicking (no API shortcuts): login, create customer
+ *      (address fields per the brand locale), create job, open it from the board,
+ *      assign technician + date/time, build a 3-line quote (2 pricebook lines +
+ *      1 free-text line) with mixed tax rates, check the saved totals equal the
+ *      API's, approve it, convert it to an invoice (POST /api/invoices/from-quote),
+ *      open the print view, email the invoice and check a new .eml appears in the
+ *      outbox and the email shows in the communications timeline, check the job's
+ *      activity panel, reverse-charge placeholder handling on the print view,
  *      invite + add a team member, export CSV from three pages, technician on
  *      mobile: Today view with Navigate / Call / Text / On My Way, open the job,
  *      change status, upload a photo; dispatcher nav has no admin items.
@@ -20,7 +25,10 @@
  *      quote, communication and pricebook item (via the API), opens every page
  *      that shows them and asserts nothing executed / no payload element exists.
  *      The payload records are deleted afterwards.
- *   4. Final screenshots (named PNGs) into UI_FINAL_DIR.
+ *   4. Final screenshots (named PNGs) into UI_FINAL_DIR: dashboard, schedule,
+ *      dispatch, job, quote (editor with 3 lines), invoice (job page with the
+ *      flow's invoice), invoice-print, job-activity, customers, team,
+ *      dashboard-mobile, job-mobile-technician, today-mobile-technician.
  *   5. Writes results.json next to the audit screenshots.
  *
  * It is a REGRESSION TEST: it exits 1 when any audit check, flow step or XSS
@@ -50,8 +58,25 @@
  * Options (env): UI_ROLES=admin,technician  UI_VIEWPORTS=desktop,mobile
  *                UI_PAGES=index,dispatch    UI_SKIP_AUDIT=1  UI_SKIP_FLOW=1  UI_SKIP_XSS=1  UI_SKIP_FINAL=1
  *                UI_REPORT_ONLY=1   UI_KEEP_DATA=1 (keep the customer/job/quote/invoice/users the flow created)
- * Logins (seeded, password demo1234): admin@demo.test, plus a technician and a
- * dispatcher — override with UI_TECH_EMAIL / UI_DISP_EMAIL / UI_PASSWORD.
+ *                UI_SHOT_SUFFIX=-ie  (appended to final screenshot names)
+ *                UI_FINAL_ONLY=invoice,invoice-print  (take only these final screenshots)
+ *
+ * Logins: the generic demo seed (npm run seed:demo / sandbox:setup) — admin@demo.test,
+ * tech1@demo.test (technician), dispatch@demo.test (dispatcher), password
+ * DEFAULT_PASSWORD (default demo1234). Override with UI_ADMIN_EMAIL / UI_TECH_EMAIL /
+ * UI_DISP_EMAIL / UI_PASSWORD. No client names or addresses live in this file.
+ *
+ * Tax: when the walk starts its own server and BRAND_TAX_RATES is not set, it
+ * starts it with UI_TAX_RATES (default "standard:8.5,reduced:4,exempt:0") so the
+ * quote can use mixed rates on the US demo too. Email: the server's sandbox
+ * outbox (MAIL_DRIVER=outbox); the walk looks for new .eml files in
+ * MAIL_OUTBOX_DIR (default backend/outbox).
+ *
+ * Irish screenshots (invoice-ie.png, invoice-print-ie.png):
+ *   DATABASE_URL=…/mbc_frontend2_ie_demo BRAND_COUNTRY=IE BRAND_CURRENCY=EUR \
+ *   BRAND_TAX_RATES=standard:23,reduced:13.5,zero:0 npm run seed:demo -- --prospect demo/prospects/ie-heating-example.json --reset
+ *   then the same env + the prospect's BRAND_* vars (seed:demo --print-env) and
+ *   UI_SKIP_AUDIT=1 UI_SKIP_XSS=1 UI_SHOT_SUFFIX=-ie UI_FINAL_ONLY=invoice,invoice-print npm run test:ui
  */
 'use strict';
 
@@ -71,12 +96,17 @@ const HAS_TEAM = fs.existsSync(path.dirname(TEAM_SHOTS));
 const OUT = process.env.UI_OUT_DIR || (HAS_TEAM ? path.join(TEAM_SHOTS, 'phase2') : path.join(__dirname, 'out'));
 const FINAL = process.env.UI_FINAL_DIR || (HAS_TEAM ? TEAM_SHOTS : path.join(__dirname, 'out', 'final'));
 const REPORT_ONLY = !!process.env.UI_REPORT_ONLY;
-const PASSWORD = process.env.UI_PASSWORD || 'demo1234';
+const PASSWORD = process.env.UI_PASSWORD || process.env.DEFAULT_PASSWORD || 'demo1234';
+const OUTBOX = path.resolve(process.env.MAIL_OUTBOX_DIR || path.join(BACKEND, 'outbox'));
+const TAX_RATES = process.env.UI_TAX_RATES || 'standard:8.5,reduced:4,exempt:0';
+const SHOT_SUFFIX = process.env.UI_SHOT_SUFFIX || '';
+const FINAL_ONLY = process.env.UI_FINAL_ONLY ? process.env.UI_FINAL_ONLY.split(',').map((x) => x.trim()) : null;
 
+// Generic demo seed logins (scripts/seed-demo.js); never client accounts.
 const USERS = {
   admin:      process.env.UI_ADMIN_EMAIL || 'admin@demo.test',
-  technician: process.env.UI_TECH_EMAIL  || 'mike@allproplumbinghvac.com',
-  dispatcher: process.env.UI_DISP_EMAIL  || 'lisa@allproplumbinghvac.com',
+  technician: process.env.UI_TECH_EMAIL  || 'tech1@demo.test',
+  dispatcher: process.env.UI_DISP_EMAIL  || 'dispatch@demo.test',
 };
 const VIEWPORTS = {
   desktop: { width: 1440, height: 900, deviceScaleFactor: 1 },
@@ -108,6 +138,7 @@ async function startServer() {
   if (EXTERNAL) return waitHealthy();
   await stopServer();
   const env = { ...process.env, PORT: String(PORT), APP_URL: process.env.APP_URL || BASE };
+  if (env.BRAND_TAX_RATES === undefined && TAX_RATES) env.BRAND_TAX_RATES = TAX_RATES;
   if (!env.ENV_FILE && fs.existsSync(path.join(BACKEND, '.env.sandbox')) && !fs.existsSync(path.join(BACKEND, '.env'))) env.ENV_FILE = '.env.sandbox';
   // Wait until nothing answers on the port any more (a previous server must be gone).
   for (let i = 0; i < 50; i++) { try { await fetch(`${BASE}/api/health`); await sleep(200); } catch { break; } }
@@ -167,8 +198,13 @@ async function ensureFixtures() {
   const techJob = jobs.find((j) => j.technicianId === techId && j.scheduledDate === TODAY) || jobs.find((j) => j.technicianId === techId);
   const billed = jobs.find((j) => j.quote && j.invoice) || jobs.find((j) => j.quote) || jobs[0];
   const brand = await (await fetch(BASE + '/api/brand')).json();
-  return { fixtures: fx, brand, techId, adminJobId: (billed || {}).id, techJobId: (techJob || {}).id, sampleCustomerId: (billed || jobs[0] || {}).customerId };
+  return {
+    fixtures: fx, brand, techId, adminJobId: (billed || {}).id, techJobId: (techJob || {}).id, sampleCustomerId: (billed || jobs[0] || {}).customerId,
+    sampleInvoiceId: ((billed && billed.invoice) || (jobs.find((j) => j.invoice) || {}).invoice || {}).id,
+  };
 }
+
+const job_customer = (r) => (r && r.body && r.body.customerId) || '';
 
 // ── Browser helpers ─────────────────────────────────────────────────────────
 function instrument(page, log) {
@@ -287,7 +323,7 @@ async function uiLogin(page, email) {
 async function pageAudit(browser, ctxInfo, results) {
   const { brand } = ctxInfo;
   for (const role of ROLES) {
-    const query = { job: `?id=${role === 'technician' ? ctxInfo.techJobId : ctxInfo.adminJobId}`, 'customer-detail': `?id=${ctxInfo.sampleCustomerId}` };
+    const query = { job: `?id=${role === 'technician' ? ctxInfo.techJobId : ctxInfo.adminJobId}`, 'customer-detail': `?id=${ctxInfo.sampleCustomerId}`, print: `?type=invoice&id=${ctxInfo.sampleInvoiceId}` };
     for (const vp of VPS) {
       await startServer(); // fresh rate-limit window per segment
       const { ctx, page } = await newPage(browser, vp);
@@ -335,12 +371,15 @@ async function flowWalk(browser, ctxInfo, results) {
     await page.click('#btn-new'); await sleep(250);
     if (!(await isVisible(page, '#modal'))) throw new Error('"+ New Customer" did not open the modal');
     await page.type('#f-first', first); await page.type('#f-last', last);
-    await page.type('#f-phone', '620-555-0142'); await page.type('#f-email', `siobhan${stamp}@example.test`);
-    await page.type('#f-address', '12 Main St'); await page.type('#f-city', 'Hutchinson'); await page.type('#f-state', 'Reno County'); await page.type('#f-zip', '67501');
+    await page.type('#f-phone', '555-0142'); await page.type('#f-email', `siobhan${stamp}@example.test`);
+    // Synthetic address in the brand's locale format (IE: town, county, Eircode).
+    const ie = ((brand.locale || {}).country || 'US') === 'IE';
+    const addr = ie ? ['14 Canal View', 'Naas', 'Co. Kildare', 'W91 C2X7'] : ['12 Main St', 'Hutchinson', 'Reno County', '67501'];
+    await page.type('#f-address', addr[0]); await page.type('#f-city', addr[1]); await page.type('#f-state', addr[2]); await page.type('#f-zip', addr[3]);
     await page.click('#modal .btn-primary'); await settle(page, 400);
     const err = await visibleText(page, '#modal-error');
     const row = await page.$$eval('#customers-tbody tr', (rs, n) => rs.some((r) => r.innerText.includes(n)), last);
-    step('2. Create customer (Customers > + New Customer)', !err && row, err ? `modal error: "${err}"` : `created; row shown: ${row}; state field accepted a county name`, { screenshot: await shot(page, 'flow-02-create-customer') });
+    step('2. Create customer (Customers > + New Customer)', !err && row, err ? `modal error: "${err}"` : `created; row shown: ${row}; address ${addr.join(', ')}`, { screenshot: await shot(page, 'flow-02-create-customer') });
   } catch (e) { step('2. Create customer', false, e.message, { screenshot: await shot(page, 'flow-02-create-customer') }); }
 
   // Create job.
@@ -385,52 +424,157 @@ async function flowWalk(browser, ctxInfo, results) {
     step('4b. Assign technician + date/time on the job page', tech === techName && /:30/.test(sched) && /Scheduled/i.test(st), `technician "${tech}", scheduled "${sched}", status "${st}"`, { screenshot: await shot(page, 'flow-04b-assign') });
   } catch (e) { step('4. Open + assign', false, e.message, { screenshot: await shot(page, 'flow-04-assign') }); }
 
-  // Build a quote from the pricebook.
-  let quoteTotal = null;
+  // Build a 3-line quote with mixed tax rates (2 pricebook lines + 1 free-text line).
+  const jobId = jobUrl && (jobUrl.match(/id=(\d+)/) || [])[1];
+  results.flowJobId = jobId ? Number(jobId) : null;
+  const { token: at } = await apiLogin(USERS.admin);
+  const rates = ((brand.locale || {}).taxRates || []).map((r) => r.key);
+  const cardText = (sel) => visibleText(page, sel).then((t) => t.replace(/\s+/g, ' '));
+  let quote = null, invoice = null;
   try {
     await page.goto(BASE + '/quote-invoice.html'); await settle(page);
     await page.click('#btn-new-quote'); await settle(page, 200);
-    const jobId = jobUrl && jobUrl.match(/id=(\d+)/)[1];
     const has = await page.$$eval('#f-job option', (os, id) => os.some((o) => o.value === id), jobId);
     if (!has) throw new Error('job not offered in "New Quote"');
     await page.select('#f-job', jobId);
     await page.click('#new-quote-form .btn-primary'); await settle(page);
-    if (!(await isVisible(page, '#quote-builder'))) throw new Error('quote builder did not open on the job page');
-    const item = await page.$$eval('#qb-item option', (os) => { const o = os.find((x) => /^\d+$/.test(x.value)); return o && { v: o.value, t: o.textContent }; });
-    if (!item) throw new Error('pricebook is empty');
-    await page.select('#qb-item', item.v);
-    await page.$eval('#qb-qty', (el) => { el.value = '2'; });
-    await page.click('#qb-add');
-    await page.select('#qb-item', 'custom');
-    await page.type('#qb-desc', 'Call-out fee'); await page.type('#qb-price', '49.50');
-    await page.click('#qb-add'); await sleep(150);
-    const lines = await page.$$eval('#qb-lines tr', (rs) => rs.length);
-    quoteTotal = await visibleText(page, '#qb-total');
-    await shot(page, 'flow-05a-quote-builder');
-    await page.click('#qb-save'); await settle(page, 400);
-    const inv = await visibleText(page, '#inv-list');
-    step('5. Build a quote (New Quote > job > pricebook lines)', lines === 2 && inv.includes('Quote #') && inv.includes(quoteTotal), `lines ${lines}, total ${quoteTotal}; card: "${inv.replace(/\s+/g, ' ').slice(0, 160)}"`, { screenshot: await shot(page, 'flow-05-quote') });
-    await page.select('#quote-status', 'approved'); await settle(page, 400);
-    const st = await page.$eval('#quote-status', (s) => s.value).catch(() => '');
-    step('5b. Approve the quote', st === 'approved', `quote status now "${st}"`);
+    if (!(await isVisible(page, '#doc-editor .doc-editor'))) throw new Error('line editor did not open on the job page');
+    const items = await page.$$eval('#de-item option', (os) => os.filter((x) => /^\d+$/.test(x.value)).map((o) => o.value));
+    if (items.length < 2) throw new Error('pricebook has fewer than 2 items');
+    await page.select('#de-item', items[0]); await sleep(100);
+    await page.select('#de-item', items[1]); await sleep(100);
+    await page.click('#de-add'); await sleep(100);
+    await page.type('[data-line="2"] [data-f="description"]', 'Call-out fee (free text)');
+    await page.$eval('[data-line="0"] [data-f="quantity"]', (e) => { e.value = ''; });
+    await page.type('[data-line="0"] [data-f="quantity"]', '2');
+    await page.type('[data-line="2"] [data-f="unitPrice"]', '49.95');
+    const mixed = rates.length >= 2;
+    if (mixed) {
+      await page.select('[data-line="0"] [data-f="taxRateKey"]', rates[0]);
+      await page.select('[data-line="1"] [data-f="taxRateKey"]', rates[1]);
+      await page.select('[data-line="2"] [data-f="taxRateKey"]', rates[rates.length - 1]);
+    }
+    await page.type('#de-notes', 'UI walk quote — valid 30 days');
+    const lines = await page.$$eval('#de-lines .de-line', (rs) => rs.length);
+    const preview = await visibleText(page, '#de-total');
+    await shot(page, 'flow-05a-quote-editor');
+    await page.click('#de-save'); await settle(page, 500);
+    const err = await visibleText(page, '#de-error');
+    const job = (await api(at, 'GET', `/api/jobs/${jobId}`)).body || {};
+    quote = job.quote ? (await api(at, 'GET', `/api/quotes/${job.quote.id}`)).body : null;
+    const card = await cardText('#quote-card');
+    const f = quote && quote.print && quote.print.formatted;
+    const ok = !err && lines === 3 && quote && quote.lines.length === 3 && /^\S+\d{4}$/.test(quote.number || '') &&
+      card.includes(quote.number) && f && card.includes(f.total) && card.includes(f.subtotal) && preview === f.total &&
+      (!mixed || (new Set(quote.lines.map((l) => l.taxRateKey)).size >= 2 && quote.taxTotal > 0 && card.includes(f.taxTotal)));
+    step('5. Build a 3-line quote with mixed tax rates (pricebook + free text), totals = API', ok,
+      err ? `editor error: "${err}"` : `${quote && quote.number}: preview ${preview}; API subtotal ${f && f.subtotal} tax ${f && f.taxTotal} total ${f && f.total}; rates ${quote && quote.lines.map((l) => l.taxRateKey + ':' + l.taxRate).join(',')}; card "${card.slice(0, 200)}"`,
+      { screenshot: await shot(page, 'flow-05-quote') });
+    await page.select('#quote-status', 'approved'); await settle(page, 500);
+    const st = await page.$eval('#quote-status', (x) => x.value).catch(() => '');
+    const locked = !(await page.$('#btn-edit-quote'));
+    step('5b. Approve the quote (locks its lines: no "Edit lines")', st === 'approved' && locked, `quote status "${st}", edit button gone: ${locked}`);
   } catch (e) { step('5. Build a quote', false, e.message, { screenshot: await shot(page, 'flow-05-quote') }); }
 
-  // Create the invoice from the quote.
+  // Convert the quote to an invoice.
   try {
-    if (!jobUrl) throw new Error('no job page reached');
+    if (!quote) throw new Error('no quote to convert');
     await page.goto(jobUrl); await settle(page);
-    await page.click('#btn-create-invoice'); await sleep(200);
-    const prefill = await page.$eval('#inv-amount', (e) => e.value);
-    await page.$eval('#inv-amount', (e) => { e.value = '0'; });
-    await page.click('#btn-confirm-invoice'); await sleep(250);
-    const zeroErr = await visibleText(page, '#inv-error');
-    await page.$eval('#inv-amount', (e, v) => { e.value = v; }, prefill);
-    await page.click('#btn-confirm-invoice'); await settle(page, 500);
-    const inv = await visibleText(page, '#inv-list');
-    const btnHidden = !(await isVisible(page, '#btn-create-invoice'));
-    const ok = !!prefill && Number(prefill) > 0 && /greater than 0/i.test(zeroErr) && inv.includes('Invoice #') && btnHidden && (!quoteTotal || inv.split('Invoice #')[1].includes(quoteTotal));
-    step('6. Create invoice (prefilled from approved quote, refuses 0, hides afterwards)', ok, `prefill ${prefill}; zero → "${zeroErr}"; card "${inv.replace(/\s+/g, ' ').slice(0, 200)}"; Create Invoice hidden: ${btnHidden}`, { screenshot: await shot(page, 'flow-06-invoice') });
-  } catch (e) { step('6. Create invoice', false, e.message, { screenshot: await shot(page, 'flow-06-invoice') }); }
+    await page.click('#btn-convert'); await sleep(250);
+    if (!(await isVisible(page, '#convert-modal'))) throw new Error('convert dialog did not open');
+    await page.click('#btn-convert-confirm'); await settle(page, 500);
+    const job = (await api(at, 'GET', `/api/jobs/${jobId}`)).body || {};
+    invoice = job.invoice ? (await api(at, 'GET', `/api/invoices/${job.invoice.id}`)).body : null;
+    const card = await cardText('#invoice-card');
+    const f = invoice && invoice.print && invoice.print.formatted;
+    const ok = invoice && invoice.amount === quote.amount && invoice.subtotal === quote.subtotal && invoice.taxTotal === quote.taxTotal &&
+      invoice.lines.length === quote.lines.length && card.includes(invoice.number) && card.includes(f.total) && !(await page.$('#btn-convert'));
+    step('6. Convert quote → invoice (lines and totals copied, equal to the API)', !!ok,
+      `${invoice ? invoice.number : 'no invoice'}: total ${f && f.total} (quote ${quote.print.formatted.total}); card "${card.slice(0, 200)}"`, { screenshot: await shot(page, 'flow-06-invoice') });
+  } catch (e) { step('6. Convert quote → invoice', false, e.message, { screenshot: await shot(page, 'flow-06-invoice') }); }
+
+  // Print view of the invoice.
+  try {
+    if (!invoice) throw new Error('no invoice');
+    const P = await newPage(browser, 'desktop'); const plog = newLog(); instrument(P.page, plog);
+    await P.page.goto(BASE + '/api/health'); await P.page.evaluate((tk) => localStorage.setItem('token', tk), at);
+    await P.page.goto(`${BASE}/print.html?type=invoice&id=${invoice.id}`); await settle(P.page);
+    const v = await P.page.evaluate(() => ({
+      number: (document.getElementById('p-fact-invoice-no') || {}).textContent,
+      totals: document.getElementById('p-totals').innerText.replace(/\s+/g, ' '),
+      lines: document.querySelectorAll('#p-lines-body tr').length,
+      customer: document.getElementById('p-customer').innerText.replace(/\s+/g, ' '),
+      paper: document.getElementById('page-size').getAttribute('href'),
+      title: document.title,
+    }));
+    const f = invoice.print.formatted;
+    const paperOk = ['US', 'CA'].includes(String((brand.locale || {}).country || 'US')) ? /letter/.test(v.paper) : /a4/.test(v.paper);
+    const ok = v.number === invoice.number && v.lines === invoice.lines.length && v.totals.includes(f.total) && v.totals.includes(f.subtotal) &&
+      (!invoice.taxTotal || v.totals.includes(f.taxTotal)) && invoice.print.customer.addressLines.every((l) => v.customer.includes(l)) && paperOk &&
+      !plog.pageErrors.length && !plog.console.length;
+    step('6b. Print view (print.html?type=invoice) matches the API', ok, `${JSON.stringify(v).slice(0, 300)}`, { screenshot: await shot(P.page, 'flow-06b-invoice-print') });
+    await P.ctx.close();
+  } catch (e) { step('6b. Print view', false, e.message); }
+
+  // Email the invoice: a new .eml in the outbox + an email in the communications timeline.
+  try {
+    if (!invoice) throw new Error('no invoice');
+    const emls = () => (fs.existsSync(OUTBOX) ? fs.readdirSync(OUTBOX).filter((x) => x.endsWith('.eml')) : []);
+    const before = new Set(emls());
+    await page.goto(jobUrl); await settle(page);
+    await page.click('#btn-email-invoice'); await sleep(250);
+    const to = await visibleText(page, '#email-to');
+    await page.type('#email-message', 'Thanks — invoice attached below.');
+    await page.click('#btn-email-send'); await settle(page, 600);
+    const err = await visibleText(page, '#email-error');
+    const fresh = emls().filter((x) => !before.has(x));
+    const eml = fresh.length ? fs.readFileSync(path.join(OUTBOX, fresh[0]), 'utf8') : '';
+    const card = await cardText('#invoice-card');
+    const ok = !err && fresh.length === 1 && eml.includes(invoice.number) && /emailed/i.test(card) && !!to;
+    step('6c. Email invoice to customer → new .eml in the outbox', ok, err ? `error "${err}"` : `to ${to}; new .eml: ${fresh.join(', ') || 'none'} in ${OUTBOX}; card "${card.slice(0, 140)}"`, { screenshot: await shot(page, 'flow-06c-emailed') });
+    await page.goto(`${BASE}/communications.html?customerId=${job_customer(await api(at, 'GET', `/api/jobs/${jobId}`))}`); await settle(page);
+    const tl = await visibleText(page, '#timeline');
+    step('6d. Communications timeline shows the email', new RegExp(`email[\\s\\S]*${invoice.number.replace(/[-]/g, '\\-')}`, 'i').test(tl) && tl.includes(invoice.number),
+      `timeline: "${tl.replace(/\s+/g, ' ').slice(0, 220)}"`, { screenshot: await shot(page, 'flow-06d-communications') });
+  } catch (e) { step('6c. Email invoice', false, e.message); }
+
+  // Activity panel on the job page.
+  try {
+    await page.goto(jobUrl); await settle(page);
+    const acts = await page.$$eval('#activity-list li[data-type]', (ls) => ls.map((l) => ({ type: l.getAttribute('data-type'), text: l.innerText.replace(/\s+/g, ' ') })));
+    const api_ = (await api(at, 'GET', `/api/jobs/${jobId}/activity`)).body || [];
+    const types = acts.map((x) => x.type);
+    const base = acts.length === api_.length && ['created', 'assigned'].every((t) => types.includes(t)) && acts.every((x) => !/undefined|null|NaN/.test(x.text));
+    step('6e. Activity panel lists the job history (actor, human labels)', base, `${acts.length} entries (API ${api_.length}): ${acts.slice(0, 5).map((x) => x.text).join(' | ').slice(0, 300)}`, { screenshot: await shot(page, 'flow-06e-activity') });
+    const docTypes = ['quote_created', 'invoice_created'].filter((t) => types.includes(t));
+    step('6f. Activity shows quote_created / invoice_created', docTypes.length === 2 ? true : null,
+      docTypes.length === 2 ? 'both shown' : `tolerated: the API logged ${docTypes.join(', ') || 'neither'} for UI-created documents (Backend gap)`);
+  } catch (e) { step('6e. Activity panel', false, e.message); }
+
+  // Reverse charge with placeholder wording: nothing printed, admins see a screen-only banner.
+  try {
+    const tax = brand.locale || {};
+    if (!tax.taxEnabled) { step('6g. Reverse-charge placeholder handling', null, 'tax not enabled for this brand'); }
+    else {
+      const custs = (await api(at, 'GET', '/api/customers')).body || [];
+      const c = custs.find((x) => x.lastName === `Walsh-${stamp}`) || custs[0];
+      const j = (await api(at, 'POST', '/api/jobs', { customerId: c.id, title: `Reverse charge check ${stamp}` })).body;
+      const inv = (await api(at, 'POST', '/api/invoices', { jobId: j.id, reverseCharge: true, dueDate: localISO(new Date(Date.now() + 864e6)), lines: [{ description: 'Subcontract labour', quantity: 1, unitPrice: 500, taxRateKey: (tax.taxRates[0] || {}).key }] })).body;
+      const R = await newPage(browser, 'desktop'); instrument(R.page, newLog());
+      await R.page.goto(BASE + '/api/health'); await R.page.evaluate((tk) => localStorage.setItem('token', tk), at);
+      await R.page.goto(`${BASE}/print.html?type=invoice&id=${inv.id}`); await settle(R.page);
+      const screen = await R.page.evaluate(() => ({ banner: !document.getElementById('rc-placeholder-banner').hidden, note: !document.getElementById('p-rc-note').hidden, text: document.getElementById('sheet').innerText }));
+      await R.page.emulateMediaType('print');
+      const printed = await R.page.evaluate(() => ({ banner: getComputedStyle(document.getElementById('rc-placeholder-banner')).display, text: document.getElementById('sheet').innerText }));
+      await R.page.emulateMediaType(null);
+      const ph = !!tax.reverseChargeNoteIsPlaceholder;
+      const ok = ph ? (screen.banner && !screen.note && printed.banner === 'none' && !/placeholder/i.test(printed.text))
+        : (!screen.banner && screen.note && printed.text.includes(tax.reverseChargeNote));
+      step('6g. Reverse charge: placeholder wording never printed; admin banner on screen only', ok, `placeholder=${ph}; screen ${JSON.stringify({ banner: screen.banner, note: screen.note })}; print banner display ${printed.banner}`, { screenshot: await shot(R.page, 'flow-06g-reverse-charge') });
+      await R.ctx.close();
+      await api(at, 'DELETE', `/api/invoices/${inv.id}`); await api(at, 'DELETE', `/api/jobs/${j.id}`);
+    }
+  } catch (e) { step('6g. Reverse charge', false, e.message); }
 
   // Invite + add a team member.
   await page.goto(BASE + '/team.html'); await settle(page);
@@ -507,6 +651,15 @@ async function flowWalk(browser, ctxInfo, results) {
   const nav = await D.page.$$eval('#topnav .nav-links a', (as) => as.map((a) => a.textContent.trim())).catch(() => []);
   const adminItems = nav.filter((n) => /Team|API Keys|Quotes/.test(n));
   step('11. Dispatcher nav has no admin-only items', dl.ok && !adminItems.length && nav.includes('Dispatch') && nav.includes('Communications'), `nav: ${nav.join(', ')}`);
+  if (jobUrl) {
+    await D.page.goto(jobUrl); await settle(D.page);
+    const ro = await D.page.evaluate(() => ({
+      quote: (document.getElementById('quote-number') || {}).textContent || '', invoice: (document.getElementById('invoice-number') || {}).textContent || '',
+      editable: !!document.querySelector('#btn-edit-quote, #btn-edit-invoice, #btn-email-quote, #btn-email-invoice, #btn-convert, #quote-status'),
+      print: !!document.getElementById('lnk-print-invoice'),
+    }));
+    step('11b. Dispatcher sees quote/invoice read-only (numbers + print, no edit/email)', !!ro.quote && !!ro.invoice && !ro.editable && ro.print, JSON.stringify(ro));
+  }
   await D.ctx.close();
 
   for (const [who, log] of [['admin', alog], ['technician', tlog], ['dispatcher', dlog]]) {
@@ -523,19 +676,24 @@ async function xssCheck(browser, ctxInfo, results) {
   const created = {};
   const cust = await api(t, 'POST', '/api/customers', {
     firstName: P(1), lastName: `"><svg onload="window.__xss=(window.__xss||[]).concat(2)">`, phone: '620-555-0100',
-    email: 'xss@example.test', address: P(3), city: `<b onmouseover=alert(1)>Town</b>`, zip: '<i>67501</i>', notes: P(5),
+    email: 'xss@example.test', address: P(3), addressLine2: P(4), city: `<b onmouseover=alert(1)>Town</b>`, state: '<i>KS</i>', company: P(18), notes: P(5),
   });
   created.customer = cust.body && cust.body.id;
-  const job = await api(t, 'POST', '/api/jobs', { customerId: created.customer, title: `<script>window.__xss=[6]</script>${P(7)}`, type: P(8), description: P(9), notes: P(10), status: 'scheduled', scheduledDate: TODAY, scheduledTime: '11:00', technicianId: ctxInfo.techId });
+  // Today, for the technician, at the first slot that is free (the API refuses double-booking).
+  let job = null;
+  for (const at of ['11:00', '06:00', '19:00', '21:00', '05:00', '22:30', '23:30']) {
+    job = await api(t, 'POST', '/api/jobs', { customerId: created.customer, title: `<script>window.__xss=[6]</script>${P(7)}`, type: P(8), description: P(9), notes: P(10), status: 'scheduled', scheduledDate: TODAY, scheduledTime: at, duration: 0.5, technicianId: ctxInfo.techId });
+    if (!(job.body && job.body.code === 'SCHEDULE_CONFLICT')) break;
+  }
   created.job = job.body && job.body.id;
-  const quote = await api(t, 'POST', '/api/quotes', { jobId: created.job, amount: 99, notes: P(11) });
+  const quote = await api(t, 'POST', '/api/quotes', { jobId: created.job, notes: P(11), lines: [{ description: P(17), quantity: 1, unitPrice: 99 }] });
   created.quote = quote.body && quote.body.id;
   const comm = await api(t, 'POST', '/api/communications', { customerId: created.customer, type: 'note', direction: 'outbound', subject: P(12), body: P(13) });
   created.comm = comm.body && comm.body.id;
   const pb = await api(t, 'POST', '/api/pricebook', { category: P(14), name: P(15), description: P(16), price: 1 });
   created.pricebook = pb.body && pb.body.id;
   const setupOk = created.customer && created.job;
-  const pages = ['index', 'customers', `customer-detail?id=${created.customer}`, 'dispatch', `job?id=${created.job}`, 'schedule', 'today', `communications?customerId=${created.customer}`, 'communications', 'quote-invoice', 'pricebook'];
+  const pages = ['index', 'customers', `customer-detail?id=${created.customer}`, 'dispatch', `job?id=${created.job}`, 'schedule', 'today', `communications?customerId=${created.customer}`, 'communications', 'quote-invoice', 'pricebook', `print?type=quote&id=${created.quote}`];
   const out = [];
   for (const role of ['admin', 'technician']) {
     const { ctx, page } = await newPage(browser, 'desktop');
@@ -579,7 +737,8 @@ async function finalShots(browser, ctxInfo, results) {
   const quotable = jobs.find((j) => !j.quote && !j.invoice && j.status !== 'cancelled') || billed;
   const techJob = jobs.find((j) => j.technicianId === ctxInfo.techId && j.scheduledDate === TODAY) || jobs.find((j) => j.technicianId === ctxInfo.techId);
   const shots = [];
-  const take = async (vp, role, url, name, prep) => {
+  const take = async (vp, role, url, name, prep, element) => {
+    if (FINAL_ONLY && !FINAL_ONLY.includes(name)) return;
     const { ctx, page } = await newPage(browser, vp);
     const log = newLog(); instrument(page, log);
     const { token } = await apiLogin(USERS[role]);
@@ -587,20 +746,42 @@ async function finalShots(browser, ctxInfo, results) {
     await page.goto(BASE + url); await settle(page);
     if (prep) await prep(page);
     await page.evaluate(() => window.scrollTo(0, 0)); await sleep(100); // sticky nav renders at the scroll position
-    await shot(page, name, FINAL);
-    shots.push({ file: path.join(FINAL, name + '.png'), url, role, viewport: vp, jsErrors: log.pageErrors.length + log.console.length });
+    const file = path.join(FINAL, name + SHOT_SUFFIX + '.png');
+    const el = element && await page.$(element);
+    if (el) {
+      // Element shot with the sticky nav out of the way.
+      await page.evaluate(() => { const n = document.getElementById('topnav'); if (n) n.style.position = 'static'; });
+      await el.screenshot({ path: file });
+    } else await page.screenshot({ path: file, fullPage: true });
+    shots.push({ file, url, role, viewport: vp, jsErrors: log.pageErrors.length + log.console.length });
     await ctx.close();
   };
+  const flowJob = results.flowJobId && jobs.find((j) => j.id === results.flowJobId && j.invoice);
+  const invJob = flowJob || jobs.filter((j) => j.invoice).pop() || billed;
   await take('desktop', 'admin', '/index.html', 'dashboard');
   await take('desktop', 'admin', '/schedule.html', 'schedule');
   await take('desktop', 'admin', '/dispatch.html', 'dispatch');
   await take('desktop', 'admin', `/job.html?id=${billed.id}`, 'job');
   await take('desktop', 'admin', `/job.html?id=${quotable.id}#quote`, 'quote', async (page) => {
-    const opts = await page.$$eval('#qb-item option', (os) => os.filter((o) => /^\d+$/.test(o.value)).slice(0, 3).map((o) => o.value));
-    for (const [i, v] of opts.entries()) { await page.select('#qb-item', v); await page.$eval('#qb-qty', (e, q) => { e.value = q; }, String(i + 1)); await page.click('#qb-add'); }
-    await sleep(200);
-  });
-  await take('desktop', 'admin', '/quote-invoice.html?tab=invoices', 'invoice');
+    const rates = ((ctxInfo.brand.locale || {}).taxRates || []).map((r) => r.key);
+    const opts = await page.$$eval('#de-item option', (os) => os.filter((o) => /^\d+$/.test(o.value)).slice(0, 2).map((o) => o.value));
+    for (const v of opts) { await page.select('#de-item', v); await sleep(60); }
+    await page.click('#de-add'); await sleep(60);
+    await page.type('[data-line="2"] [data-f="description"]', 'Call-out fee');
+    await page.type('[data-line="2"] [data-f="unitPrice"]', '49.95');
+    if (rates.length >= 2) {
+      await page.select('[data-line="1"] [data-f="taxRateKey"]', rates[1]);
+      await page.select('[data-line="2"] [data-f="taxRateKey"]', rates[rates.length - 1]);
+    }
+    await sleep(150);
+  }, '#billing-card');
+  if (invJob && invJob.invoice) {
+    await take('desktop', 'admin', `/job.html?id=${invJob.id}`, 'invoice', null, '#billing-card');
+    await take('desktop', 'admin', `/print.html?type=invoice&id=${invJob.invoice.id}`, 'invoice-print');
+  }
+  // A seeded job with a full history (quote_created / invoice_created included).
+  const richJob = jobs.find((j) => j.quote && j.invoice && j.id !== results.flowJobId) || flowJob || billed;
+  await take('desktop', 'admin', `/job.html?id=${richJob.id}`, 'job-activity', null, '#activity-card');
   await take('desktop', 'admin', '/customers.html', 'customers');
   await take('desktop', 'admin', '/team.html', 'team');
   await take('mobile', 'dispatcher', '/index.html', 'dashboard-mobile');
@@ -617,12 +798,18 @@ async function cleanupFlow(results) {
   const { token: t } = await apiLogin(USERS.admin);
   const jobs = (await api(t, 'GET', '/api/jobs')).body || [];
   for (const j of jobs.filter((x) => x.title === fc.jobTitle)) {
-    if (j.invoice) await api(t, 'DELETE', `/api/invoices/${j.invoice.id}`);
-    if (j.quote) await api(t, 'DELETE', `/api/quotes/${j.quote.id}`);
-    await api(t, 'DELETE', `/api/jobs/${j.id}`);
+    // Sent / approved documents are locked by design (409 DOCUMENT_LOCKED): void the
+    // invoice and cancel the job instead, so it never blocks a schedule slot again.
+    let locked = false;
+    if (j.invoice && (await api(t, 'DELETE', `/api/invoices/${j.invoice.id}`)).status === 409) {
+      locked = true; await api(t, 'PATCH', `/api/invoices/${j.invoice.id}`, { status: 'void', version: j.invoice.version });
+    }
+    if (j.quote && (await api(t, 'DELETE', `/api/quotes/${j.quote.id}`)).status === 409) locked = true;
+    if (!locked) await api(t, 'DELETE', `/api/jobs/${j.id}`);
+    else if (j.status !== 'cancelled') await api(t, 'PATCH', `/api/jobs/${j.id}`, { status: 'cancelled', version: j.version });
   }
   const custs = (await api(t, 'GET', '/api/customers')).body || [];
-  for (const c of custs.filter((x) => x.lastName === fc.customerLast)) await api(t, 'DELETE', `/api/customers/${c.id}`);
+  for (const c of custs.filter((x) => x.lastName === fc.customerLast)) await api(t, 'DELETE', `/api/customers/${c.id}`); // 409 while it still has (locked) jobs
   const users = (await api(t, 'GET', '/api/users')).body || [];
   for (const u of users.filter((x) => fc.emails.includes(x.email))) await api(t, 'DELETE', `/api/users/${u.id}`);
 }

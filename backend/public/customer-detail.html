@@ -35,11 +35,12 @@
             <div class="form-group"><label for="e-phone">Phone</label><input type="tel" id="e-phone" /></div>
             <div class="form-group"><label for="e-email">Email</label><input type="email" id="e-email" /></div>
           </div>
-          <div class="form-group"><label for="e-address">Street address</label><input type="text" id="e-address" /></div>
+          <div class="form-group"><label for="e-address" id="l-address">Street address</label><input type="text" id="e-address" /></div>
+          <div class="form-group"><label for="e-address2" id="l-address2">Address line 2</label><input type="text" id="e-address2" /></div>
           <div class="form-row three">
-            <div class="form-group"><label for="e-city">Town / City</label><input type="text" id="e-city" /></div>
-            <div class="form-group"><label for="e-state" id="l-state">State</label><input type="text" id="e-state" /></div>
-            <div class="form-group"><label for="e-zip" id="l-zip">ZIP</label><input type="text" id="e-zip" /></div>
+            <div class="form-group"><label for="e-city" id="l-city">Town / City</label><input type="text" id="e-city" /></div>
+            <div class="form-group"><label for="e-state" id="l-state">Region</label><input type="text" id="e-state" /></div>
+            <div class="form-group"><label for="e-zip" id="l-zip">Postcode</label><input type="text" id="e-zip" /></div>
           </div>
           <div class="form-group"><label for="e-notes">Notes</label><textarea id="e-notes"></textarea></div>
           <div id="edit-error" class="form-error" hidden></div>
@@ -63,7 +64,7 @@
         <div class="card">
           <h3>Invoices</h3>
           <table class="responsive">
-            <thead><tr><th>#</th><th>Job</th><th>Status</th><th class="num">Amount</th><th>Due</th></tr></thead>
+            <thead><tr><th>Number</th><th>Job</th><th>Status</th><th class="num">Total</th><th>Due</th></tr></thead>
             <tbody id="invoices-tbody"></tbody>
           </table>
         </div>

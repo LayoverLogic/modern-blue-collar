@@ -4,6 +4,7 @@
   const { fmt, api, ui } = window.MBC;
   const $ = ui.$;
   let all = [];
+  let addrForm = null;
 
   function render(list) {
     const tb = $('customers-tbody');
@@ -42,14 +43,16 @@
   async function create(e) {
     e.preventDefault();
     const v = (id) => $(id).value.trim();
-    const labels = fmt.addressLabels();
+    const addr = addrForm.read();
     const body = {
       firstName: v('f-first'), lastName: v('f-last'), phone: v('f-phone'), email: v('f-email') || undefined,
-      address: v('f-address'), city: v('f-city'), state: v('f-state') || undefined, zip: v('f-zip'),
+      address: addr.address, addressLine2: addr.addressLine2 || undefined, city: addr.city || undefined,
+      state: addr.state || undefined, zip: addr.zip || undefined,
       type: $('f-type').value, notes: v('f-notes') || undefined,
     };
-    const missing = [['First name', body.firstName], ['Last name', body.lastName], ['Phone', body.phone], ['Street address', body.address], ['Town / City', body.city], [labels.postal, body.zip]]
-      .filter((x) => !x[1]).map((x) => x[0]);
+    const bad = addrForm.check(addr);
+    if (bad === 'BAD_POSTCODE') { ui.formError('modal-error', addrForm.postcodeMessage()); return; }
+    const missing = [['First name', body.firstName], ['Last name', body.lastName], ['Phone', body.phone]].filter((x) => !x[1]).map((x) => x[0]).concat(bad || []);
     if (missing.length) { ui.formError('modal-error', 'Please fill in: ' + missing.join(', ') + '.'); return; }
     $('btn-save').disabled = true;
     try {
@@ -65,10 +68,7 @@
   MBC.page({
     active: 'customers', title: 'Customers', roles: 'staff',
     async run() {
-      const labels = fmt.addressLabels();
-      $('l-state').textContent = labels.region;
-      $('l-zip').textContent = labels.postal + ' *';
-      $('f-state').placeholder = labels.country === 'US' ? (MBC.brand.current.defaultState || '') : '';
+      addrForm = ui.addressForm('f');
       ui.applyRoleVisibility();
       $('btn-new').addEventListener('click', () => ui.openModal('modal'));
       $('customer-form').addEventListener('submit', create);

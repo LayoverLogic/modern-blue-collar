@@ -81,7 +81,7 @@
       const tl = MBC.brand.techLabel;
       $('page-title').textContent = tl + 's & Team';
       $('tab-tech').textContent = tl + 's';
-      $('google-off').hidden = MBC.brand.current.googleAuth !== false;
+      $('google-off').hidden = MBC.brand.current.googleAuth === true;
       // Admin / super-admin roles can only be granted by a super-admin (server enforces this too).
       const roles = [['technician', tl], ['dispatcher', 'Dispatcher'], ['office', 'Office']].concat(MBC.auth.user.role === 'super-admin' ? [['admin', 'Admin']] : []);
       document.querySelectorAll('.role-select').forEach((sel) => { sel.innerHTML = roles.map((r) => '<option value="' + r[0] + '">' + fmt.esc(r[1]) + '</option>').join(''); });

@@ -7,6 +7,8 @@
  *   MBC.ui.formError(el, msgOrError)               show / clear a form error
  *   MBC.ui.on(root, 'click', '[data-x]', fn)       event delegation (no inline handlers)
  *   MBC.ui.$(id)                                    document.getElementById
+ *   MBC.ui.addressForm(prefix)                      locale labels / required marks on an address form;
+ *                                                   returns { read(), check(body) → error text | null }
  */
 (function () {
   'use strict';
@@ -88,6 +90,40 @@
     });
   }
 
-  MBC.ui = { $, toast, openModal, closeModal, formError, errMsg, on, applyRoleVisibility };
+  // Address fields <prefix>-address, -address2, -city, -state, -zip with labels
+  // l-address, l-address2, l-city, l-state, l-zip. Labels, required fields and the
+  // postcode pattern come from GET /api/brand → locale (MBC.fmt.addressLabels()).
+  function addressForm(prefix) {
+    const L = MBC.fmt.addressLabels();
+    // Older servers do not send requiredAddressFields: keep the historic form rules.
+    const required = L.required || ['address', 'city', 'zip'];
+    const names = { address: L.address, address2: L.addressLine2, city: L.city, state: L.region, zip: L.postal };
+    for (const k of Object.keys(names)) {
+      const lab = $('l-' + k); if (!lab) continue;
+      const req = required.includes(k === 'address2' ? 'addressLine2' : k);
+      lab.textContent = names[k] + (req ? ' *' : '');
+      const inp = $(prefix + '-' + k); if (inp) inp.required = req;
+    }
+    const zip = $(prefix + '-zip'); if (zip && L.postcodeExample) zip.placeholder = 'e.g. ' + L.postcodeExample;
+    const st = $(prefix + '-state'); if (st && L.defaultState && !st.placeholder) st.placeholder = L.defaultState;
+    const val = (k) => { const e = $(prefix + '-' + k); return e ? e.value.trim() : ''; };
+    return {
+      labels: L, required,
+      read() { return { address: val('address'), addressLine2: val('address2'), city: val('city'), state: val('state'), zip: val('zip') }; },
+      // Returns the missing / invalid field names as a sentence, or null.
+      check(body) {
+        const miss = required.filter((k) => !body[k]).map((k) => names[k === 'addressLine2' ? 'address2' : k] || k);
+        if (miss.length) return miss;
+        if (body.zip && L.postcodePattern) {
+          let re = null; try { re = new RegExp(L.postcodePattern, 'i'); } catch (e) { re = null; }
+          if (re && !re.test(body.zip)) return 'BAD_POSTCODE';
+        }
+        return null;
+      },
+      postcodeMessage() { return L.postal + ' does not look right' + (L.postcodeExample ? ' (for example ' + L.postcodeExample + ')' : '') + '.'; },
+    };
+  }
+
+  MBC.ui = { $, toast, addressForm, openModal, closeModal, formError, errMsg, on, applyRoleVisibility };
   MBC.page = page;
 })();

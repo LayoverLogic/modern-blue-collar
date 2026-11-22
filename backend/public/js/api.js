@@ -36,8 +36,14 @@
     dueDate: 'Due date', name: 'Name', category: 'Category', price: 'Price', password: 'Password', role: 'Role',
     status: 'Status', priority: 'Priority', type: 'Type', notes: 'Notes', description: 'Description', jobId: 'Job',
   };
+  const LINE_FIELDS = { description: 'description', quantity: 'quantity', unitPrice: 'unit price', taxRateKey: 'tax rate', pricebookItemId: 'pricebook item' };
   function fieldLabel(f) {
     if (!f) return '';
+    // Document line errors name the line: lines[2].unitPrice → "Line 3 unit price"
+    const lm = /^lines\[(\d+)\](?:\.(\w+))?$/.exec(f);
+    if (lm) return 'Line ' + (Number(lm[1]) + 1) + (lm[2] ? ' ' + (LINE_FIELDS[lm[2]] || lm[2]) : '');
+    if (f === 'city' && MBC.fmt) return MBC.fmt.addressLabels().city;
+    if (f === 'address' && MBC.fmt) return MBC.fmt.addressLabels().address;
     if (f === 'zip' && MBC.fmt) return MBC.fmt.addressLabels().postal;
     if (f === 'state' && MBC.fmt) return MBC.fmt.addressLabels().region;
     if (f === 'technicianId' && MBC.brand) return MBC.brand.techLabel;
@@ -61,7 +67,9 @@
       case 'SCHEDULE_CONFLICT': return 'That ' + ((MBC.brand && MBC.brand.techLabel) || 'technician').toLowerCase() + ' is already booked at that time' +
         (data.conflictJobId ? ' (job #' + data.conflictJobId + ')' : '') + '. Pick another time or person.';
       case 'REQUIRED': return label ? label + ' is required.' : 'Some required details are missing.';
-      case 'INVALID_AMOUNT': return (label || 'Amount') + ' must be greater than 0.';
+      case 'INVALID_AMOUNT':
+        if (/^lines\[/.test(data.field || '')) return label + ' is not a valid number (quantity up to 3 decimals and more than 0; price up to 2 decimals).';
+        return (label || 'Amount') + (data.field === 'amount' || !data.field ? ' must be greater than 0.' : ' is not a valid amount.');
       case 'INVALID_ENUM': return (label || 'A value') + ' is not one of the allowed options.';
       case 'INVALID_INPUT': {
         const safe = safeServerText(serverMsg);
@@ -78,6 +86,15 @@
       case 'SESSION_REQUIRED': return 'Please sign in again to do that.';
       case 'INVALID_LOGIN_CODE': return 'That sign-in link has expired. Please sign in again.';
       case 'RECIPIENT_NOT_CUSTOMER': return 'That number does not belong to a customer.';
+      // Phase 2b documents
+      case 'DOCUMENT_LOCKED': return 'This document has been ' + (data.status && data.status !== 'draft' && data.status !== 'unpaid' ? 'marked ' + data.status : 'sent') +
+        ', so its lines and details can no longer be edited — only its status can change.';
+      case 'TOTALS_FROM_LINES': return 'This document has line items, so its total is worked out from the lines. Edit the lines instead of the total.';
+      case 'EMAIL_DISABLED': return 'Email is not set up on this system yet, so nothing was sent. Ask your administrator to configure outgoing email.';
+      case 'NO_CUSTOMER_EMAIL': return 'This customer has no email address on file. Add one on the customer page, then try again.';
+      case 'QUOTE_DECLINED': return 'This quote was declined, so it cannot be turned into an invoice.';
+      case 'UNKNOWN_PRICEBOOK_ITEM': return (label || 'A line') + ' refers to a pricebook item that no longer exists. Remove it and add it again.';
+      case 'UNKNOWN_JOB': return 'That job no longer exists. Reload the page.';
       default: break;
     }
     const safe = safeServerText(serverMsg);

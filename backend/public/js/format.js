@@ -2,13 +2,15 @@
  * js/format.js — escaping and display formatting shared by every page.
  *
  *   MBC.fmt.esc(v)            HTML-escape anything before it goes into innerHTML
- *   MBC.fmt.money(n)          Intl currency (brand.currency, else by brand.country, else USD)
+ *   MBC.fmt.money(n, cur?)    Intl currency: cur (a document's snapshot) → brand locale.currency → USD
+ *   MBC.fmt.tax()             {enabled, label, rates[{key, rate}], defaultKey, reverseChargeNote…} from /api/brand locale
+ *   MBC.fmt.timeZone()        brand time zone (timestamps are shown in it; calendar dates never shift)
  *   MBC.fmt.parseDate(v)      'YYYY-MM-DD' → LOCAL midnight (never UTC); other values → Date
  *   MBC.fmt.date(v)/time(t)/dateTime(v)/schedule(job)
  *   MBC.fmt.todayISO()        local YYYY-MM-DD
  *   MBC.fmt.name(x)           display name from company / firstName + lastName / name / email
  *   MBC.fmt.address(c)        one-line address incl. postcode
- *   MBC.fmt.addressLabels()   {region, postal} labels for the brand country (US default)
+ *   MBC.fmt.addressLabels()   {address, addressLine2, city, region, postal, required[], …} from the locale block
  *
  * Values that are missing render as an em dash, never "undefined"/"NaN"/"Invalid Date".
  */
@@ -28,17 +30,41 @@
   };
 
   function brand() { return (MBC.brand && MBC.brand.current) || {}; }
+  // GET /api/brand `locale` block (Phase 2b) — tolerate its absence (older servers).
+  function loc() { const l = brand().locale; return l && typeof l === 'object' ? l : {}; }
   function country() {
-    const c = String(brand().country || brand().countryCode || 'US').toUpperCase();
-    return COUNTRY[c] ? c : 'US';
+    const c = String(loc().country || brand().country || brand().countryCode || 'US').toUpperCase();
+    return COUNTRY[c] ? c : (/^[A-Z]{2}$/.test(c) ? c : 'US');
   }
   function locale() {
     const b = brand();
-    if (b.locale) return b.locale;
-    if (b.country || b.countryCode) return COUNTRY[country()].locale;
+    if (loc().numberLocale) return loc().numberLocale;
+    if (typeof b.locale === 'string' && b.locale) return b.locale;
+    if (COUNTRY[country()] && (loc().country || b.country || b.countryCode)) return COUNTRY[country()].locale;
     return (navigator.languages && navigator.languages[0]) || navigator.language || 'en-US';
   }
-  function currency() { return brand().currency || COUNTRY[country()].currency; }
+  function currency() { return loc().currency || brand().currency || (COUNTRY[country()] || COUNTRY.US).currency; }
+  // Brand time zone for timestamps (GET /api/brand timezone); undefined → browser zone.
+  let tzOk = null;
+  function timeZone() {
+    const tz = brand().timezone;
+    if (!tz) return undefined;
+    if (tzOk && tzOk[0] === tz) return tzOk[1] ? tz : undefined;
+    let ok = true;
+    try { new Intl.DateTimeFormat('en', { timeZone: tz }); } catch (e) { ok = false; }
+    tzOk = [tz, ok];
+    return ok ? tz : undefined;
+  }
+  // Tax configuration from the locale block.
+  function tax() {
+    const l = loc();
+    const rates = Array.isArray(l.taxRates) ? l.taxRates.filter((r) => r && r.key != null && Number.isFinite(Number(r.rate))) : [];
+    return {
+      enabled: !!l.taxEnabled && rates.length > 0, label: l.taxLabel || 'Tax', number: l.taxNumber || null,
+      rates: rates.map((r) => ({ key: String(r.key), rate: Number(r.rate) })), defaultKey: l.taxDefault || null,
+      reverseChargeNote: l.reverseChargeNote || '', reverseChargeNoteIsPlaceholder: !!l.reverseChargeNoteIsPlaceholder,
+    };
+  }
 
   const esc = (v) => (v == null ? '' : String(v))
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -49,11 +75,17 @@
 
   function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
 
-  function money(v) {
+  // money(n, currency?) — a document's own currency snapshot wins over the brand's.
+  function money(v, cur) {
     const n = num(v);
     if (n == null) return DASH;
-    try { return new Intl.NumberFormat(locale(), { style: 'currency', currency: currency() }).format(n); }
-    catch (e) { return '$' + n.toFixed(2); }
+    const c = (typeof cur === 'string' && /^[A-Z]{3}$/i.test(cur)) ? cur.toUpperCase() : currency();
+    try { return new Intl.NumberFormat(locale(), { style: 'currency', currency: c }).format(n); }
+    catch (e) { return c + ' ' + n.toFixed(2); }
+  }
+  function percent(r) {
+    const n = num(r); if (n == null) return '';
+    try { return new Intl.NumberFormat(locale(), { maximumFractionDigits: 3 }).format(n) + '%'; } catch (e) { return n + '%'; }
   }
 
   const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -73,16 +105,25 @@
   function todayISO() { return isoDate(new Date()); }
   function addDays(iso, n) { const d = parseDate(iso) || new Date(); d.setDate(d.getDate() + n); return isoDate(d); }
 
+  // A 'YYYY-MM-DD' value is a calendar date (never shifted); a timestamp is
+  // shown in the brand time zone.
+  const isCalendar = (v) => typeof v === 'string' && DATE_ONLY.test(v);
   function date(v, opts) {
     const d = parseDate(v);
     if (!d) return DASH;
-    return d.toLocaleDateString(locale(), opts || { year: 'numeric', month: 'short', day: 'numeric' });
+    const o = Object.assign({}, opts || { year: 'numeric', month: 'short', day: 'numeric' });
+    if (!isCalendar(v) && !(v instanceof Date) && timeZone()) o.timeZone = timeZone();
+    return d.toLocaleDateString(locale(), o);
   }
+  // Numeric date in the brand convention (MM/DD/YYYY US, DD/MM/YYYY IE).
+  function dateShort(v) { return date(v, { year: 'numeric', month: '2-digit', day: '2-digit' }); }
   function dateLong(v) { return date(v, { weekday: 'short', month: 'short', day: 'numeric' }); }
   function dateTime(v) {
     const d = parseDate(v);
     if (!d) return DASH;
-    return d.toLocaleString(locale(), { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    const o = { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' };
+    if (!isCalendar(v) && timeZone()) o.timeZone = timeZone();
+    return d.toLocaleString(locale(), o);
   }
   // 'HH:MM' (24h) → localised clock time.
   function time(t) {
@@ -106,15 +147,31 @@
     return x.company || person || x.name || x.email || (x.id != null ? 'User #' + x.id : '');
   }
 
+  // Labels / rules for address fields from the locale block (fallback: COUNTRY table).
   function addressLabels() {
     const b = brand();
-    const c = COUNTRY[country()];
-    return { region: b.regionLabel || c.region, postal: b.postalLabel || c.postal, country: country() };
+    const l = loc();
+    const c = COUNTRY[country()] || COUNTRY.US;
+    const al = (l.addressLabels && typeof l.addressLabels === 'object') ? l.addressLabels : {};
+    const required = Array.isArray(l.requiredAddressFields) ? l.requiredAddressFields.slice() : null;
+    return {
+      address: al.address || 'Street address', addressLine2: al.addressLine2 || 'Address line 2',
+      city: al.city || 'Town / City', region: al.state || b.regionLabel || c.region, postal: al.zip || b.postalLabel || c.postal,
+      countryLabel: al.country || 'Country', country: country(),
+      // null = an older server that does not say: keep the historic US form rules.
+      required, postcodePattern: l.postcodePattern || null, postcodeExample: l.postcodeExample || '',
+      defaultState: l.defaultState || b.defaultState || '',
+    };
   }
+  // One-line address in the brand convention.
+  //   US: 12 Main St, Apt 2, Hutchinson, KS 67501      IE: 3 Main St, Naas, Co. Kildare, W91 X2Y4
   function address(c) {
     if (!c) return '';
-    const tail = [c.state, c.zip].filter(Boolean).join(' ');
-    return [c.address, c.city, tail].filter(Boolean).join(', ');
+    if (country() === 'US') {
+      const tail = [c.state, c.zip].filter(Boolean).join(' ');
+      return [c.address, c.addressLine2, [c.city, tail].filter(Boolean).join(', ')].filter(Boolean).join(', ');
+    }
+    return [c.address, c.addressLine2, c.city, c.state, c.zip].filter(Boolean).join(', ');
   }
 
   const STATUS_LABELS = { 'in-progress': 'In progress' };
@@ -131,5 +188,6 @@
   MBC.fmt = {
     DASH, esc, text, num, money, parseDate, isoDate, todayISO, addDays, date, dateLong, dateTime, time,
     schedule, name, address, addressLabels, statusLabel, badge, phoneDigits, locale, currency,
+    timeZone, tax, percent, dateShort, country,
   };
 })();

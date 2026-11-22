@@ -96,59 +96,24 @@
           <div class="field-actions" data-roles="staff" hidden><a id="c-link" href="customers.html" class="btn btn-outline">View Customer</a></div>
         </div>
 
-        <div class="card pad" id="billing-card" data-roles="staff" hidden>
-          <h3>Quote &amp; Invoice</h3>
-          <div id="inv-list" class="small"></div>
-
-          <div id="quote-builder" hidden>
-            <h3 class="mt" id="qb-title">Build a quote</h3>
-            <div class="quote-add">
-              <label for="qb-item" class="sr-only">Pricebook item</label>
-              <select id="qb-item"><option value="">Choose a pricebook item&hellip;</option></select>
-              <label for="qb-qty" class="sr-only">Quantity</label>
-              <input type="number" id="qb-qty" min="0.25" step="0.25" value="1" />
-              <button class="btn btn-outline" type="button" id="qb-add">Add line</button>
-            </div>
-            <div class="quote-add" id="qb-custom" hidden>
-              <label for="qb-desc" class="sr-only">Custom line description</label>
-              <input type="text" id="qb-desc" placeholder="Description" />
-              <label for="qb-price" class="sr-only">Unit price</label>
-              <input type="number" id="qb-price" min="0" step="0.01" placeholder="Price" />
-            </div>
-            <table class="quote-lines">
-              <thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Total</th><th></th></tr></thead>
-              <tbody id="qb-lines"><tr><td colspan="5" class="empty">No lines yet.</td></tr></tbody>
-            </table>
-            <div class="quote-total"><span>Quote total</span><span id="qb-total"></span></div>
-            <div class="form-group"><label for="qb-notes">Notes for the customer</label><textarea id="qb-notes" placeholder="Optional"></textarea></div>
-            <p class="muted small">The line breakdown is saved as text in the quote's notes for now; itemised quote storage comes in a later update.</p>
-            <div id="qb-error" class="form-error" hidden></div>
-            <div class="field-actions">
-              <button class="btn btn-primary" type="button" id="qb-save">Save quote</button>
-              <button class="btn btn-outline" type="button" id="qb-cancel">Cancel</button>
-            </div>
-          </div>
-
-          <div id="invoice-panel" hidden>
-            <h3 class="mt">Create invoice</h3>
-            <div class="form-row">
-              <div class="form-group"><label for="inv-amount">Amount *</label><input type="number" id="inv-amount" min="0.01" step="0.01" /></div>
-              <div class="form-group"><label for="inv-due">Due date</label><input type="date" id="inv-due" /></div>
-            </div>
-            <div class="form-group"><label for="inv-notes">Notes</label><input type="text" id="inv-notes" /></div>
-            <p class="muted small" id="inv-source"></p>
-            <div id="inv-error" class="form-error" hidden></div>
-            <div class="field-actions">
-              <button class="btn btn-primary" type="button" id="btn-confirm-invoice">Confirm &amp; create invoice</button>
-              <button class="btn btn-outline" type="button" id="btn-cancel-invoice">Cancel</button>
-            </div>
-          </div>
-
-          <div class="field-actions" id="billing-actions" data-roles="admin" hidden>
-            <button class="btn" type="button" id="btn-build-quote">Build Quote</button>
-            <button class="btn" type="button" id="btn-create-invoice">Create Invoice</button>
-          </div>
+        <div class="card pad" id="activity-card">
+          <h3>Activity</h3>
+          <ol id="activity-list" class="activity-list" aria-live="polite"><li class="muted small">Loading&hellip;</li></ol>
+          <div class="field-actions"><button class="btn btn-outline btn-sm" type="button" id="activity-more" hidden>Show older</button></div>
         </div>
+      </div>
+    </div>
+
+    <div class="card pad" id="billing-card" data-roles="staff" hidden>
+      <h3>Quote &amp; Invoice</h3>
+      <div id="rc-banner" class="notice warn small" data-roles="admin" hidden></div>
+      <div class="doc-grid">
+        <section id="quote-card" class="doc-card" aria-label="Quote"></section>
+        <section id="invoice-card" class="doc-card" aria-label="Invoice"></section>
+      </div>
+      <div id="doc-editor-wrap" hidden>
+        <h3 class="mt" id="de-title">Build a quote</h3>
+        <div id="doc-editor"></div>
       </div>
     </div>
     <div class="muted small">Version <span id="d-version"></span></div>
@@ -156,11 +121,39 @@
   <div id="loading-msg" class="empty">Loading job&hellip;</div>
   <div id="error-msg" class="empty error-text" hidden>Job not found.</div>
 </main>
+
+<div class="modal-overlay" id="email-modal">
+  <form class="modal" id="email-form" novalidate>
+    <h3 id="email-title">Email to customer</h3>
+    <div class="info-row"><span class="info-label">To</span><span class="info-value" id="email-to"></span></div>
+    <p class="muted small" id="email-lock-note"></p>
+    <div class="form-group"><label for="email-message">Message (optional)</label><textarea id="email-message" maxlength="5000" placeholder="Added above the document in the email"></textarea></div>
+    <div id="email-error" class="form-error" hidden></div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" type="button" data-close-modal>Cancel</button>
+      <button class="btn btn-primary" type="submit" id="btn-email-send">Send email</button>
+    </div>
+  </form>
+</div>
+<div class="modal-overlay" id="convert-modal">
+  <form class="modal" id="convert-form" novalidate>
+    <h3 id="convert-title">Convert quote to invoice</h3>
+    <p class="muted small" id="convert-summary"></p>
+    <div class="form-group"><label for="convert-due">Due date</label><input type="date" id="convert-due" /></div>
+    <div class="form-group"><label for="convert-notes">Notes (optional)</label><input type="text" id="convert-notes" maxlength="5000" /></div>
+    <div id="convert-error" class="form-error" hidden></div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" type="button" data-close-modal>Cancel</button>
+      <button class="btn btn-primary" type="submit" id="btn-convert-confirm">Create invoice</button>
+    </div>
+  </form>
+</div>
 <script src="/socket.io/socket.io.js"></script>
 <script src="js/api.js"></script>
 <script src="js/nav.js"></script>
 <script src="js/ui.js"></script>
 <script src="js/field.js"></script>
+<script src="js/documents.js"></script>
 <script src="js/pages/job.js"></script>
 </body>
 </html>

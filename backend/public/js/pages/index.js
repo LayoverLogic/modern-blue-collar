@@ -13,7 +13,8 @@
       ? 'Demo mode. Sign in with ' + b.demoLogin.email + (b.demoLogin.password ? ' / ' + b.demoLogin.password : '')
       : (typeof b.demoHint === 'string' ? b.demoHint : '');
     if (hint) { $('demo-hint').textContent = hint; $('demo-hint').hidden = false; }
-    const google = b.googleAuth === true || (b.googleAuth === undefined && !b.demoMode);
+    // Only when the server says Google sign-in is configured (absent → hidden).
+    const google = b.googleAuth === true;
     $('google-block').hidden = !google;
     if (message) { $('error-msg').textContent = message; $('error-msg').hidden = false; }
     setTimeout(() => $('email-input').focus(), 30);

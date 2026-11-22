@@ -6,8 +6,9 @@
  * Reads (all optional, tolerates absence):
  *   companyName, companySlogan, industryLabel, tradeType, technicianLabel, jobTypes,
  *   colors.{primary, primaryDark, navBg, navText, accent},
- *   logoUrl, faviconUrl, country, locale, currency, regionLabel, postalLabel,
- *   demoLogin {email, password} | demoHint (string), googleAuth (boolean).
+ *   logoUrl, faviconUrl, timezone, locale {country, currency, numberLocale, addressLabels,
+ *   taxRates, …} (Phase 2b; read by js/format.js), demoLogin {email, password} | demoHint
+ *   (string), googleAuth (boolean — the Google button shows only when true).
  * primaryDark is derived from primary when absent; text colours on primary/accent
  * are picked for contrast. Without a faviconUrl an initials SVG favicon is drawn.
  */

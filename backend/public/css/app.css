@@ -243,6 +243,47 @@ pre.quote-notes { white-space: pre-wrap; font: inherit; font-size: 0.85rem; colo
 .key-value { font-family: ui-monospace, monospace; font-size: 0.85rem; background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 0.5rem; margin: 0.5rem 0; word-break: break-all; }
 .invite-link { font-family: ui-monospace, monospace; font-size: 0.8rem; word-break: break-all; background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 0.5rem; margin: 0.5rem 0; }
 
+
+/* ── Documents: quote / invoice cards and the line editor (js/documents.js) ─ */
+.doc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+.doc-card { border: 1px solid var(--line); border-radius: 8px; padding: 0.9rem 1rem; min-width: 0; }
+.doc-card h4 { font-size: 1rem; margin-bottom: 0.25rem; }
+.doc-head { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.doc-head select { width: auto; }
+.doc-number { font-variant-numeric: tabular-nums; }
+.doc-meta { margin-bottom: 0.5rem; }
+.lock-tag { display: inline-block; font-size: 0.7rem; font-weight: 700; background: #f1f5f9; color: #475569; border-radius: 4px; padding: 0 6px; margin-left: 4px; }
+table.doc-lines th, table.doc-lines td { padding: 0.45rem 0.5rem; }
+.doc-totals { margin-top: 0.5rem; font-size: 0.9rem; }
+.doc-totals > div { display: flex; justify-content: space-between; gap: 1rem; padding: 0.2rem 0.5rem; font-variant-numeric: tabular-nums; }
+.doc-totals .doc-total { font-weight: 700; font-size: 1.05rem; border-top: 2px solid var(--line); margin-top: 0.25rem; padding-top: 0.4rem; }
+.doc-notes { white-space: pre-wrap; color: #334155; background: #f8fafc; border-radius: 6px; padding: 0.5rem 0.75rem; margin-top: 0.5rem; }
+.doc-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
+.doc-editor { border-top: 1px solid var(--line); padding-top: 0.75rem; }
+.de-add { display: grid; grid-template-columns: 1fr auto; gap: 0.5rem; margin-bottom: 0.75rem; }
+.de-head, .de-line { display: grid; grid-template-columns: minmax(0, 1fr) 80px 110px 110px 40px; gap: 0.5rem; align-items: center; }
+.de-head.with-tax, .de-line.with-tax { grid-template-columns: minmax(0, 1fr) 80px 110px 150px 110px 40px; }
+.de-head { font-size: 0.75rem; font-weight: 600; color: var(--muted); padding: 0 0 0.25rem; border-bottom: 1px solid var(--line); }
+.de-line { padding: 0.4rem 0; border-bottom: 1px solid #f1f5f9; }
+.de-line input, .de-line select { min-height: 34px; padding: 0.3rem 0.5rem; }
+.de-line input.num, .num { text-align: right; }
+.de-amount { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+.de-line [aria-invalid="true"] { border-color: var(--danger); outline: 2px solid #fecaca; }
+.de-totals { max-width: 460px; margin-left: auto; }
+.doc-totals > .de-tax-rows { display: block; padding: 0; }
+.de-tax-rows > div { display: flex; justify-content: space-between; gap: 1rem; padding: 0.2rem 0.5rem; font-variant-numeric: tabular-nums; }
+label.check { display: flex; gap: 0.5rem; align-items: center; font-weight: 500; margin: 0.5rem 0 0.9rem; }
+
+/* ── Activity log ───────────────────────────────────────────────────────── */
+.activity-list { list-style: none; display: grid; gap: 0; max-height: 520px; overflow-y: auto; }
+.activity-list .act { border-left: 3px solid #cbd5e1; padding: 0.4rem 0 0.4rem 0.75rem; margin-left: 0.25rem; }
+.activity-list .act-status_changed { border-left-color: #0ea5e9; }
+.activity-list .act-assigned, .activity-list .act-rescheduled { border-left-color: #f59e0b; }
+.activity-list .act-quote_created, .activity-list .act-invoice_created { border-left-color: #22c55e; }
+.activity-list .act-deleted, .activity-list .act-photo_removed { border-left-color: #ef4444; }
+.act-text { font-size: 0.9rem; overflow-wrap: anywhere; }
+.act-note { color: #334155; white-space: pre-wrap; overflow-wrap: anywhere; }
+
 /* ── Mobile ──────────────────────────────────────────────────────────────── */
 @media (max-width: 900px) {
   :root { --tap: 44px; }
@@ -269,8 +310,18 @@ pre.quote-notes { white-space: pre-wrap; font: inherit; font-size: 0.85rem; colo
   .modal { padding: 1.1rem; }
   .modal-footer .btn { flex: 1; }
   .photo-thumb .del { width: 36px; height: 36px; }
-  .quote-add { grid-template-columns: 1fr 80px; }
-  .quote-add .btn { grid-column: 1 / -1; }
+  .doc-grid { grid-template-columns: 1fr; gap: 0.75rem; }
+  .de-add { grid-template-columns: 1fr; }
+  .de-head { display: none; }
+  .de-line, .de-line.with-tax { grid-template-columns: 1fr 1fr 44px; padding: 0.6rem 0; }
+  .de-line [data-f="description"] { grid-column: 1 / -1; }
+  .de-line [data-f="taxRateKey"] { grid-column: 1 / 3; }
+  .de-line input, .de-line select { min-height: 44px; }
+  .de-line .de-amount { grid-column: 1 / 3; text-align: left; }
+  .de-line .btn { grid-column: 3; grid-row: 2; width: 44px; padding: 0; }
+  .de-totals { max-width: none; }
+  .doc-head select { min-height: 44px; }
+  label.check input { width: 22px; height: 22px; }
   /* Tables → cards */
   table.responsive thead { display: none; }
   table.responsive, table.responsive tbody, table.responsive tr, table.responsive td { display: block; width: 100%; }

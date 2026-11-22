@@ -1,0 +1,60 @@
+/*
+ * css/print.css — print.html (quote / invoice print view, "Save as PDF" via the
+ * browser's print dialog; no PDF library). Paper size lives in page-a4.css /
+ * page-letter.css, chosen by js/pages/print.js from the brand locale.
+ * .no-print elements (toolbar, admin banners, nav) never reach paper.
+ */
+.print-page main { max-width: 900px; }
+.print-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.print-toolbar .back-link { margin-bottom: 0; }
+.print-toolbar .page-actions { align-items: center; }
+.sheet { position: relative; background: #fff; color: #111827; border-radius: 6px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); padding: 2.25rem 2.5rem; font-size: 0.92rem; line-height: 1.45; }
+.sheet-head { display: flex; justify-content: space-between; gap: 2rem; align-items: flex-start; border-bottom: 3px solid var(--color-primary); padding-bottom: 1.1rem; margin-bottom: 1.25rem; }
+.p-logo { max-height: 64px; max-width: 220px; object-fit: contain; display: block; margin-bottom: 0.5rem; }
+.seller-name { font-size: 1.25rem; font-weight: 700; }
+.seller-lines { color: #374151; font-size: 0.85rem; white-space: pre-line; }
+.doc-id { text-align: right; min-width: 220px; }
+.doc-id h1 { font-size: 1.6rem; letter-spacing: 0.02em; color: var(--color-primary-dark); margin-bottom: 0.4rem; }
+.doc-facts { display: grid; grid-template-columns: auto auto; gap: 0.15rem 0.9rem; justify-content: end; font-size: 0.88rem; }
+.doc-facts dt { color: #6b7280; }
+.doc-facts dd { font-weight: 600; font-variant-numeric: tabular-nums; }
+.parties { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 1.25rem; }
+.p-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: #6b7280; font-weight: 700; margin-bottom: 0.2rem; }
+.p-customer .p-name { font-weight: 700; }
+table.p-lines { width: 100%; border-collapse: collapse; margin-bottom: 0.75rem; }
+table.p-lines th { background: #f3f4f6; color: #374151; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; padding: 0.5rem 0.6rem; border-bottom: 1px solid #d1d5db; }
+table.p-lines td { padding: 0.5rem 0.6rem; border-bottom: 1px solid #e5e7eb; font-size: 0.9rem; vertical-align: top; }
+table.p-lines .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.p-totals { margin-left: auto; width: 340px; max-width: 100%; }
+.p-totals > div { display: flex; justify-content: space-between; gap: 1rem; padding: 0.22rem 0.6rem; font-variant-numeric: tabular-nums; }
+.p-totals .p-total { font-size: 1.15rem; font-weight: 700; border-top: 2px solid #111827; margin-top: 0.3rem; padding-top: 0.45rem; }
+.p-rc-note { margin-top: 1rem; font-weight: 600; border: 1px solid #d1d5db; border-radius: 4px; padding: 0.5rem 0.75rem; }
+.p-notes { margin-top: 1rem; white-space: pre-wrap; color: #374151; }
+.sheet-foot { margin-top: 2rem; padding-top: 0.75rem; border-top: 1px solid #e5e7eb; font-size: 0.78rem; color: #6b7280; text-align: center; }
+.stamp { position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%) rotate(-18deg); font-size: 4.5rem; font-weight: 800; letter-spacing: 0.1em; color: rgba(185, 28, 28, 0.16); border: 6px solid rgba(185, 28, 28, 0.16); padding: 0 1.5rem; border-radius: 12px; pointer-events: none; }
+.stamp.paid { color: rgba(21, 128, 61, 0.18); border-color: rgba(21, 128, 61, 0.18); }
+
+@media (max-width: 900px) {
+  .sheet { padding: 1.1rem; font-size: 0.88rem; }
+  .sheet-head { flex-direction: column; gap: 0.75rem; }
+  .doc-id { text-align: left; min-width: 0; }
+  .doc-facts { justify-content: start; }
+  .parties { grid-template-columns: 1fr; gap: 0.75rem; }
+  table.p-lines th, table.p-lines td { padding: 0.35rem 0.2rem; font-size: 0.74rem; overflow-wrap: anywhere; }
+  table.p-lines th { letter-spacing: 0; }
+  table.p-lines .num { white-space: normal; }
+  .p-totals { width: 100%; }
+  .stamp { font-size: 2.5rem; }
+}
+
+@media print {
+  .no-print, #topnav, .toast, #toast-host { display: none !important; }
+  html, body { background: #fff !important; }
+  .print-page main { max-width: none; margin: 0; padding: 0; }
+  .sheet { box-shadow: none; border-radius: 0; padding: 0; font-size: 10.5pt; }
+  .sheet-head { border-bottom-color: #111827; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  table.p-lines tr { break-inside: avoid; }
+  .p-totals, .p-rc-note { break-inside: avoid; }
+  thead { display: table-header-group; }
+}

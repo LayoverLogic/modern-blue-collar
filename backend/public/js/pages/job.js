@@ -1,7 +1,9 @@
 /*
  * job.html — one job: status, field actions (Navigate / Call / Text / On My Way),
- * schedule & assign (staff), notes, photos, quote builder and invoice (admin),
- * live "who else is viewing" presence (socket.io, authenticated with the token).
+ * schedule & assign (staff), notes, photos, activity log (GET /api/jobs/:id/activity,
+ * paged), quote + invoice with line items (staff read, admin edit / email /
+ * convert; js/documents.js), print links (print.html), live "who else is viewing"
+ * presence (socket.io, authenticated with the token).
  */
 (function () {
   'use strict';
@@ -11,8 +13,10 @@
   let job = null;
   let me = null;
   let socket = null;
-  let pricebook = [];
-  let lines = [];
+  let pricebook = null;
+  let docs = { quote: null, invoice: null }; // full documents (GET /api/quotes|invoices/:id)
+  let editing = null;                          // { type, doc } while the editor is open
+  let emailing = null;                         // 'quote' | 'invoice' while the email modal is open
 
   function fail(msg) { $('loading-msg').hidden = true; $('job-content').hidden = true; $('error-msg').textContent = msg; $('error-msg').hidden = false; }
 
@@ -53,29 +57,234 @@
     }
   }
 
+  // ── Quote & invoice cards ───────────────────────────────────────────────────
+  const D = () => MBC.docs;
+  function docCard(type) {
+    const d = docs[type];
+    const admin = auth.isAdmin();
+    const L = D().label(type);
+    if (!d) {
+      let html = '<h4>' + L + '</h4><p class="muted small">No ' + L.toLowerCase() + ' yet.</p>';
+      if (admin && !editing) {
+        if (type === 'quote' && !docs.invoice) html += '<div class="field-actions"><button class="btn" type="button" id="btn-build-quote">Build quote</button></div>';
+        if (type === 'invoice') {
+          const q = docs.quote;
+          if (q && q.status !== 'declined') html += '<div class="field-actions"><button class="btn" type="button" id="btn-convert">Convert ' + fmt.esc(q.number || 'quote') + ' to invoice</button>' +
+            '<button class="btn btn-outline" type="button" id="btn-create-invoice">Blank invoice</button></div>';
+          else html += '<div class="field-actions"><button class="btn" type="button" id="btn-create-invoice">Create invoice</button></div>';
+        }
+      }
+      return html;
+    }
+    const cur = d.currency;
+    let head = '<div class="doc-head"><h4><span class="doc-number" id="' + type + '-number">' + fmt.esc(d.number || ('#' + d.id)) + '</span> <span class="muted">' + L + '</span></h4>';
+    if (admin) {
+      const sts = type === 'quote' ? ['draft', 'sent', 'approved', 'declined'] : ['unpaid', 'paid', 'overdue', 'void'];
+      head += '<span><label for="' + type + '-status" class="sr-only">' + L + ' status</label><select id="' + type + '-status" data-status="' + type + '">' +
+        sts.map((st) => '<option value="' + st + '"' + (st === d.status ? ' selected' : '') + '>' + fmt.statusLabel(st) + '</option>').join('') + '</select></span>';
+    } else head += fmt.badge(d.status);
+    head += '</div>';
+    const meta = ['Issued ' + fmt.date(d.issuedAt || d.createdAt)];
+    if (type === 'invoice' && d.dueDate) meta.push('due ' + fmt.date(String(d.dueDate).slice(0, 10)));
+    if (d.sentAt) meta.push('emailed ' + fmt.dateTime(d.sentAt));
+    if (type === 'invoice' && d.paidAt) meta.push('paid ' + fmt.date(d.paidAt));
+    if (d.reverseCharge) meta.push('reverse charge');
+    let html = head + '<div class="muted small doc-meta">' + fmt.esc(meta.join(' · ')) + (d.locked ? ' <span class="lock-tag" title="Sent or no longer a draft: only the status can change">Locked</span>' : '') + '</div>';
+    html += D().linesHtml(d, { jobTitle: job.title });
+    if (d.notes && (d.lines || []).length) html += '<p class="doc-notes small">' + fmt.esc(d.notes) + '</p>';
+    html += '<div class="doc-actions">';
+    html += '<a class="btn btn-outline btn-sm" id="lnk-print-' + type + '" href="print.html?type=' + type + '&id=' + encodeURIComponent(d.id) + '" target="_blank" rel="noopener">Print / PDF</a>';
+    if (admin) {
+      if (!d.locked && !editing) html += '<button class="btn btn-outline btn-sm" type="button" id="btn-edit-' + type + '">Edit lines</button>';
+      if (d.status !== 'void' && d.status !== 'declined') html += '<button class="btn btn-sm" type="button" id="btn-email-' + type + '">' + (d.sentAt ? 'Email again' : 'Email to customer') + '</button>';
+      if (type === 'invoice' && d.status !== 'paid' && d.status !== 'void') html += '<button class="btn btn-outline btn-sm" type="button" id="btn-mark-paid">Mark paid</button>';
+    }
+    html += '</div>';
+    return html;
+  }
   function renderBilling() {
-    const q = job.quote, inv = job.invoice;
-    let html = '';
-    if (q) {
-      html += '<div class="billing-item"><span><strong>Quote #' + fmt.esc(q.id) + '</strong> ' + fmt.money(q.amount) + '</span>' +
-        (auth.isAdmin()
-          ? '<span><label for="quote-status" class="sr-only">Quote status</label><select id="quote-status">' +
-            ['draft', 'sent', 'approved', 'declined'].map((s) => '<option value="' + s + '"' + (s === q.status ? ' selected' : '') + '>' + fmt.statusLabel(s) + '</option>').join('') + '</select></span>'
-          : fmt.badge(q.status)) + '</div>';
-      if (q.notes) html += '<pre class="quote-notes">' + fmt.esc(q.notes) + '</pre>';
+    $('quote-card').innerHTML = docCard('quote');
+    $('invoice-card').innerHTML = docCard('invoice');
+    // Reverse-charge wording that is still the placeholder: never printed; admins are told why.
+    const t = fmt.tax();
+    const rc = ['quote', 'invoice'].some((k) => docs[k] && docs[k].reverseCharge);
+    const ph = rc && (t.reverseChargeNoteIsPlaceholder || ['quote', 'invoice'].some((k) => docs[k] && docs[k].print && docs[k].print.reverseChargeNoteIsPlaceholder));
+    $('rc-banner').hidden = !(auth.isAdmin() && ph);
+    $('rc-banner').textContent = ph ? 'Reverse charge is on, but the reverse-charge wording is still the placeholder text. It is NOT printed or emailed as compliant wording: set BRAND_RCT_NOTE to wording confirmed by an accountant.' : '';
+  }
+  async function loadDocs() {
+    const get = (type, ref) => (ref ? api.get('/api/' + type + 's/' + encodeURIComponent(ref.id)).catch(() => Object.assign({ lines: [] }, ref)) : Promise.resolve(null));
+    [docs.quote, docs.invoice] = await Promise.all([get('quote', job.quote), get('invoice', job.invoice)]);
+    renderBilling();
+  }
+
+  // ── Editor (quote or invoice) ───────────────────────────────────────────────
+  async function openEditor(type, doc) {
+    if (pricebook === null) {
+      try { const pb = await api.get('/api/pricebook'); pricebook = Array.isArray(pb) ? pb : (pb.items || []); }
+      catch (e) { pricebook = []; ui.toast('Could not load the pricebook: ' + e.message, 'error'); }
     }
-    if (inv) {
-      html += '<div class="billing-item"><span><strong>Invoice #' + fmt.esc(inv.id) + '</strong> ' + fmt.money(inv.amount) +
-        (inv.dueDate ? ' <span class="muted">due ' + fmt.esc(fmt.date(inv.dueDate)) + '</span>' : '') + '</span><span>' + fmt.badge(inv.status) +
-        (auth.isAdmin() && inv.status !== 'paid' && inv.status !== 'void' ? ' <button class="btn btn-sm" type="button" id="btn-mark-paid">Mark paid</button>' : '') + '</span></div>';
+    editing = { type, doc: doc || null };
+    $('de-title').textContent = doc ? 'Edit ' + D().ref(doc, type) : (type === 'quote' ? 'Build a quote' : 'Create an invoice');
+    $('doc-editor-wrap').hidden = false;
+    renderBilling();
+    D().editor($('doc-editor'), {
+      type, doc, pricebook, currency: doc ? doc.currency : fmt.currency(), jobTitle: job.title,
+      onCancel: closeEditor,
+      onSave: (body) => saveDoc(type, doc, body),
+    });
+    $('doc-editor-wrap').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  function closeEditor() { editing = null; $('doc-editor-wrap').hidden = true; $('doc-editor').innerHTML = ''; renderBilling(); }
+  async function saveDoc(type, doc, body) {
+    const base = '/api/' + type + 's';
+    let saved;
+    try {
+      if (doc) saved = await api.patch(base + '/' + doc.id, Object.assign({ version: doc.version }, body));
+      else saved = await api.post(base, Object.assign({ jobId: Number(jobId) }, body));
+    } catch (e) {
+      if (e.code === 'DOCUMENT_LOCKED' || e.code === 'VERSION_CONFLICT' || (e.code === 'DUPLICATE' && !doc)) {
+        const msg = e.code === 'DUPLICATE' ? 'This job already has ' + (type === 'quote' ? 'a quote' : 'an invoice') + ' — it has been loaded below.' : e.message;
+        closeEditor(); ui.toast(msg, 'error'); await load(); return;
+      }
+      throw e;
     }
-    $('inv-list').innerHTML = html || '<span class="muted">No quote or invoice yet.</span>';
-    // Create Invoice is hidden once an invoice exists; Build Quote becomes Revise Quote.
-    $('btn-create-invoice').hidden = !!inv;
-    $('btn-build-quote').hidden = !!inv;
-    $('btn-build-quote').textContent = q ? 'Revise Quote' : 'Build Quote';
-    $('billing-actions').hidden = !auth.isAdmin() || !!inv;
-    if (inv) { $('invoice-panel').hidden = true; $('quote-builder').hidden = true; }
+    closeEditor();
+    await load(); // re-render from the server's totals
+    const d = docs[type] || saved;
+    ui.toast(D().ref(d, type) + ' saved: ' + fmt.money(d.amount, d.currency) + '.', 'ok');
+  }
+
+  async function setStatus(type, status) {
+    const d = docs[type]; if (!d) return;
+    try { await api.patch('/api/' + type + 's/' + d.id, { status, version: d.version }); ui.toast(D().ref(d, type) + ' marked ' + fmt.statusLabel(status).toLowerCase() + '.', 'ok'); }
+    catch (e) { ui.toast(e.message, 'error'); }
+    await load();
+  }
+
+  // ── Convert quote → invoice ─────────────────────────────────────────────────
+  function openConvert() {
+    const q = docs.quote; if (!q) return;
+    $('convert-title').textContent = 'Convert ' + D().ref(q, 'quote') + ' to an invoice';
+    $('convert-summary').textContent = 'The invoice copies the quote\'s ' + ((q.lines || []).length || 1) + ' line(s) and its total of ' + fmt.money(q.amount, q.currency) + '.' +
+      (q.status === 'approved' ? '' : ' The quote is ' + fmt.statusLabel(q.status).toLowerCase() + ', not approved — check before converting.');
+    $('convert-due').value = fmt.addDays(fmt.todayISO(), 14);
+    $('convert-notes').value = '';
+    ui.openModal('convert-modal');
+  }
+  async function confirmConvert(e) {
+    e.preventDefault();
+    const q = docs.quote; if (!q) return;
+    $('btn-convert-confirm').disabled = true;
+    try {
+      const inv = await api.post('/api/invoices/from-quote/' + encodeURIComponent(q.id), { dueDate: $('convert-due').value || undefined, notes: $('convert-notes').value.trim() || undefined });
+      ui.closeModal('convert-modal');
+      ui.toast(D().ref(inv, 'invoice') + ' created from ' + (q.number || 'the quote') + ' for ' + fmt.money(inv.amount, inv.currency) + '.', 'ok');
+      await load();
+    } catch (ex) {
+      if (ex.code === 'DUPLICATE') { ui.closeModal('convert-modal'); ui.toast('This job already has an invoice — it has been loaded.', 'error'); await load(); }
+      else ui.formError('convert-error', ex.code === 'INVALID_AMOUNT' ? 'The quote total is 0, so there is nothing to invoice.' : ex);
+    } finally { $('btn-convert-confirm').disabled = false; }
+  }
+
+  // ── Email to customer ───────────────────────────────────────────────────────
+  function openEmail(type) {
+    const d = docs[type]; if (!d) return;
+    emailing = type;
+    const to = (job.customer && job.customer.email) || '';
+    $('email-title').textContent = 'Email ' + D().ref(d, type) + ' to the customer';
+    $('email-to').textContent = to || 'No email address on file';
+    $('email-to').classList.toggle('error-text', !to);
+    $('email-lock-note').textContent = d.locked ? 'A copy is logged in the customer\'s communications.'
+      : 'Sending marks the ' + type + ' as sent: after that its lines can no longer be edited (only its status). A copy is logged in the customer\'s communications.';
+    $('email-message').value = '';
+    $('btn-email-send').disabled = !to;
+    ui.openModal('email-modal');
+    if (!to) ui.formError('email-error', MBC.api.friendly(400, '', 'NO_CUSTOMER_EMAIL'));
+  }
+  async function sendEmail(e) {
+    e.preventDefault();
+    const type = emailing; const d = type && docs[type]; if (!d) return;
+    $('btn-email-send').disabled = true; $('btn-email-send').textContent = 'Sending…';
+    try {
+      const r = await api.post('/api/' + type + 's/' + encodeURIComponent(d.id) + '/email', { message: $('email-message').value.trim() || undefined });
+      ui.closeModal('email-modal');
+      if (r && r.document) { docs[type] = r.document; renderBilling(); }
+      ui.toast(D().ref(d, type) + ' emailed to ' + (r && r.to ? r.to : 'the customer') + (r && r.driver === 'outbox' ? ' (sandbox outbox — nothing left this machine).' : '.'), 'ok');
+      await load();
+    } catch (ex) {
+      ui.formError('email-error', ex);
+      if (ex.code === 'VERSION_CONFLICT') await load();
+    } finally { $('btn-email-send').disabled = false; $('btn-email-send').textContent = 'Send email'; }
+  }
+
+  // ── Activity log ────────────────────────────────────────────────────────────
+  let activity = [];
+  const ACT_PAGE = 20;
+  function techName(x) { return x && (x.technicianName || (x.technicianId != null ? MBC.brand.techLabel + ' #' + x.technicianId : '')) || 'nobody'; }
+  function schedText(x) {
+    if (!x) return '';
+    const parts = [];
+    if ('scheduledDate' in x) parts.push(x.scheduledDate ? fmt.date(x.scheduledDate) : 'no date');
+    if ('scheduledTime' in x) parts.push(x.scheduledTime ? fmt.time(x.scheduledTime) : 'no time');
+    if ('duration' in x && x.duration != null) parts.push(x.duration + ' h');
+    return parts.join(' ');
+  }
+  const FIELD_NAMES = { title: 'title', description: 'description', type: 'job type', priority: 'priority', customerId: 'customer' };
+  function docRefText(kind, to) {
+    const known = docs[kind] && to && String(docs[kind].id) === String(to[kind + 'Id']) ? docs[kind] : null;
+    const n = to && (to.number || (known && known.number) || (to[kind + 'Id'] != null ? '#' + to[kind + 'Id'] : ''));
+    return D().label(kind) + (n ? ' ' + n : '') + (to && to.amount != null ? ' · ' + fmt.money(to.amount, to.currency || (known && known.currency)) : '');
+  }
+  function activityText(a) {
+    const f = a.from || {}, t = a.to || {};
+    switch (a.type) {
+      case 'created': return 'Job created' + (t.title ? ': ' + t.title : '');
+      case 'status_changed': return 'Status ' + fmt.statusLabel(f.status) + ' → ' + fmt.statusLabel(t.status);
+      case 'assigned': return t.technicianId == null ? 'Unassigned (was ' + techName(f) + ')' : 'Assigned to ' + techName(t) + (f.technicianId != null ? ' (was ' + techName(f) + ')' : '');
+      case 'rescheduled': {
+        const was = Object.keys(f).some((k) => f[k] != null);
+        const now = Object.keys(t).some((k) => t[k] != null);
+        if (!was) return 'Scheduled for ' + schedText(t);
+        if (!now) return 'Unscheduled (was ' + schedText(f) + ')';
+        return 'Rescheduled from ' + schedText(f) + ' to ' + schedText(t);
+      }
+      case 'note': return t.notes ? 'Notes updated' : 'Notes cleared';
+      case 'updated': { const k = Object.keys(t).map((x) => FIELD_NAMES[x] || x); return 'Updated ' + (k.length ? k.join(', ') : 'details'); }
+      case 'photo_added': return 'Photo added' + (t.originalName ? ': ' + t.originalName : '');
+      case 'photo_removed': return 'Photo removed' + (f.originalName ? ': ' + f.originalName : '');
+      case 'quote_created': return docRefText('quote', t) + ' created';
+      case 'invoice_created': return docRefText('invoice', t) + ' created' + (t.fromQuote ? ' from quote ' + (t.fromQuote.number || '') : '');
+      case 'deleted': return 'Job deleted';
+      default: return String(a.type || 'Change').replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+    }
+  }
+  function actorText(a) {
+    const x = a.actor || {};
+    if (x.kind === 'system') return 'System';
+    return x.name || (x.kind === 'apiKey' ? 'API key' : 'Someone');
+  }
+  function renderActivity(hasMore) {
+    const el = $('activity-list');
+    el.innerHTML = activity.length ? activity.map((a) =>
+      '<li class="act act-' + fmt.esc(String(a.type || '').replace(/[^a-z_]/gi, '')) + '" data-type="' + fmt.esc(a.type) + '">' +
+        '<div class="act-text">' + fmt.esc(activityText(a)) + '</div>' +
+        (a.type === 'note' && a.to && a.to.notes ? '<div class="act-note small">' + fmt.esc(String(a.to.notes).slice(0, 240)) + '</div>' : '') +
+        '<div class="act-meta small muted"><span class="act-actor">' + fmt.esc(actorText(a)) + '</span> · <time datetime="' + fmt.esc(a.createdAt) + '">' + fmt.esc(fmt.dateTime(a.createdAt)) + '</time></div></li>').join('')
+      : '<li class="muted small">No activity recorded yet.</li>';
+    $('activity-more').hidden = !hasMore;
+  }
+  async function loadActivity(more) {
+    const before = more && activity.length ? '&before=' + encodeURIComponent(activity[activity.length - 1].id) : '';
+    let page;
+    try { page = await api.get('/api/jobs/' + encodeURIComponent(jobId) + '/activity?limit=' + ACT_PAGE + before); }
+    catch (e) {
+      if (!more) $('activity-list').innerHTML = '<li class="muted small">' + fmt.esc(e.status === 404 && !e.code ? 'The activity log is not available on this server.' : e.message) + '</li>';
+      return;
+    }
+    page = Array.isArray(page) ? page : [];
+    activity = more ? activity.concat(page) : page;
+    renderActivity(page.length === ACT_PAGE);
   }
 
   // ── Load ────────────────────────────────────────────────────────────────────
@@ -85,6 +294,8 @@
     $('loading-msg').hidden = true;
     $('job-content').hidden = false;
     render();
+    if (auth.isStaff()) await loadDocs();
+    loadActivity(false);
     return true;
   }
 
@@ -139,122 +350,6 @@
     if (!confirm('Delete this photo?')) return;
     try { await api.del('/api/jobs/' + encodeURIComponent(jobId) + '/photos/' + encodeURIComponent(id)); await loadPhotos(); }
     catch (e) { ui.toast(e.message, 'error'); }
-  }
-
-  // ── Quote builder ─────────────────────────────────────────────────────────────
-  const round2 = (n) => Math.round(n * 100) / 100;
-  function lineTotal(l) { return round2(l.qty * l.price); }
-  function quoteTotal() { return round2(lines.reduce((s, l) => s + lineTotal(l), 0)); }
-  function renderLines() {
-    const tb = $('qb-lines');
-    tb.innerHTML = lines.length ? lines.map((l, i) =>
-      '<tr><td>' + fmt.esc(l.name) + (l.unit ? ' <span class="muted small">/' + fmt.esc(l.unit) + '</span>' : '') + '</td>' +
-      '<td class="num"><label class="sr-only" for="qb-q-' + i + '">Quantity</label><input type="number" min="0.25" step="0.25" value="' + fmt.esc(l.qty) + '" id="qb-q-' + i + '" data-line="' + i + '" class="qty-input"></td>' +
-      '<td class="num">' + fmt.money(l.price) + '</td><td class="num">' + fmt.money(lineTotal(l)) + '</td>' +
-      '<td><button class="btn btn-danger btn-sm" type="button" data-remove="' + i + '" aria-label="Remove line">&times;</button></td></tr>').join('')
-      : '<tr><td colspan="5" class="empty">No lines yet.</td></tr>';
-    $('qb-total').textContent = fmt.money(quoteTotal());
-  }
-  async function openBuilder() {
-    $('invoice-panel').hidden = true;
-    $('billing-actions').hidden = true;
-    $('quote-builder').hidden = false;
-    $('qb-title').textContent = job.quote ? 'Revise quote #' + job.quote.id : 'Build a quote';
-    lines = [];
-    $('qb-notes').value = '';
-    ui.formError('qb-error', null);
-    if (!pricebook.length) {
-      try { const pb = await api.get('/api/pricebook'); pricebook = Array.isArray(pb) ? pb : (pb.items || []); }
-      catch (e) { ui.formError('qb-error', 'Could not load the pricebook: ' + e.message); }
-    }
-    const byCat = {};
-    pricebook.forEach((p) => { (byCat[p.category || 'Other'] = byCat[p.category || 'Other'] || []).push(p); });
-    $('qb-item').innerHTML = '<option value="">Choose a pricebook item…</option>' +
-      Object.keys(byCat).sort().map((cat) => '<optgroup label="' + fmt.esc(cat) + '">' +
-        byCat[cat].map((p) => '<option value="' + fmt.esc(p.id) + '">' + fmt.esc(p.name) + ' – ' + fmt.esc(fmt.money(p.price)) + '</option>').join('') + '</optgroup>').join('') +
-      '<option value="custom">Custom line…</option>';
-    renderLines();
-    $('quote-builder').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
-  function addLine() {
-    const sel = $('qb-item').value;
-    const qty = Number($('qb-qty').value);
-    if (!sel) { ui.formError('qb-error', 'Choose an item to add.'); return; }
-    if (!(qty > 0)) { ui.formError('qb-error', 'Quantity must be more than 0.'); return; }
-    if (sel === 'custom') {
-      const name = $('qb-desc').value.trim(); const price = Number($('qb-price').value);
-      if (!name || !(price >= 0) || $('qb-price').value === '') { ui.formError('qb-error', 'Enter a description and price for the custom line.'); return; }
-      lines.push({ name, qty, price, unit: '' });
-      $('qb-desc').value = ''; $('qb-price').value = '';
-    } else {
-      const p = pricebook.find((x) => String(x.id) === sel);
-      if (!p) return;
-      lines.push({ id: p.id, name: p.name, qty, price: fmt.num(p.price) || 0, unit: p.unit || '' });
-    }
-    ui.formError('qb-error', null);
-    $('qb-qty').value = '1';
-    renderLines();
-  }
-  function breakdownText() {
-    return 'Line items:\n' + lines.map((l) => '- ' + l.qty + ' x ' + l.name + (l.unit ? ' (' + l.unit + ')' : '') + ' @ ' + fmt.money(l.price) + ' = ' + fmt.money(lineTotal(l))).join('\n') +
-      '\nTotal: ' + fmt.money(quoteTotal());
-  }
-  async function saveQuote() {
-    const total = quoteTotal();
-    if (!lines.length || !(total > 0)) { ui.formError('qb-error', 'Add at least one line with a price before saving.'); return; }
-    const extra = $('qb-notes').value.trim();
-    const notes = breakdownText() + (extra ? '\n\n' + extra : '');
-    $('qb-save').disabled = true;
-    try {
-      if (job.quote) await api.patch('/api/quotes/' + job.quote.id, { amount: total, notes, version: job.quote.version });
-      else await api.post('/api/quotes', { jobId: Number(jobId), amount: total, notes });
-      $('quote-builder').hidden = true;
-      ui.toast('Quote saved: ' + fmt.money(total) + '.', 'ok');
-      await load();
-    } catch (e) { ui.formError('qb-error', e); if (e.status === 409) await load(); }
-    finally { $('qb-save').disabled = false; }
-  }
-  async function setQuoteStatus(status) {
-    try { await api.patch('/api/quotes/' + job.quote.id, { status, version: job.quote.version }); ui.toast('Quote marked ' + fmt.statusLabel(status).toLowerCase() + '.', 'ok'); }
-    catch (e) { ui.toast(e.message, 'error'); }
-    await load();
-  }
-
-  // ── Invoice ─────────────────────────────────────────────────────────────────
-  function openInvoice() {
-    if (job.invoice) return;
-    $('quote-builder').hidden = true;
-    const q = job.quote;
-    const amount = q && fmt.num(q.amount) > 0 ? fmt.num(q.amount) : '';
-    $('inv-amount').value = amount === '' ? '' : amount.toFixed(2);
-    $('inv-due').value = fmt.addDays(fmt.todayISO(), 14);
-    $('inv-notes').value = '';
-    $('inv-source').textContent = q
-      ? 'Amount taken from quote #' + q.id + (q.status === 'approved' ? ' (approved).' : ' (status: ' + fmt.statusLabel(q.status).toLowerCase() + '). Check it before confirming.')
-      : 'There is no quote for this job. Enter the amount to invoice.';
-    ui.formError('inv-error', null);
-    $('billing-actions').hidden = true;
-    $('invoice-panel').hidden = false;
-    $('inv-amount').focus();
-  }
-  async function confirmInvoice() {
-    const amount = Number($('inv-amount').value);
-    if (!(amount > 0) || !Number.isFinite(amount)) { ui.formError('inv-error', 'Enter an amount greater than 0.'); return; }
-    $('btn-confirm-invoice').disabled = true;
-    try {
-      const inv = await api.post('/api/invoices', { jobId: Number(jobId), amount: Math.round(amount * 100) / 100, dueDate: $('inv-due').value || undefined, notes: $('inv-notes').value.trim() || undefined });
-      $('invoice-panel').hidden = true;
-      ui.toast('Invoice #' + inv.id + ' created for ' + fmt.money(inv.amount) + '.', 'ok');
-      await load();
-    } catch (e) {
-      ui.formError('inv-error', e.status === 409 ? 'This job already has an invoice. Reload to see it.' : e);
-      if (e.status === 409) await load();
-    } finally { $('btn-confirm-invoice').disabled = false; }
-  }
-  async function markPaid() {
-    try { await api.patch('/api/invoices/' + job.invoice.id, { status: 'paid', version: job.invoice.version }); ui.toast('Invoice marked paid.', 'ok'); }
-    catch (e) { ui.toast(e.message, 'error'); }
-    await load();
   }
 
   // ── Presence (socket.io; token sent in the handshake) ──────────────────────
@@ -326,28 +421,24 @@
           patchJob(body, 'Schedule saved.');
         });
       }
+      $('activity-more').addEventListener('click', () => loadActivity(true));
       if (auth.isAdmin()) {
-        $('btn-build-quote').addEventListener('click', openBuilder);
-        $('btn-create-invoice').addEventListener('click', openInvoice);
-        $('qb-add').addEventListener('click', addLine);
-        $('qb-item').addEventListener('change', () => { $('qb-custom').hidden = $('qb-item').value !== 'custom'; });
-        $('qb-save').addEventListener('click', saveQuote);
-        $('qb-cancel').addEventListener('click', () => { $('quote-builder').hidden = true; renderBilling(); });
-        $('qb-lines').addEventListener('input', (e) => {
-          const i = e.target.getAttribute('data-line'); if (i == null) return;
-          const q = Number(e.target.value); if (q > 0) { lines[i].qty = q; $('qb-total').textContent = fmt.money(quoteTotal()); }
+        $('billing-card').addEventListener('click', (e) => {
+          const id = e.target.id;
+          if (id === 'btn-build-quote') openEditor('quote', null);
+          else if (id === 'btn-create-invoice') openEditor('invoice', null);
+          else if (id === 'btn-edit-quote') openEditor('quote', docs.quote);
+          else if (id === 'btn-edit-invoice') openEditor('invoice', docs.invoice);
+          else if (id === 'btn-convert') openConvert();
+          else if (id === 'btn-email-quote') openEmail('quote');
+          else if (id === 'btn-email-invoice') openEmail('invoice');
+          else if (id === 'btn-mark-paid') setStatus('invoice', 'paid');
         });
-        $('qb-lines').addEventListener('change', (e) => { if (e.target.getAttribute('data-line') != null) renderLines(); });
-        $('qb-lines').addEventListener('click', (e) => {
-          const b = e.target.closest('[data-remove]'); if (!b) return;
-          lines.splice(Number(b.getAttribute('data-remove')), 1); renderLines();
-        });
-        $('btn-confirm-invoice').addEventListener('click', confirmInvoice);
-        $('btn-cancel-invoice').addEventListener('click', () => { $('invoice-panel').hidden = true; renderBilling(); });
-        $('inv-list').addEventListener('change', (e) => { if (e.target.id === 'quote-status') setQuoteStatus(e.target.value); });
-        $('inv-list').addEventListener('click', (e) => { if (e.target.id === 'btn-mark-paid') markPaid(); });
-        if (location.hash === '#quote' && !job.invoice) openBuilder();
-        if (location.hash === '#invoice' && !job.invoice) openInvoice();
+        $('billing-card').addEventListener('change', (e) => { const t = e.target.getAttribute('data-status'); if (t) setStatus(t, e.target.value); });
+        $('convert-form').addEventListener('submit', confirmConvert);
+        $('email-form').addEventListener('submit', sendEmail);
+        if (location.hash === '#quote' && !job.quote && !job.invoice) openEditor('quote', null);
+        if (location.hash === '#invoice' && !job.invoice) openEditor('invoice', null);
       }
     },
   });

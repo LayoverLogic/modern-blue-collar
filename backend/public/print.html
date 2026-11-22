@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Print</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="css/app.css" />
+  <link rel="stylesheet" href="css/print.css" />
+  <!-- Paper size: js/pages/print.js points this at page-a4.css outside the US / Canada. -->
+  <link rel="stylesheet" href="css/page-letter.css" id="page-size" />
+  <script src="js/format.js"></script>
+  <script src="js/brand.js"></script>
+</head>
+<body class="print-page">
+<nav id="topnav" class="no-print"></nav>
+<main>
+  <div class="print-toolbar no-print">
+    <a href="dispatch.html" class="back-link" id="back-link">&larr; Back to the job</a>
+    <div class="page-actions">
+      <span class="muted small" id="paper-note"></span>
+      <button class="btn btn-primary" type="button" id="btn-print">Print / Save as PDF</button>
+    </div>
+  </div>
+  <div id="rc-placeholder-banner" class="notice warn no-print" hidden></div>
+  <div id="loading-msg" class="empty">Loading&hellip;</div>
+  <div id="error-msg" class="empty error-text" hidden></div>
+
+  <article class="sheet" id="sheet" hidden>
+    <span class="stamp" id="p-stamp" hidden></span>
+    <header class="sheet-head">
+      <div class="seller">
+        <img id="p-logo" class="p-logo" alt="" hidden />
+        <div class="seller-name" id="p-seller-name"></div>
+        <div class="seller-lines" id="p-seller-lines"></div>
+      </div>
+      <div class="doc-id">
+        <h1 id="p-title"></h1>
+        <dl class="doc-facts" id="p-facts"></dl>
+      </div>
+    </header>
+
+    <section class="parties">
+      <div>
+        <div class="p-label" id="p-to-label">Bill to</div>
+        <div class="p-customer" id="p-customer"></div>
+      </div>
+      <div id="p-job-box">
+        <div class="p-label">Job</div>
+        <div id="p-job"></div>
+      </div>
+    </section>
+
+    <table class="p-lines">
+      <thead id="p-lines-head"></thead>
+      <tbody id="p-lines-body"></tbody>
+    </table>
+
+    <section class="p-totals" id="p-totals"></section>
+    <p class="p-rc-note" id="p-rc-note" hidden></p>
+    <section class="p-notes" id="p-notes" hidden></section>
+    <footer class="sheet-foot" id="p-foot"></footer>
+  </article>
+</main>
+<script src="js/api.js"></script>
+<script src="js/nav.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/documents.js"></script>
+<script src="js/pages/print.js"></script>
+</body>
+</html>

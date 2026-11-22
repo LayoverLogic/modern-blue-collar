@@ -1,4 +1,5 @@
-/* quote-invoice.html — billing lists (admin). Quote/invoice customer comes from job.customer; amount from amount. */
+/* quote-invoice.html — billing lists (admin): document numbers (Q-0001 / INV-0001), totals in each
+ * document's currency, print links. Customer comes from job.customer; total from amount. */
 (function () {
   'use strict';
   const { fmt, api, ui } = window.MBC;
@@ -11,7 +12,7 @@
     tab = t;
     document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x.dataset.tab === t));
     $('status-filter').innerHTML = '<option value="">All statuses</option>' + STATUSES[t].map((s) => '<option value="' + s + '">' + fmt.statusLabel(s) + '</option>').join('');
-    $('table-head').innerHTML = '<tr><th>#</th><th>Customer</th><th>Job</th><th>Status</th><th class="num">Amount</th><th>' + (t === 'quotes' ? 'Created' : 'Due') + '</th></tr>';
+    $('table-head').innerHTML = '<tr><th>Number</th><th>Customer</th><th>Job</th><th>Status</th><th class="num">Total</th><th>' + (t === 'quotes' ? 'Issued' : 'Due') + '</th><th><span class="sr-only">Print</span></th></tr>';
     render();
   }
 
@@ -20,19 +21,21 @@
     const st = $('status-filter').value;
     const list = (tab === 'quotes' ? quotes : invoices).filter((i) => {
       const job = i.job || {};
-      const hay = [fmt.name(job.customer), job.title, '#' + i.id, 'job #' + i.jobId].join(' ').toLowerCase();
+      const hay = [fmt.name(job.customer), job.title, i.number, '#' + i.id, 'job #' + i.jobId].join(' ').toLowerCase();
       return (!q || hay.includes(q)) && (!st || i.status === st);
     });
     $('list-tbody').innerHTML = list.length ? list.map((i) => {
       const job = i.job || {};
       const href = 'job.html?id=' + encodeURIComponent(i.jobId);
-      return '<tr class="clickable" data-href="' + href + '"><td data-label="#"><a class="row-link" href="' + href + '">#' + fmt.esc(i.id) + '</a></td>' +
+      const type = tab === 'quotes' ? 'quote' : 'invoice';
+      return '<tr class="clickable" data-href="' + href + '"><td data-label="Number"><a class="row-link" href="' + href + '">' + fmt.esc(i.number || '#' + i.id) + '</a></td>' +
         '<td data-label="Customer">' + fmt.text(fmt.name(job.customer)) + '</td>' +
         '<td data-label="Job">#' + fmt.esc(i.jobId) + ' ' + fmt.esc(job.title || '') + '</td>' +
         '<td data-label="Status">' + fmt.badge(i.status) + '</td>' +
-        '<td data-label="Amount" class="num">' + fmt.money(i.amount) + '</td>' +
-        '<td data-label="' + (tab === 'quotes' ? 'Created' : 'Due') + '">' + fmt.esc(fmt.date(tab === 'quotes' ? i.createdAt : i.dueDate)) + '</td></tr>';
-    }).join('') : '<tr><td colspan="6" class="empty">No ' + tab + ' found.</td></tr>';
+        '<td data-label="Total" class="num">' + fmt.esc(fmt.money(i.amount, i.currency)) + '</td>' +
+        '<td data-label="' + (tab === 'quotes' ? 'Issued' : 'Due') + '">' + fmt.esc(tab === 'quotes' ? fmt.date(i.issuedAt || i.createdAt) : (i.dueDate ? fmt.date(String(i.dueDate).slice(0, 10)) : fmt.DASH)) + '</td>' +
+        '<td data-label="Print"><a class="btn btn-outline btn-sm" href="print.html?type=' + type + '&id=' + encodeURIComponent(i.id) + '" target="_blank" rel="noopener">Print</a></td></tr>';
+    }).join('') : '<tr><td colspan="7" class="empty">No ' + tab + ' found.</td></tr>';
   }
 
   function stats() {
