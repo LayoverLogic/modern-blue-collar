@@ -20,7 +20,10 @@ const { parseId, badRequest } = require('../helpers/httpError');
 
 const prisma = require('../helpers/prisma');
 
-const VALID_SCOPES = ['read', 'write'];
+// read  = GET / HEAD, write = POST / PUT / PATCH / DELETE (routes/auth.js requireAuth)
+// export = may also download the whole-company zip GET /api/exports/all (with read;
+//          a write key may too) — a read-only reporting key cannot (B4 Info item)
+const VALID_SCOPES = ['read', 'write', 'export'];
 
 // All routes require a signed-in admin+ (API keys cannot mint or revoke keys)
 router.use(requireAuth);

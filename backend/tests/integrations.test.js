@@ -718,6 +718,36 @@ test('exports/all: zip of every table + photos, manifest row counts and sha256 v
 // ═════════════════════════════════════════════════════════════════════════════
 // Xero
 // ═════════════════════════════════════════════════════════════════════════════
+test('L9 csv: + / - cells that can only be numbers are not prefixed; every formula still is', () => {
+  const { csvCell } = require('../helpers/csv');
+  const cell = (v) => csvCell(v).slice(1, -1).replace(/""/g, '"');
+  for (const plain of ['+15555550110', '+353 87 123 4567', '+1 620 555 0142', '-12.50', '-3']) assert.equal(cell(plain), plain, plain);
+  for (const f of ['=1+1', '+1-620-555-0142', '+A1', '+1+cmd|x!A0', '-1+1', '-2+3', '- 3', '@SUM(1)', '+353 (0)87', '\t1', '-1e3', '+', '-'] ) {
+    assert.equal(cell(f), `'${f}`, `${JSON.stringify(f)} must stay escaped`);
+  }
+});
+
+test('Info: an API key needs the export (or write) scope for GET /api/exports/all; read is enough for the CSV exports', async () => {
+  const mk = async (scopes) => {
+    const r = await S.api('POST', '/api/api-keys', { token: U.admin.token, body: { name: `exp-${scopes.join('-')}-${RUN}`, scopes } });
+    assert.equal(r.status, 201, r.text);
+    return r.json.key || r.json.apiKey || r.json.plaintext;
+  };
+  const readKey = await mk(['read']);
+  const denied = await S.api('GET', '/api/exports/all?photos=false', { headers: { 'X-API-Key': readKey } });
+  assert.equal(denied.status, 403, denied.text);
+  assert.equal(denied.json.code, 'SCOPE_REQUIRED');
+  assert.equal((await S.api('GET', '/api/exports/customers', { headers: { 'X-API-Key': readKey } })).status, 200, 'single-table CSV export with a read key');
+  for (const scopes of [['read', 'export'], ['read', 'write']]) {
+    const ok = await S.api('GET', '/api/exports/all?photos=false', { headers: { 'X-API-Key': await mk(scopes) } });
+    assert.equal(ok.status, 200, `${scopes}: ${ok.status}`);
+    assert.equal(ok.headers['content-type'], 'application/zip');
+  }
+  assert.equal((await S.api('POST', '/api/api-keys', { token: U.admin.token, body: { name: `bad-${RUN}`, scopes: ['read', 'admin'] } })).json.code, 'INVALID_SCOPES');
+  // signed-in admins are unaffected
+  assert.equal((await S.api('GET', '/api/exports/all?photos=false', { token: U.admin.token })).status, 200);
+});
+
 test('xero: line tax allocation sums exactly to the document tax per rate group', () => {
   const { allocateLineTax } = require('../helpers/xero');
   const lines = [
@@ -957,6 +987,12 @@ test('qbo payment sync-back: full payment marks the invoice paid (paidAt = payme
   stub.pay(pushed.qboId, full.Balance, '2026-11-20');
   stub.pay(po.json.qbo.id, 50, '2026-11-21');
   stub.payments.push({ Id: '77777', TxnDate: '2026-11-21', TotalAmt: 10, Line: [{ Amount: 10, LinkedTxn: [{ TxnId: '55555', TxnType: 'Invoice' }] }], MetaData: { LastUpdatedTime: new Date().toISOString() } });
+  // L11: one fixed LastUpdatedTime for all three. With wall-clock times the
+  // cursor (newest LastUpdatedTime seen, inclusive) re-read the full payment
+  // only when all three were created in the same millisecond, so the
+  // "re-run is a no-op / alreadyClosed" assertions below were flaky.
+  const STAMP = '2026-11-21T10:00:00.000Z';
+  for (const p of stub.payments) p.MetaData = { ...p.MetaData, LastUpdatedTime: STAMP };
   stub.reset();
   const r = await Q.api('POST', '/api/quickbooks/sync-payments', { token: qboAdmin, body: { since: '2026-01-01T00:00:00Z' } });
   assert.equal(r.status, 200, r.text);
@@ -970,8 +1006,11 @@ test('qbo payment sync-back: full payment marks the invoice paid (paidAt = payme
   assert.equal(paid.status, 'paid'); assert.equal(paid.paidAt.toISOString().slice(0, 10), '2026-11-20');
   assert.equal((await prisma.invoice.findUnique({ where: { id: other.id } })).status, 'unpaid');
   // cursor stored; second run marks nothing again
+  assert.equal(r.json.nextSince, STAMP, 'cursor = newest LastUpdatedTime seen');
   const again = await Q.api('POST', '/api/quickbooks/sync-payments', { token: qboAdmin });
   assert.equal(again.status, 200, again.text);
+  assert.equal(again.json.since, STAMP);
+  assert.equal(again.json.payments, stub.payments.length, 'the inclusive cursor re-reads the payments at the cursor');
   assert.equal(again.json.markedPaid.length, 0);
   assert.ok(again.json.alreadyClosed.some((x) => x.invoiceId === pushed.invoice.id));
   const st = await Q.api('GET', '/api/quickbooks/status', { token: qboAdmin });

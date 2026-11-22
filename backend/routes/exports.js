@@ -9,6 +9,7 @@
  *   GET /api/exports/all[?photos=false] → <Company>_export_<date>.zip — the client's exit export:
  *       every table as CSV (secrets dropped), job photos from storage, manifest.json with row
  *       counts + sha256 per file, SHA256SUMS (verify with `sha256sum -c SHA256SUMS`).
+ *       API keys need the `export` (or `write`) scope on top of `read`.
  *
  * Content-Disposition carries an ASCII `filename` fallback plus an RFC 5987
  * `filename*=UTF-8''…` (WL-14). Formula injection (RT-10): cells starting with = + - @ TAB CR
@@ -20,6 +21,7 @@ const express = require('express');
 const path    = require('path');
 const router  = express.Router();
 const { requireAuth, requireRole } = require('./auth');
+const { requireAnyScope } = require('../middleware/apiKeyAuth');
 const { ADMIN } = require('../helpers/roles');
 const brand   = require('../../brand.config');
 const { csvCell, csvLine, toCSV, contentDisposition } = require('../helpers/csv');
@@ -218,7 +220,8 @@ async function* tableCsv(table, columns, scale, counter) {
 
 const safeName = (s) => String(s || '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^\.+/, '').slice(0, 80) || 'photo';
 
-router.get('/all', requireAuth, requireRole(...ADMIN), async (req, res, next) => {
+// API keys: a read scope is not enough for everything at once — needs export or write
+router.get('/all', requireAuth, requireRole(...ADMIN), requireAnyScope('export', 'write'), async (req, res, next) => {
   let zip = null;
   let claimed = false;
   try {

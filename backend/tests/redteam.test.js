@@ -551,7 +551,8 @@ test('RT-10 CSV exports neutralise spreadsheet formulas', async () => {
   const line = r.text.split('\n').find((l) => l.startsWith(`"${c.id}",`));
   assert.ok(line, 'customer row missing from export');
   const cells = line.match(/"((?:[^"]|"")*)"/g).map((x) => x.slice(1, -1).replace(/""/g, '"'));
-  const dangerous = cells.filter((v) => /^[=+\-@\t\r]/.test(v));
+  // L9: a + / - cell that is only a number (E.164 phone, negative amount) cannot be a formula
+  const dangerous = cells.filter((v) => /^[=+\-@\t\r]/.test(v) && !/^(\+[0-9 ]+|-[0-9]+(\.[0-9]+)?)$/.test(v));
   assert.deepEqual(dangerous, [], 'formula-leading cells must be escaped (e.g. prefixed with \')');
 });
 

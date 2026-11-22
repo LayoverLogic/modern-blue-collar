@@ -3,7 +3,20 @@
  *
  * Writing (exports):
  *   csvCell(v)            one quoted cell; formula-injection safe (RT-10): a cell
- *                         starting with = + - @ TAB or CR gets a leading apostrophe
+ *                         starting with = + - @ TAB or CR gets a leading apostrophe,
+ *                         EXCEPT plain numbers that cannot be formulas (L9):
+ *                           ^\+[0-9 ]+$          E.164 / international phones "+353 87 123 4567"
+ *                           ^-[0-9]+(\.[0-9]+)?$  negative amounts "-12.50"
+ *                         Such a cell holds only digits, spaces and one sign: no
+ *                         function name, cell / sheet reference, DDE (| !) or string,
+ *                         so a spreadsheet can at most read it as a number — it cannot
+ *                         call anything or fetch anything. Apache Superset exempts
+ *                         negative numbers the same way (superset/utils/csv.py,
+ *                         negative_number_re); LibreOffice Calc (checked: soffice CSV
+ *                         import, formulas evaluated) reads "+15555550110" as a number
+ *                         and "+353 87 123 4567" as text, while "=1+1" stays a formula.
+ *                         OWASP's list of trigger characters is unchanged for every
+ *                         other value (+1-620-555… , +A1, -1+1, =…, @… still get the ').
  *   toCSV(rows, columns)  header + rows; `columns` are keys of each row object
  *   csvLine(values)       one line from an array of values
  *   contentDisposition(f) RFC 6266 / 5987 header: ASCII fallback + filename*=UTF-8''…
@@ -31,9 +44,12 @@ function cellText(value) {
   return String(value);
 }
 
+// L9: values that start with + or - but can only ever be a number
+const SAFE_SIGNED = /^(\+[0-9 ]+|-[0-9]+(\.[0-9]+)?)$/;
+
 function csvCell(value) {
   let v = cellText(value);
-  if (/^[=+\-@\t\r]/.test(v)) v = `'${v}`;
+  if (/^[=+\-@\t\r]/.test(v) && !SAFE_SIGNED.test(v)) v = `'${v}`;
   return `"${v.replace(/"/g, '""')}"`;
 }
 

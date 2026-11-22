@@ -87,4 +87,17 @@ function requireScope(...needed) {
   };
 }
 
-module.exports = { authenticateApiKey, requireScope, parseScopes, PREFIX_LENGTH, LEGACY_PREFIX_LENGTH };
+/**
+ * Like requireScope, but ANY one of the scopes is enough.
+ *   router.get('/all', requireAuth, requireAnyScope('export', 'write'), handler)
+ */
+function requireAnyScope(...anyOf) {
+  return (req, res, next) => {
+    if (!req.apiKey) return next();
+    const has = req.user.scopes || [];
+    if (anyOf.some((s) => has.includes(s))) return next();
+    return res.status(403).json({ error: `API key needs one of the scopes: ${anyOf.join(', ')}`, code: 'SCOPE_REQUIRED', scopes: anyOf });
+  };
+}
+
+module.exports = { authenticateApiKey, requireScope, requireAnyScope, parseScopes, PREFIX_LENGTH, LEGACY_PREFIX_LENGTH };
