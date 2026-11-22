@@ -1307,3 +1307,9 @@ test('L8 / D1 sandbox.js keeps the env file private (0600) and derives a localho
     await new Promise((res) => { if (child.exitCode != null) res(); else child.once('exit', res); setTimeout(res, 4000); });
   }
 });
+
+test('H1 no client name from the fork left in tracked files', () => {
+  const word = ['kr', 'aft'].join(''); // not spelled out, so this file does not match itself
+  const r = spawnSync('git', ['grep', '-n', '-i', '-I', word, '--', '.', ':!backend/package-lock.json'], { cwd: path.join(BACKEND, '..'), encoding: 'utf8' });
+  assert.equal(r.stdout.trim(), '', `tracked files mention the fork's client: ${r.stdout}`);
+});
