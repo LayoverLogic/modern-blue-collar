@@ -30,3 +30,8 @@ logs/
 # Build artifacts
 dist/
 build/
+
+# White-label demo tooling (backend/scripts/seed-demo.js, demo-check.js)
+# Generated per-prospect env files and the real client-name denylist
+backend/.env.demo.*
+backend/demo/denylist.local.txt

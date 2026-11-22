@@ -9,7 +9,9 @@
  *      Real environment variables override it; ENV_FILE=<file> picks another file.
  *   2. Create the database named in DATABASE_URL if it does not exist.
  *   3. Apply migrations (scripts/migrate-deploy.mjs — WASM schema engine).
- *   4. If DEMO_MODE=true, seed demo data (idempotent).
+ *   4. If DEMO_MODE=true, seed demo data (idempotent) for DEMO_PROSPECT
+ *      (backend/demo/prospects/<slug>.json, default "default" = generic Anytown).
+ *      Per-prospect env files: node scripts/seed-demo.js --prospect <slug> --print-env
  *   5. Start the server (skip with --no-start, i.e. `npm run sandbox:setup`).
  *
  * Needs a reachable PostgreSQL; no Docker, no S3, no SMTP, no internet.
@@ -93,7 +95,7 @@ async function ensureDatabase() {
   runNode([path.join(__dirname, 'migrate-deploy.mjs')], 'migrate deploy');
 
   if (process.env.DEMO_MODE === 'true') {
-    step('DEMO_MODE=true → seeding demo data (idempotent)...');
+    step(`DEMO_MODE=true → seeding demo data (idempotent), prospect "${process.env.DEMO_PROSPECT || 'default'}"...`);
     for (const seed of ['seed_superadmin.js', 'seed_pricebook.js', 'seed_jobs.js']) {
       runNode([path.join(backendDir, seed)], seed);
     }

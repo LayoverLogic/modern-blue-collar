@@ -17,14 +17,19 @@
  *        --page <path>     page to open, e.g. "job.html?id=1" (default index.html)
  *        --email <addr>    login email (default admin@demo.test, password demo1234)
  *        --mobile          390x844 phone viewport instead of 1366x900
+ *        --text-limit <n>  characters of visible text to print (default 1500;
+ *                          demo-check passes a large value to scan whole pages)
  *        --repair-onclick-quotes
  *                          TEMPORARY audit aid: rewrites the broken
  *                          onclick="location.href='x.html?id='+id+''" quoting in
  *                          the served HTML in-flight (no source change) so pages
  *                          whose inline script fails to parse can still be seen.
  *   CHROME_PATH overrides the browser (default /usr/bin/google-chrome).
+ *   BRAND_SHOT_TOKEN=<jwt> skips the login (demo-check logs in once and passes it,
+ *   so a run over many pages does not trip the login rate limiter).
  *
- * Prints JSON: page title, console/page errors, first 1500 chars of visible text.
+ * Prints JSON: page title, console/page errors, HTTP >= 400 responses (httpErrors), the visible text (first --text-limit chars).
+ * Also used by `npm run demo:check -- --headless` (scripts/demo-check.js).
  */
 const puppeteer = require('puppeteer-core');
 
@@ -42,14 +47,18 @@ function arg(name, def) {
   const email  = arg('email', 'admin@demo.test');
   const mobile = arg('mobile', false) === true;
   const repair = arg('repair-onclick-quotes', false) === true;
+  const textLimit = Number(arg('text-limit', 1500)) || 1500;
   const base   = `http://localhost:${port}`;
 
-  const login = await fetch(base + '/api/auth/login', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password: process.env.DEMO_PASSWORD || 'demo1234' }),
-  });
-  const { token } = await login.json();
-  if (!token) throw new Error(`login failed for ${email} (HTTP ${login.status})`);
+  let token = process.env.BRAND_SHOT_TOKEN;
+  if (!token) {
+    const login = await fetch(base + '/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: process.env.DEMO_PASSWORD || 'demo1234' }),
+    });
+    ({ token } = await login.json());
+    if (!token) throw new Error(`login failed for ${email} (HTTP ${login.status})`);
+  }
 
   const browser = await puppeteer.launch({
     executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome',
@@ -59,7 +68,10 @@ function arg(name, def) {
   await p.setViewport(mobile ? { width: 390, height: 844, isMobile: true, hasTouch: true } : { width: 1366, height: 900 });
   const errs = [];
   p.on('pageerror', (e) => errs.push('pageerror: ' + e.message));
-  p.on('console', (m) => { if (m.type() === 'error') errs.push('console: ' + m.text()); });
+  const httpErrors = [];
+  // "Failed to load resource" console lines carry no URL; record them as httpErrors instead.
+  p.on('console', (m) => { if (m.type() === 'error' && !/^Failed to load resource/.test(m.text())) errs.push('console: ' + m.text()); });
+  p.on('response', (r) => { if (r.status() >= 400) httpErrors.push(`${r.status()} ${new URL(r.url()).pathname}`); });
 
   if (repair) {
     await p.setRequestInterception(true);
@@ -79,6 +91,6 @@ function arg(name, def) {
   if (out !== '-') await p.screenshot({ path: out, fullPage: !mobile });
 
   const text = await p.evaluate(() => document.body.innerText);
-  console.log(JSON.stringify({ page, title: await p.title(), errs, text: text.slice(0, 1500) }, null, 1));
+  console.log(JSON.stringify({ page, title: await p.title(), errs, httpErrors, text: text.slice(0, textLimit) }, null, 1));
   await browser.close();
 })().catch((e) => { console.error(e.message || e); process.exit(1); });

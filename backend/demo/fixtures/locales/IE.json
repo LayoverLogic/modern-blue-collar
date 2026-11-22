@@ -1,0 +1,112 @@
+{
+  "code": "IE",
+  "currency": "EUR",
+  "priceFactor": 0.85,
+  "timezone": "Europe/Dublin",
+  "invoiceTermsDays": 30,
+  "phone": {
+    "note": "ComReg reserves 020 91x xxxx and 089 011 0xxx for drama/fictional use.",
+    "landline": "020 910 01{nn}",
+    "mobile": "089 011 01{nn}",
+    "pattern": "^(020 91\\d \\d{4}|089 011 0\\d{3})$"
+  },
+  "customerEmailDomain": "example.com",
+  "firstNames": [
+    "Aoife",
+    "Ciarán",
+    "Niamh",
+    "Seán",
+    "Siobhán",
+    "Pádraig",
+    "Gráinne",
+    "Eoin",
+    "Orla",
+    "Cian",
+    "Róisín",
+    "Conor",
+    "Saoirse",
+    "Declan",
+    "Áine",
+    "Fionn",
+    "Clodagh",
+    "Ronan",
+    "Méabh",
+    "Tadhg",
+    "Ciara",
+    "Liam",
+    "Emer",
+    "Oisín"
+  ],
+  "lastNames": [
+    "Byrne",
+    "Murphy",
+    "Kelly",
+    "O'Brien",
+    "Walsh",
+    "Ryan",
+    "O'Connor",
+    "Doyle",
+    "McCarthy",
+    "Gallagher",
+    "Kavanagh",
+    "Brennan",
+    "Lynch",
+    "Fitzgerald",
+    "Nolan",
+    "Dunne",
+    "Quinn",
+    "Moran",
+    "Healy",
+    "Brady"
+  ],
+  "streets": [
+    "Main Street",
+    "Church Road",
+    "Mill Lane",
+    "Abbey View",
+    "Castle Park",
+    "Oak Grove",
+    "Bridge Street",
+    "The Paddocks",
+    "Canal Walk",
+    "Fairgreen Road",
+    "Green Lane",
+    "Chapel Hill",
+    "Orchard Close",
+    "Station Road"
+  ],
+  "houseNumber": [
+    1,
+    120
+  ],
+  "postcode": {
+    "note": "Eircode = 3-char routing key (from the prospect's town) + 4-char unique id. Unique ids are random, so the codes are fictional.",
+    "uniqueChars": "ACDEFHKNPRTVWXY0123456789"
+  },
+  "commercial": [
+    [
+      "Canal Side",
+      "Dental Practice"
+    ],
+    [
+      "The Old Mill",
+      "Café"
+    ],
+    [
+      "Abbeyfield",
+      "Nursing Home"
+    ],
+    [
+      "Riverbank",
+      "Business Park"
+    ],
+    [
+      "Hillview",
+      "Veterinary Clinic"
+    ],
+    [
+      "Kilbrook",
+      "Community Centre"
+    ]
+  ]
+}
