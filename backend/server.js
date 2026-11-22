@@ -13,6 +13,9 @@ assertBootConfig();
 
 const brand = require('../brand.config');
 const { requireAuth, userFromToken } = require('./routes/auth');
+const prisma = require('./helpers/prisma');
+const { readsAll, assertJobRead, jobReadScope } = require('./helpers/access');
+const { parseId } = require('./helpers/httpError');
 const { errorHandler } = require('./helpers/errorHandler');
 
 const app    = express();
@@ -113,19 +116,34 @@ io.on('connection', (socket) => {
     currentJobId = null;
   }
 
-  // payload: { jobId } — any `user` field is ignored (identity = token)
+  // payload: { jobId } — any `user` field is ignored (identity = token).
+  // Only jobs the user may read (L1: TECH_VISIBILITY=own → a technician's own
+  // jobs); anything else is ignored, like a malformed event. `seq` drops the
+  // answer of an older event that resolves after a newer one.
+  let seq = 0;
   socket.on('viewing-job', safeHandler((payload) => {
     const jobId = parseJobId(payload);
     if (!jobId) return; // ignore malformed events
+    const mine = ++seq;
+    // office roles / TECH_VISIBILITY=all: any job id, no lookup (as before)
+    (readsAll(me) ? Promise.resolve() : assertJobRead(me, Number(jobId))).then(() => {
+      if (mine !== seq || !socket.connected) return;
+      joinJob(jobId);
+    }, () => {
+      if (mine === seq) socket.emit('presence-denied', { jobId });
+    }).catch((e) => console.warn('[SOCKET] viewing-job:', e.message));
+  }));
+
+  function joinJob(jobId) {
     leaveCurrent();
     currentJobId = jobId;
     if (!presence[currentJobId]) presence[currentJobId] = {};
     presence[currentJobId][socket.id] = { userId: me.id, firstName: me.firstName, lastName: me.lastName };
     socket.join(`job:${currentJobId}`);
     io.to(`job:${currentJobId}`).emit('presence-update', { jobId: currentJobId, viewers: presence[currentJobId] });
-  }));
+  }
 
-  socket.on('leave-job', safeHandler(() => leaveCurrent()));
+  socket.on('leave-job', safeHandler(() => { seq += 1; leaveCurrent(); }));
   socket.on('disconnect', safeHandler(() => leaveCurrent()));
 });
 
@@ -346,13 +364,25 @@ app.use(express.static(path.join(__dirname, 'public'), {
 }));
 
 // ── Presence REST endpoints (initial page load) — signed-in users only ──────
-app.get('/api/presence', requireAuth, (_req, res) => {
-  res.json(presence);
+// L1: TECH_VISIBILITY=own → a technician sees presence on their own jobs only.
+app.get('/api/presence', requireAuth, async (req, res, next) => {
+  try {
+    if (readsAll(req.user)) return res.json(presence);
+    const ids = Object.keys(presence).map(Number).filter(Number.isSafeInteger);
+    const own = ids.length ? await prisma.job.findMany({ where: { id: { in: ids }, ...jobReadScope(req.user) }, select: { id: true } }) : [];
+    const out = {};
+    for (const { id } of own) if (presence[String(id)]) out[String(id)] = presence[String(id)];
+    res.json(out);
+  } catch (e) { next(e); }
 });
 
-app.get('/api/presence/:jobId', requireAuth, (req, res) => {
-  const jobId = String(req.params.jobId);
-  res.json({ jobId, viewers: presence[jobId] || {} });
+app.get('/api/presence/:jobId', requireAuth, async (req, res, next) => {
+  try {
+    const id = parseId(req.params.jobId, 'jobId');
+    if (!readsAll(req.user)) await assertJobRead(req.user, id);
+    const jobId = String(id);
+    res.json({ jobId, viewers: presence[jobId] || {} });
+  } catch (e) { next(e); }
 });
 
 // ── API routes ──────────────────────────────────────────────────────────────

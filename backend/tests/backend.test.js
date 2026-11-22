@@ -867,7 +867,7 @@ test('2c WL-12 on an IE brand: national Irish numbers, Irish SMS', async () => {
 });
 
 // ── Sockets of deactivated / demoted / deleted users are dropped ────────────
-function liveSocket(base, token) {
+function liveSocket(base, token, jobId = 7777) {
   const frames = [];
   let closed = false;
   const ws = new WebSocket(`${base.replace(/^http/, 'ws')}/socket.io/?EIO=4&transport=websocket`);
@@ -876,7 +876,7 @@ function liveSocket(base, token) {
       const d = String(m.data);
       frames.push(d);
       if (d.startsWith('0{')) ws.send(`40${JSON.stringify({ token })}`);
-      else if (d.startsWith('40')) { ws.send('42["viewing-job",{"jobId":7777}]'); resolve(true); }
+      else if (d.startsWith('40')) { ws.send(`42["viewing-job",{"jobId":${jobId}}]`); resolve(true); }
       else if (d === '2') ws.send('3'); // engine.io ping → pong
       else if (d.startsWith('44')) resolve(false);
     };
@@ -899,17 +899,20 @@ test('2c sockets: deactivating, demoting or deleting a user disconnects their li
   const run = async (role, change) => {
     const u = await mkUser(role, `sock-${crypto.randomBytes(3).toString('hex')}`);
     const token = await login(u.email);
-    const bystander = liveSocket(srv.base, U.dispatcher.token);
-    const sock = liveSocket(srv.base, token);
+    // L1: a technician's presence counts only on their own job
+    const job = await mkJob((await mkCustomer()).id, { technicianId: u.id });
+    const bystander = liveSocket(srv.base, U.dispatcher.token, job.id);
+    const sock = liveSocket(srv.base, token, job.id);
     assert.equal(await sock.ready, true, `socket did not connect: ${sock.frames}`);
     assert.equal(await bystander.ready, true);
-    const presence = (await api('GET', '/api/presence/7777', { token: U.admin.token })).json.viewers;
+    await sleep(150); // the job-access check is asynchronous
+    const presence = (await api('GET', `/api/presence/${job.id}`, { token: U.admin.token })).json.viewers;
     assert.ok(Object.values(presence).some((v) => v.userId === u.id), 'not in presence');
     const r = await change(u);
     assert.equal(r.status, 200, r.text);
     assert.equal(await sock.dropped(), true, `socket of ${role} survived the change`);
     await sleep(100);
-    const after = (await api('GET', '/api/presence/7777', { token: U.admin.token })).json.viewers;
+    const after = (await api('GET', `/api/presence/${job.id}`, { token: U.admin.token })).json.viewers;
     assert.ok(!Object.values(after).some((v) => v.userId === u.id), 'presence entry left behind');
     assert.equal(await bystander.dropped(300), false, 'other users were disconnected too');
     bystander.close(); sock.close();
@@ -1206,4 +1209,33 @@ test('L7 NODE_ENV is case-insensitive: "Production" / " PRODUCTION " get every p
   await withEnv({ NODE_ENV: 'Production' }, () => assert.equal(require('../helpers/security').isProduction(), true));
   const { assertDemoDatabase } = require('../demo/lib/guard');
   assert.throws(() => assertDemoDatabase('postgresql://u:p@localhost/mbc_demo_x', { nodeEnv: 'Production', allowDb: null }), /NODE_ENV=production/);
+});
+
+test('L1 presence honours TECH_VISIBILITY=own: REST and socket only for the technician\'s own jobs', async () => {
+  const cust = await mkCustomer();
+  const own = await mkJob(cust.id, { technicianId: U.tech.id });
+  const other = await mkJob(cust.id, { technicianId: U.tech2.id });
+  // someone in the office is looking at the other technician's job
+  const office = liveSocket(srv.base, U.dispatcher.token, other.id);
+  assert.equal(await office.ready, true);
+  await sleep(150);
+  assert.equal((await api('GET', `/api/presence/${other.id}`, { token: U.tech.token })).status, 403, 'tech read presence of a job that is not theirs');
+  assert.equal((await api('GET', `/api/presence/${own.id}`, { token: U.tech.token })).status, 200);
+  assert.equal((await api('GET', '/api/presence/abc', { token: U.tech.token })).status, 400);
+  const all = (await api('GET', '/api/presence', { token: U.tech.token })).json;
+  assert.ok(!(String(other.id) in all), 'GET /api/presence lists another technician\'s job');
+  assert.ok(String(other.id) in (await api('GET', '/api/presence', { token: U.admin.token })).json, 'office still sees everything');
+  // socket: viewing someone else's job is refused (presence-denied, no presence-update, not in the room)
+  const got = await socketSession(srv.base, { token: U.tech.token, frames: [`42["viewing-job",{"jobId":${other.id}}]`] });
+  assert.ok(got.some((f) => f.startsWith('42["presence-denied"')), `no presence-denied: ${got}`);
+  assert.ok(!got.some((f) => f.startsWith('42["presence-update"')), 'tech received presence of a job that is not theirs');
+  const viewers = (await api('GET', `/api/presence/${other.id}`, { token: U.admin.token })).json.viewers;
+  assert.ok(!Object.values(viewers).some((v) => v.userId === U.tech.id));
+  const mine = await socketSession(srv.base, { token: U.tech.token, frames: [`42["viewing-job",{"jobId":${own.id}}]`] });
+  assert.ok(mine.some((f) => f.startsWith('42["presence-update"')), 'own job presence works');
+  office.close();
+  // TECH_VISIBILITY=all: technicians may read (and so see presence on) every job
+  const s = await bootServer({ TECH_VISIBILITY: 'all' });
+  assert.equal((await request(s.base, 'GET', `/api/presence/${other.id}`, { token: U.tech.token })).status, 200);
+  await s.stop();
 });
