@@ -11,6 +11,14 @@
  *
  * sendMail() resolves to { delivered, driver, messageId, file? } and never
  * throws for the `none` driver, so callers can still return the invite link.
+ * It DOES throw when the smtp transport fails (host unreachable, auth refused…).
+ *
+ * trySendMail() never throws: a transport failure resolves to
+ *   { delivered: false, driver, failed: true, reason }
+ * where reason is a short, safe description (describeMailError) — used by the
+ * invite / reset flows, which must not 500 when mail is down (GAP-4).
+ * mailFailedError(err) → HttpError 502 { code: 'EMAIL_FAILED', reason } for
+ * endpoints whose whole job is the email (quote / invoice email, GAP-5).
  */
 const fs   = require('fs');
 const path = require('path');
@@ -96,4 +104,33 @@ async function sendMail(msg, opts = {}) {
   return { delivered: true, driver, messageId: info.messageId, file: emlPath };
 }
 
-module.exports = { sendMail, getDriver, getOutboxDir };
+/** Short description of a transport error, safe to show an admin (no credentials). */
+function describeMailError(err) {
+  if (!err) return 'unknown error';
+  const code = err.code || err.responseCode || '';
+  let msg = String(err.message || err).split('\n')[0];
+  // never echo credentials that may appear in an SMTP URL
+  msg = msg.replace(/\/\/[^@\s/]+@/g, '//***@');
+  if (msg.length > 200) msg = `${msg.slice(0, 197)}...`;
+  return code && !msg.includes(String(code)) ? `${code}: ${msg}` : msg;
+}
+
+async function trySendMail(msg, opts = {}) {
+  let driver = 'none';
+  try {
+    driver = getDriver();
+    return await sendMail(msg, opts);
+  } catch (err) {
+    const reason = describeMailError(err);
+    console.warn(`[MAIL] send failed (driver=${driver}) to=${msg && msg.to}: ${reason}`);
+    return { delivered: false, driver, failed: true, reason };
+  }
+}
+
+function mailFailedError(err) {
+  const { HttpError } = require('./httpError');
+  const reason = typeof err === 'string' ? err : describeMailError(err);
+  return new HttpError(502, `The email could not be sent: ${reason}`, { code: 'EMAIL_FAILED', reason, delivered: false });
+}
+
+module.exports = { sendMail, trySendMail, getDriver, getOutboxDir, describeMailError, mailFailedError };

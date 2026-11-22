@@ -375,7 +375,7 @@ test('role matrix: admins cannot edit or invite admins; super-admin can promote'
 test('invites: POST /api/invites pre-creates the invited user (Google gate) — RT-29: no /api/auth/send', async () => {
   const email = `${RUN}-invitee@backend.test`;
   const r = await api('POST', '/api/invites', { token: U.admin.token, body: { email, role: 'technician', firstName: 'In', lastName: 'Vitee' } });
-  assert.equal(r.status, 200, r.text);
+  assert.equal(r.status, 201, r.text); // B3: 201 for a new user (+ password invite link)
   assert.equal(r.json.created, true);
   const row = await prisma.user.findUnique({ where: { email } });
   assert.equal(row.role, 'technician');
@@ -686,7 +686,7 @@ test('2c invites require firstName and lastName (400 REQUIRED); /api/users/techn
   assert.equal(noLast.json.field, 'lastName');
   assert.equal(await prisma.user.findUnique({ where: { email } }), null, 'a rejected invite created a user');
   const ok = await api('POST', '/api/invites', { token: U.admin.token, body: { email, firstName: 'Saoirse', lastName: 'Nolan', phone: '(620) 555-0123' } });
-  assert.equal(ok.status, 200, ok.text);
+  assert.equal(ok.status, 201, ok.text);
   const row = await prisma.user.findUnique({ where: { email } });
   assert.equal(`${row.firstName} ${row.lastName}`, 'Saoirse Nolan');
   assert.equal(row.phone, '+16205550123');

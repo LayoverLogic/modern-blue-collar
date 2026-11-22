@@ -519,10 +519,14 @@ test('documents: POST /api/quotes logs quote_created; status changes log "update
   assert.deepEqual(created.to, { quoteId: q.json.id, number: q.json.number, amount: 1251, currency: q.json.currency, status: 'draft' });
   assert.equal(created.actor.name, U.admin.name);
 
-  // a duplicate quote for the job is refused (409) → no second entry
-  const dup = await request('POST', '/api/quotes', { token: U.admin.token, body: { jobId: job.id, amount: 10 } });
-  assert.equal(dup.status, 409);
-  assert.equal((await feed(job.id)).filter((e) => e.type === 'quote_created').length, 1);
+  // B3 (GAP-8): a job may have a second quote → its own quote_created entry;
+  // a refused create (400) logs nothing
+  const second = await request('POST', '/api/quotes', { token: U.admin.token, body: { jobId: job.id, amount: 10 } });
+  assert.equal(second.status, 201, second.text);
+  assert.equal((await feed(job.id)).filter((e) => e.type === 'quote_created').length, 2);
+  const bad = await request('POST', '/api/quotes', { token: U.admin.token, body: { jobId: job.id, amount: -1 } });
+  assert.equal(bad.status, 400);
+  assert.equal((await feed(job.id)).filter((e) => e.type === 'quote_created').length, 2);
 
   // a PATCH that does not change status logs nothing
   const before = (await feed(job.id)).length;

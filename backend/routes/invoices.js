@@ -7,7 +7,9 @@
  *   GET    /api/invoices[?status=]            list (technicians: own jobs, RT-21), with lines
  *   GET    /api/invoices/:id                  invoice + lines + customer + `print` block + `locked`
  *   POST   /api/invoices                      { jobId, lines[] | amount, status?, dueDate?, notes?, reverseCharge?, issuedAt? }
- *   POST   /api/invoices/from-quote/:quoteId  { dueDate?, notes? } → copies lines, totals, currency, reverse charge
+ *   POST   /api/invoices/from-quote/:quoteId  { dueDate?, notes? } → copies lines, totals, currency, reverse charge;
+ *                                             sets quoteId. One live (non-void) invoice per quote → else 409 DUPLICATE.
+ *                                             A job may have several quotes and invoices (B3, GAP-8).
  *   PATCH  /api/invoices/:id                  same fields + version (PUT is an alias)
  *   DELETE /api/invoices/:id                  only while unpaid and never sent
  *   POST   /api/invoices/:id/email            { message? } → customer email, logs a communication, sets sentAt
@@ -42,8 +44,11 @@ router.post('/from-quote/:quoteId', requireAuth, requireRole(...BILLING), async 
     if (!quote) throw notFound('Quote not found');
     if (quote.status === 'declined') throw conflict('This quote was declined — it cannot be invoiced', { code: 'QUOTE_DECLINED' });
     docs.assertTotal('invoice', quote.amount);
-    const existing = await prisma.invoice.findUnique({ where: { jobId: quote.jobId }, select: { id: true, number: true } });
-    if (existing) throw conflict(`This job already has invoice ${existing.number}`, { code: 'DUPLICATE', invoiceId: existing.id });
+    // GAP-8: a job may have several invoices, but one quote is billed once
+    // (a voided invoice can be re-billed). The partial unique index
+    // "Invoice_quoteId_live_key" backs this up under concurrency (P2002 → 409).
+    const existing = await prisma.invoice.findFirst({ where: { quoteId: quote.id, status: { not: 'void' } }, select: { id: true, number: true } });
+    if (existing) throw conflict(`Quote ${quote.number} was already invoiced as ${existing.number}`, { code: 'DUPLICATE', invoiceId: existing.id });
     const d = { status: 'unpaid' };
     if (body.dueDate !== undefined) d.dueDate = v.date(body.dueDate, 'dueDate');
     d.notes = body.notes !== undefined ? v.str(body.notes, 'notes', { max: 5000 }) : quote.notes;
@@ -56,7 +61,7 @@ router.post('/from-quote/:quoteId', requireAuth, requireRole(...BILLING), async 
       const number = await docs.allocateNumber(tx, 'invoice', locale);
       const created = await tx.invoice.create({
         data: {
-          jobId: quote.jobId, number, ...d,
+          jobId: quote.jobId, quoteId: quote.id, number, ...d,
           amount: String(quote.amount), subtotal: String(quote.subtotal), taxTotal: String(quote.taxTotal),
           currency: quote.currency, reverseCharge: quote.reverseCharge,
           ...(lines.length ? { lines: { create: lines } } : {}),
@@ -68,7 +73,7 @@ router.post('/from-quote/:quoteId', requireAuth, requireRole(...BILLING), async 
         to: { invoiceId: created.id, number: created.number, amount: Number(created.amount), currency: created.currency, status: created.status, fromQuoteId: quote.id, fromQuoteNumber: quote.number },
       });
       return created;
-    }); // the job already has an invoice → P2002 → 409 DUPLICATE
+    }); // the quote already has a live invoice (concurrent request) → P2002 → 409 DUPLICATE
     res.status(201).json({ ...invoice, fromQuote: { id: quote.id, number: quote.number } });
   } catch (e) { next(e); }
 });

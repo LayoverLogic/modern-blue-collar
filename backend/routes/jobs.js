@@ -47,6 +47,7 @@ const activity = require('../helpers/activity');
 const { jobActivity } = require('./activity');
 
 const prisma = require('../helpers/prisma');
+const { DOCS_INCLUDE, withDocs } = require('../helpers/jobDocs');
 
 // In-memory upload; photo bytes are streamed straight to object storage.
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
@@ -58,10 +59,9 @@ const upload = multer({
 const ACTIVE_STATUSES = ['pending', 'scheduled', 'in-progress'];
 const TECH_EDITABLE   = ['status', 'notes', 'version'];
 const LIST_INCLUDE = {
-  customer:   { select: { id: true, firstName: true, lastName: true, phone: true, address: true, city: true, state: true } },
+  customer:   { select: { id: true, firstName: true, lastName: true, company: true, phone: true, address: true, city: true, state: true } },
   technician: { select: { id: true, firstName: true, lastName: true, phone: true } },
-  quote:      true,
-  invoice:    true,
+  ...DOCS_INCLUDE, // quotes[] / invoices[] (+ quote / invoice via withDocs)
 };
 const WRITE_INCLUDE = { customer: true, technician: { select: { id: true, firstName: true, lastName: true } } };
 
@@ -162,7 +162,7 @@ router.get('/', requireAuth, async (req, res, next) => {
       orderBy: [{ scheduledDate: 'asc' }, { scheduledTime: 'asc' }, { createdAt: 'desc' }],
       ...(take ? { take } : {}),
     });
-    res.json(jobs.map((j) => redactJob(req.user, j)));
+    res.json(jobs.map((j) => redactJob(req.user, withDocs(j))));
   } catch (err) { next(err); }
 });
 
@@ -176,13 +176,12 @@ router.get('/:id', requireAuth, async (req, res, next) => {
       include: {
         customer:   true,
         technician: { select: { id: true, firstName: true, lastName: true, phone: true, email: true } },
-        quote:      true,
-        invoice:    true,
+        ...DOCS_INCLUDE,
         jobParts:   { include: { inventoryItem: true } },
       },
     });
     if (!job) throw notFound('Job not found');
-    res.json(redactJob(req.user, job));
+    res.json(redactJob(req.user, withDocs(job)));
   } catch (err) { next(err); }
 });
 

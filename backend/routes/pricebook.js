@@ -21,6 +21,15 @@ const brand = require('../../brand.config');
 const { getLocale } = require('../helpers/locale');
 
 const prisma = require('../helpers/prisma');
+const multer = require('multer');
+const { requireSession } = require('./auth');
+const { badRequest } = require('../helpers/httpError');
+const { importPricebook, TEMPLATE } = require('../helpers/pricebookImport');
+const { contentDisposition } = require('../helpers/csv');
+
+const IMPORT_MAX_BYTES = 2 * 1024 * 1024;
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: IMPORT_MAX_BYTES, files: 1, fields: 5 } });
+const csvBody = express.text({ type: ['text/csv', 'text/plain', 'application/csv'], limit: IMPORT_MAX_BYTES });
 
 function itemFields(body, { create = false } = {}) {
   const d = {};
@@ -31,6 +40,7 @@ function itemFields(body, { create = false } = {}) {
   if (body.description !== undefined) d.description = v.str(body.description, 'description', { max: 2000 });
   if (body.unit !== undefined)        d.unit        = v.str(body.unit, 'unit', { max: 40 });
   if (body.taskCode !== undefined)    d.taskCode    = v.str(body.taskCode, 'taskCode', { max: 60 });
+  if (body.sku !== undefined)         d.sku         = v.str(body.sku, 'sku', { max: 60 }); // unique when set (409 DUPLICATE)
   if (body.price !== undefined)       d.price       = v.money(body.price, 'price', { required: false, min: 0 });
   if (body.cost !== undefined)        d.cost        = v.money(body.cost, 'cost', { required: false, min: 0 });
   if (body.taxable !== undefined)     d.taxable     = v.bool(body.taxable, 'taxable');
@@ -58,6 +68,41 @@ router.get('/', requireAuth, async (req, res, next) => {
     // `industry` keeps its old meaning for the UI: the label being shown
     res.json({ industry: where.industry || brand.industryLabel, tradeType: brand.tradeType, items });
   } catch (err) { next(err); }
+});
+
+// ── CSV import (B3, GAP-14) — helpers/pricebookImport.js ─────────────────────
+// GET  /api/pricebook/import/template.csv    the template (admin roles)
+// POST /api/pricebook/import?dryRun=true|false   multipart `file`, or a raw text/csv body.
+//      dryRun defaults to TRUE (nothing written). Report: created / updated / skipped / errored.
+router.get('/import/template.csv', requireAuth, requireRole(...PRICING), (_req, res) => {
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', contentDisposition('pricebook-template.csv'));
+  res.send(TEMPLATE);
+});
+
+router.post('/import', requireAuth, requireRole(...PRICING), (req, res, next) => {
+  const dry = typeof req.query.dryRun === 'string' ? req.query.dryRun.toLowerCase() : '';
+  if (dry && !['true', 'false', '1', '0'].includes(dry)) return next(badRequest('dryRun must be true or false', { code: 'INVALID_ENUM', field: 'dryRun', allowed: ['true', 'false'] }));
+  const dryRun = !(dry === 'false' || dry === '0');
+  // a real import needs a signed-in person (API keys: dry run only)
+  if (!dryRun && req.apiKey) return requireSession(req, res, next);
+  const handle = (buf) => importPricebook(prisma, buf, { dryRun, industryLabel: brand.industryLabel })
+    .then((report) => res.json(report)).catch(next);
+  if (req.is('multipart/form-data')) {
+    return upload.single('file')(req, res, (err) => {
+      if (err) {
+        if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: `File too large (max ${IMPORT_MAX_BYTES} bytes)`, code: 'FILE_TOO_LARGE' });
+        return res.status(400).json({ error: `Upload failed: ${err.message}`, code: 'INVALID_INPUT' });
+      }
+      if (!req.file) return next(badRequest('Attach the CSV as form field "file"', { code: 'REQUIRED', field: 'file' }));
+      handle(req.file.buffer);
+    });
+  }
+  csvBody(req, res, (err) => {
+    if (err) return next(err);
+    if (typeof req.body !== 'string' || !req.body.trim()) return next(badRequest('Send the CSV as multipart field "file" or as a text/csv body', { code: 'REQUIRED', field: 'file' }));
+    handle(Buffer.from(req.body, 'utf8'));
+  });
 });
 
 // GET /api/pricebook/:id

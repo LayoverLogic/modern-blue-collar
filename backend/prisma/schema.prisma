@@ -18,8 +18,34 @@ model User {
   phone     String?
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
-  jobs      Job[]
-  apiKeys   ApiKey[]
+  // Bumped to revoke every session token of the user (password change / reset,
+  // deactivation). Tokens carry it as `sv`. Migration 20261121180000.
+  sessionVersion     Int       @default(0)
+  // Temporary password (seed_superadmin, admin-created user, admin reset): until it
+  // is changed only /me, /me/password and logout are allowed (routes/auth.js).
+  mustChangePassword Boolean   @default(false)
+  passwordChangedAt  DateTime?
+  lastLoginAt        DateTime?
+  jobs       Job[]
+  apiKeys    ApiKey[]
+  authTokens AuthToken[]
+}
+
+// ─── AuthToken ────────────────────────────────────────────────────────────────
+// Single-use links: kind "reset" (forgot password / admin reset link, 30 min) and
+// "invite" (accept-invite → set password). Only the sha256 of the token is stored.
+model AuthToken {
+  id          Int       @id @default(autoincrement())
+  userId      Int
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind        String
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdById Int?
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, kind])
 }
 
 // ─── Customer ─────────────────────────────────────────────────────────────────
@@ -81,8 +107,10 @@ model Job {
   customerId    Int
   technician    User?     @relation(fields: [technicianId], references: [id])
   technicianId  Int?
-  quote         Quote?
-  invoice       Invoice?
+  // More than one quote / invoice per job since 20261121180000 (GAP-8). The API
+  // still returns `quote` / `invoice` (latest) next to `quotes` / `invoices`.
+  quotes        Quote[]
+  invoices      Invoice[]
   jobParts      JobPart[]
   photos        JobPhoto[]
   notes         String?
@@ -105,7 +133,7 @@ model Quote {
   // Sequential per type, e.g. Q-0001 (prefix BRAND_QUOTE_PREFIX). The app
   // allocates it inside the create transaction; the DB default covers direct inserts.
   number        String      @unique @default(dbgenerated("mbc_next_document_number('quote'::text, NULL::text)"))
-  jobId         Int         @unique
+  jobId         Int
   job           Job         @relation(fields: [jobId], references: [id])
   amount        Decimal     @db.Decimal(12, 2)
   subtotal      Decimal     @default(0) @db.Decimal(12, 2)
@@ -122,6 +150,9 @@ model Quote {
   version       Int         @default(1)
   createdAt     DateTime    @default(now())
   lines         QuoteLine[]
+  invoices      Invoice[]
+
+  @@index([jobId])
 }
 
 // ─── QuoteLine / InvoiceLine ──────────────────────────────────────────────────
@@ -175,8 +206,12 @@ model DocumentCounter {
 model Invoice {
   id            Int           @id @default(autoincrement())
   number        String        @unique @default(dbgenerated("mbc_next_document_number('invoice'::text, NULL::text)"))
-  jobId         Int           @unique
+  jobId         Int
   job           Job           @relation(fields: [jobId], references: [id])
+  // The quote it was made from (POST /api/invoices/from-quote). A partial unique
+  // index (migration) allows one non-void invoice per quote.
+  quoteId       Int?
+  quote         Quote?        @relation(fields: [quoteId], references: [id], onDelete: SetNull)
   amount        Decimal       @db.Decimal(12, 2)
   subtotal      Decimal       @default(0) @db.Decimal(12, 2)
   taxTotal      Decimal       @default(0) @db.Decimal(12, 2)
@@ -192,6 +227,9 @@ model Invoice {
   version       Int           @default(1)
   createdAt     DateTime      @default(now())
   lines         InvoiceLine[]
+
+  @@index([jobId])
+  @@index([quoteId])
 }
 
 // ─── InventoryItem ────────────────────────────────────────────────────────────
@@ -224,6 +262,8 @@ model JobPart {
 // The `industry` field mirrors BRAND_INDUSTRY_LABEL / brand.config.js
 model PriceBookItem {
   id          Int      @id @default(autoincrement())
+  // Optional stable key for CSV import (POST /api/pricebook/import); unique when set
+  sku         String?  @unique
   // industry: Electrical | Plumbing | HVAC | General Contracting
   industry    String   @default("Electrical")
   category    String

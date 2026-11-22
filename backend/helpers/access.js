@@ -103,6 +103,8 @@ function redactJob(user, job) {
   const out = { ...job };
   if ('quote' in out) out.quote = null;
   if ('invoice' in out) out.invoice = null;
+  if ('quotes' in out) out.quotes = [];
+  if ('invoices' in out) out.invoices = [];
   return out;
 }
 

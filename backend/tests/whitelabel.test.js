@@ -411,7 +411,7 @@ dbTest('demo:check passes on freshly seeded data (DB checks)', async () => {
 });
 
 dbTest('seed:demo writes an activity trail per job that matches the job (GTM-18)', async () => {
-  const jobs = await prisma.job.findMany({ include: { quote: true, invoice: true } });
+  const jobs = (await prisma.job.findMany({ include: { quotes: true, invoices: true } })).map((j) => ({ ...j, quote: j.quotes[0] || null, invoice: j.invoices[0] || null }));
   const users = new Map((await prisma.user.findMany()).map((u) => [u.id, u]));
   for (const j of jobs) {
     const a = await prisma.jobActivity.findMany({ where: { jobId: j.id }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });

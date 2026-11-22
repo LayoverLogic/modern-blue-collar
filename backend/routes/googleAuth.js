@@ -72,6 +72,8 @@ async function resolveGoogleUser(profile) {
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
     if (!existing.active) return { error: 'Account is deactivated. Contact an admin.' };
+    // A pending password invite is fulfilled by signing in with Google.
+    await prisma.authToken.updateMany({ where: { userId: existing.id, kind: 'invite', usedAt: null }, data: { usedAt: new Date() } }).catch(() => {});
     return { user: existing };
   }
 
@@ -160,10 +162,8 @@ router.post('/google/exchange', async (req, res, next) => {
     }
     const user = await prisma.user.findUnique({ where: { id: rec.userId } });
     if (!user || !user.active) return res.status(401).json({ error: 'Account is not active', code: 'INVALID_LOGIN_CODE' });
-    res.json({
-      token: signToken(user),
-      user: { id: user.id, email: user.email, role: user.role, firstName: user.firstName, lastName: user.lastName },
-    });
+    await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } }).catch(() => {});
+    res.json({ token: signToken(user), user: require('./auth').sessionUser(user) });
   } catch (err) { next(err); }
 });
 

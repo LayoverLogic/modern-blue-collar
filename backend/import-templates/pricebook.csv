@@ -1,0 +1,3 @@
+sku,name,category,subcategory,description,price,cost,unit,taxRateKey,taxable,active
+SVC-CALL,Service call,Service,,Diagnostic visit (first 30 minutes),95.00,0,each,,false,true
+LAB-HR,Labour,Labour,,Per hour on site,85.00,40.00,hour,,false,true

@@ -814,13 +814,21 @@ test('[regression] stale version gets 409 (sequential)', async () => {
 // Error handling — client errors must be 4xx, not 500 with Prisma internals
 // ═════════════════════════════════════════════════════════════════════════════
 
-test('RT-17a duplicate invoice for a job is 409, not 500', async () => {
+test('RT-17a invoicing the same quote twice is 409, not 500 (a job may have several invoices since B3)', async () => {
   const c = await mkCustomer();
   const j = await mkJob(c.id);
-  const inv = await prisma.invoice.create({ data: { jobId: j.id, amount: 100 } });
+  const q = await prisma.quote.create({ data: { jobId: j.id, amount: 100, subtotal: 100, status: 'approved' } });
+  created.quotes.push(q.id);
+  const inv = await prisma.invoice.create({ data: { jobId: j.id, quoteId: q.id, amount: 100 } });
   created.invoices.push(inv.id);
-  const r = await api('POST', '/api/invoices', { token: U.admin.token, body: { jobId: j.id, amount: 50 } });
+  const r = await api('POST', `/api/invoices/from-quote/${q.id}`, { token: U.admin.token, body: {} });
   assert.equal(r.status, 409, `HTTP ${r.status}: ${r.text.slice(0, 100)}`);
+  assert.equal(r.json.code, 'DUPLICATE');
+  // a direct insert racing past the check is still refused by the partial unique index
+  await assert.rejects(prisma.invoice.create({ data: { jobId: j.id, quoteId: q.id, amount: 100 } }), (e) => /P2002|unique/i.test(`${e.code} ${e.message}`));
+  const second = await api('POST', '/api/invoices', { token: U.admin.token, body: { jobId: j.id, amount: 50 } });
+  assert.equal(second.status, 201, second.text);
+  created.invoices.push(second.json.id);
 });
 
 test('RT-17b deleting a job that has an invoice is 409, not 500', async () => {

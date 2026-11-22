@@ -153,12 +153,12 @@ async function seedPeopleAndJobs(prisma, dataset, { password }) {
 
   for (const j of dataset.jobs) {
     const customer = custByKey.get(j.customerKey);
-    const exists = await prisma.job.findFirst({ where: { title: j.title, customerId: customer.id }, include: { quote: true, invoice: true } });
+    const exists = await prisma.job.findFirst({ where: { title: j.title, customerId: customer.id }, include: { quotes: { orderBy: { createdAt: 'desc' }, take: 1 }, invoices: { orderBy: { createdAt: 'desc' }, take: 1 } } });
     if (exists) {
       // Backfill: a job seeded before the activity log existed gets its trail
       // once (never on top of real activity).
       if (!(await prisma.jobActivity.count({ where: { jobId: exists.id } }))) {
-        out.activity += await writeActivityTrail(prisma, exists, j, { userByEmail, quote: exists.quote, invoice: exists.invoice });
+        out.activity += await writeActivityTrail(prisma, exists, j, { userByEmail, quote: exists.quotes[0] || null, invoice: exists.invoices[0] || null });
       }
       continue;
     }

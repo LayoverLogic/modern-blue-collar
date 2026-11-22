@@ -434,15 +434,24 @@ test('numbers: unique and gap-free under 20 concurrent creates; a failed create 
   assert.equal(new Set(nums).size, 20, 'duplicate numbers');
   assert.equal(nums[19] - nums[0], 19, `numbers not contiguous: ${nums.join(',')}`);
 
-  const dup = await US.api('POST', '/api/invoices', { token: U.admin.token, body: { jobId: jobs[0].id, amount: 5 } });
-  assert.equal(dup.status, 409);
+  // B3 (GAP-8): a second invoice for the same job is allowed
+  const second = await US.api('POST', '/api/invoices', { token: U.admin.token, body: { jobId: jobs[0].id, amount: 5 } });
+  assert.equal(second.status, 201, second.text);
+  assert.equal(seq(second.json.number), nums[19] + 1);
+  // one quote is billed once: concurrent from-quote → exactly one 201, the rest 409,
+  // and the failed creates (rolled back inside the transaction) use no number
+  const qq = await US.api('POST', '/api/quotes', { token: U.admin.token, body: { jobId: jobs[1].id, amount: 40 } });
+  assert.equal(qq.status, 201, qq.text);
+  const race = await Promise.all([1, 2, 3, 4].map(() => US.api('POST', `/api/invoices/from-quote/${qq.json.id}`, { token: U.admin.token, body: {} })));
+  assert.deepEqual(race.map((r) => r.status).sort(), [201, 409, 409, 409], race.map((r) => r.text).join('\n'));
+  for (const r of race.filter((x) => x.status === 409)) assert.equal(r.json.code, 'DUPLICATE');
   const next = await US.api('POST', '/api/invoices', { token: U.admin.token, body: { jobId: (await freshJob()).id, amount: 5 } });
   assert.equal(next.status, 201, next.text);
-  assert.equal(seq(next.json.number), nums[19] + 1, 'the failed create consumed a number');
+  assert.equal(seq(next.json.number), nums[19] + 3, 'a failed create consumed a number');
 
   // direct inserts (seeds) are numbered by the DB default, from the same counter
   const direct = await prisma.invoice.create({ data: { jobId: (await freshJob()).id, amount: 7 } });
-  assert.equal(seq(direct.number), nums[19] + 2);
+  assert.equal(seq(direct.number), nums[19] + 4);
   assert.equal(direct.currency, 'USD');
 });
 

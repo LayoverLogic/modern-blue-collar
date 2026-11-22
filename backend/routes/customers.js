@@ -24,6 +24,7 @@ const { getLocale, validateAddress } = require('../helpers/locale');
 const { normalisePhone, digitsForSearch } = require('../helpers/phone');
 
 const prisma = require('../helpers/prisma');
+const { DOCS_INCLUDE, withDocs } = require('../helpers/jobDocs');
 
 /**
  * Validate customer fields present in `body`. `create` makes required ones
@@ -102,11 +103,12 @@ router.get('/:id', requireAuth, async (req, res, next) => {
     const customer = await prisma.customer.findUnique({
       where: { id },
       include: {
-        jobs: { orderBy: { createdAt: 'desc' }, include: { quote: true, invoice: true, technician: { select: { id: true, firstName: true, lastName: true } } } },
+        jobs: { orderBy: { createdAt: 'desc' }, include: { ...DOCS_INCLUDE, technician: { select: { id: true, firstName: true, lastName: true } } } },
         communications: { orderBy: { createdAt: 'desc' }, take: 50 },
       },
     });
     if (!customer) throw notFound('Customer not found');
+    customer.jobs = customer.jobs.map(withDocs);
     if (isOffice(req.user)) return res.json(customer);
     // Technicians: billing only on their own jobs; communications only for
     // customers on one of their jobs (matters with TECH_VISIBILITY=all).

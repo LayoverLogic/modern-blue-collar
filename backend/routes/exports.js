@@ -13,7 +13,8 @@
  * Content-Disposition carries an ASCII `filename` fallback plus an RFC 5987
  * `filename*=UTF-8''…` (WL-14). Formula injection (RT-10): cells starting with = + - @ TAB CR
  * get a leading apostrophe (helpers/csv.js). New columns are appended at the end, so existing
- * column positions are kept (invoices/quotes: lineCount, linesJson).
+ * column positions are kept (invoices/quotes: lineCount, linesJson; B3: invoices quoteId, company;
+ * quotes company; jobs company — company = the customer's company name).
  */
 const express = require('express');
 const path    = require('path');
@@ -65,8 +66,9 @@ router.get('/jobs', requireAuth, requireRole(...ADMIN), async (_req, res, next) 
       scheduledDate: j.scheduledDate, scheduledTime: j.scheduledTime,
       completedAt: j.completedAt, createdAt: j.createdAt,
       customerId: j.customerId, sourceSystem: j.sourceSystem, sourceId: j.sourceId,
+      company: j.customer?.company ?? null,
     }));
-    sendCsv(res, 'jobs', toCSV(flat, ['id', 'title', 'status', 'priority', 'type', 'tradeType', 'customerName', 'technicianName', 'scheduledDate', 'scheduledTime', 'completedAt', 'createdAt', 'customerId', 'sourceSystem', 'sourceId']));
+    sendCsv(res, 'jobs', toCSV(flat, ['id', 'title', 'status', 'priority', 'type', 'tradeType', 'customerName', 'technicianName', 'scheduledDate', 'scheduledTime', 'completedAt', 'createdAt', 'customerId', 'sourceSystem', 'sourceId', 'company']));
   } catch (e) { next(e); }
 });
 
@@ -84,12 +86,12 @@ async function documentExport(req, res, kind) {
     jobTitle: d.job?.title, customerName: fullName(d.job?.customer), createdAt: d.createdAt,
     number: d.number, currency: d.currency, subtotal: d.subtotal, taxTotal: d.taxTotal,
     reverseCharge: d.reverseCharge, issuedAt: d.issuedAt, sentAt: d.sentAt, notes: d.notes,
-    jobId: d.jobId, customerId: d.job?.customerId,
+    jobId: d.jobId, customerId: d.job?.customerId, quoteId: d.quoteId ?? null, company: d.job?.customer?.company ?? null,
     lineCount: d.lines.length, linesJson: linesJson(d.lines),
   });
   const base = kind === 'invoice'
-    ? ['id', 'amount', 'status', 'dueDate', 'paidAt', 'jobTitle', 'customerName', 'createdAt', 'number', 'currency', 'subtotal', 'taxTotal', 'reverseCharge', 'issuedAt', 'lineCount', 'linesJson', 'jobId', 'customerId', 'sentAt']
-    : ['id', 'number', 'amount', 'status', 'jobTitle', 'customerName', 'createdAt', 'currency', 'subtotal', 'taxTotal', 'reverseCharge', 'issuedAt', 'sentAt', 'notes', 'lineCount', 'linesJson', 'jobId', 'customerId'];
+    ? ['id', 'amount', 'status', 'dueDate', 'paidAt', 'jobTitle', 'customerName', 'createdAt', 'number', 'currency', 'subtotal', 'taxTotal', 'reverseCharge', 'issuedAt', 'lineCount', 'linesJson', 'jobId', 'customerId', 'sentAt', 'quoteId', 'company']
+    : ['id', 'number', 'amount', 'status', 'jobTitle', 'customerName', 'createdAt', 'currency', 'subtotal', 'taxTotal', 'reverseCharge', 'issuedAt', 'sentAt', 'notes', 'lineCount', 'linesJson', 'jobId', 'customerId', 'company'];
   if (view === 'documents') return sendCsv(res, `${kind}s`, toCSV(rows.map(doc), base));
   const lineRows = [];
   for (const d of rows) {
@@ -161,6 +163,7 @@ const TABLE_FILES = {
 // Never exported: credentials / OAuth tokens / engine bookkeeping.
 const EXCLUDED_TABLES = {
   ApiKey: 'API keys: hashed secrets — re-issue keys after migrating',
+  AuthToken: 'password reset / invite links: hashed single-use secrets',
   IntegrationToken: 'OAuth access / refresh tokens (encrypted) — reconnect integrations instead',
   _prisma_migrations: 'database engine bookkeeping',
 };

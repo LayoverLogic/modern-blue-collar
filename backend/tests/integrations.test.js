@@ -695,7 +695,7 @@ test('exports/all: zip of every table + photos, manifest row counts and sha256 v
   assert.ok(!Object.keys(files).some((n) => /api_?key|integration_?token/i.test(n)));
   const whole = Object.values(files).map((b) => b.toString('latin1')).join('');
   assert.ok(!whole.includes('SECRET-AT') && !whole.includes('SECRET-RT'), 'OAuth tokens leaked');
-  assert.deepEqual(manifest.excluded.map((e) => e.table).sort(), ['ApiKey', 'IntegrationToken', '_prisma_migrations']);
+  assert.deepEqual(manifest.excluded.map((e) => e.table).sort(), ['ApiKey', 'AuthToken', 'IntegrationToken', '_prisma_migrations']);
   // formula escaping and decimals
   const cust = parseCsv(files['customers.csv']);
   const crow = cust.rows.find((x) => x[0] === String(c.id));

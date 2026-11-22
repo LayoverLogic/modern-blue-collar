@@ -15,6 +15,8 @@
  *   version        required on PATCH / PUT (optimistic locking, RT-9)
  * number / currency / sentAt / paidAt are set by the server only.
  * Sent / paid (locked) documents only accept status changes → 409 DOCUMENT_LOCKED.
+ * POST /:id/email: mail transport failure → 502 { code: 'EMAIL_FAILED', reason } (B3, GAP-5);
+ * no mail driver → 503 EMAIL_DISABLED.
  *
  * Job activity log (GTM-18, helpers/activity.js), in the same transaction:
  *   create             quote_created / invoice_created
@@ -32,7 +34,7 @@ const { parseId, badRequest, notFound, HttpError } = require('./httpError');
 const v = require('./validate');
 const prisma = require('./prisma');
 const { getLocale } = require('./locale');
-const { sendMail } = require('./mailer');
+const { sendMail, describeMailError, mailFailedError } = require('./mailer');
 const docs = require('./documents');
 const activity = require('./activity');
 
@@ -244,10 +246,18 @@ function mountDocumentRoutes(router, cfg) {
       }
       const view = docs.printView(type, doc, brand, getLocale());
       const mail = docs.renderEmail(view, { message });
-      const result = await sendMail({
-        to: customer.email, subject: mail.subject, text: mail.text, html: mail.html,
-        ...(brand.companyEmail ? { replyTo: brand.companyEmail } : {}),
-      }, { fromName: brand.companyName });
+      let result;
+      try {
+        result = await sendMail({
+          to: customer.email, subject: mail.subject, text: mail.text, html: mail.html,
+          ...(brand.companyEmail ? { replyTo: brand.companyEmail } : {}),
+        }, { fromName: brand.companyName });
+      } catch (err) {
+        // GAP-5: a broken mail server is a 502 EMAIL_FAILED with the reason,
+        // not a generic 500. Nothing is logged / marked sent.
+        console.warn(`[MAIL] ${type} ${doc.number} email failed: ${describeMailError(err)}`);
+        throw mailFailedError(err);
+      }
       if (!result.delivered) {
         throw new HttpError(503, 'Email is not configured on this server (set MAIL_DRIVER / SMTP_HOST)', { code: 'EMAIL_DISABLED', delivered: false });
       }

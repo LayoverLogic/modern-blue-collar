@@ -239,15 +239,71 @@ const apiLimiter = rateLimit({
   message: { error: 'Too many requests, please try again later.' },
 });
 
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-  message: { error: 'Too many login attempts, please try again later.' },
+// ── Sign-in limiters (GAP-3) ────────────────────────────────────────────────
+// Only FAILED attempts count (skipSuccessfulRequests: a 2xx/3xx answer is
+// un-counted), so a training room signing in from one office IP is never
+// locked out by its own successful logins. Brute force stays capped twice:
+//   LOGIN_MAX_PER_EMAIL  failed logins / 15 min per IP + email   (default 10)
+//   LOGIN_MAX_PER_IP     failed logins / 15 min per IP, all emails (default 50)
+//                        (password spraying / one office mistyping a lot)
+//   RESET_RATE_MAX       forgot / reset / invite-link requests / 15 min per IP (default 20)
+// Counters are in memory (one process): a restart clears them.
+const LOGIN_WINDOW = 15 * 60 * 1000;
+const LOGIN_MSG = { error: 'Too many login attempts, please try again later.', code: 'RATE_LIMITED' };
+const ipKey = (req) => rateLimit.ipKeyGenerator(req.ip || '');
+const loginEmail = (req) => {
+  const e = req.body && typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase().slice(0, 254) : '';
+  return e || '-';
+};
+const loginPerEmailLimiter = rateLimit({
+  windowMs: LOGIN_WINDOW,
+  limit: envInt('LOGIN_MAX_PER_EMAIL', 10),
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => `${ipKey(req)}|${loginEmail(req)}`,
+  standardHeaders: true, legacyHeaders: false,
+  message: LOGIN_MSG,
+});
+const loginPerIpLimiter = rateLimit({
+  windowMs: LOGIN_WINDOW,
+  limit: envInt('LOGIN_MAX_PER_IP', 50),
+  skipSuccessfulRequests: true,
+  keyGenerator: ipKey,
+  standardHeaders: true, legacyHeaders: false,
+  message: LOGIN_MSG,
+});
+const exchangeLimiter = rateLimit({
+  windowMs: LOGIN_WINDOW,
+  limit: envInt('LOGIN_MAX_PER_IP', 50),
+  skipSuccessfulRequests: true,
+  keyGenerator: ipKey,
+  standardHeaders: true, legacyHeaders: false,
+  message: LOGIN_MSG,
+});
+const resetLimiter = rateLimit({
+  windowMs: LOGIN_WINDOW,
+  limit: envInt('RESET_RATE_MAX', 20),
+  keyGenerator: ipKey,
+  standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.', code: 'RATE_LIMITED' },
+});
+// Wrong current password on PATCH /api/users/me/password (a stolen session
+// must not become a password oracle): per user, failures only.
+const passwordChangeLimiter = rateLimit({
+  windowMs: LOGIN_WINDOW,
+  limit: envInt('LOGIN_MAX_PER_EMAIL', 10),
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => limiterIdentity(req) || `ip:${ipKey(req)}`,
+  standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Too many attempts, please try again later.', code: 'RATE_LIMITED' },
 });
 
 app.use('/api/', apiLimiter);
-app.use('/api/auth/login', authLimiter);
-app.use('/api/auth/google/exchange', authLimiter);
+app.post('/api/auth/login', loginPerIpLimiter, loginPerEmailLimiter);
+app.use('/api/auth/google/exchange', exchangeLimiter);
+app.use(['/api/auth/forgot', '/api/auth/reset'], resetLimiter);
+app.get('/api/invites/:token', resetLimiter);
+app.post('/api/invites/:token/accept', resetLimiter);
+app.patch('/api/users/me/password', passwordChangeLimiter);
 
 // ── Favicon (WL-7): BRAND_FAVICON_URL (or the logo) — else 204, never a 404 ──
 app.get('/favicon.ico', (_req, res) => {

@@ -178,7 +178,9 @@ function buildBrand(env = {}) {
 
   return {
     companyName:    clean(env.BRAND_COMPANY_NAME) || 'Modern Blue Collar',
-    companySlogan:  clean(env.BRAND_COMPANY_SLOGAN) || 'Field Service Management',
+    // Unset → the generic tagline; set but blank (BRAND_COMPANY_SLOGAN=) → no
+    // slogan at all (GAP-15: client env files carry the line empty on purpose).
+    companySlogan:  env.BRAND_COMPANY_SLOGAN === undefined ? 'Field Service Management' : clean(env.BRAND_COMPANY_SLOGAN),
     companyPhone:   clean(env.BRAND_COMPANY_PHONE),
     companyEmail:   clean(env.BRAND_COMPANY_EMAIL),
     companyAddress: clean(env.BRAND_COMPANY_ADDRESS),

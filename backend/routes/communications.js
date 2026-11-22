@@ -19,6 +19,7 @@ const v = require('../helpers/validate');
 // WL-10: money in the timeline uses the document's currency + locale format
 const { formatMoney } = require('../helpers/locale');
 const prisma           = require('../helpers/prisma');
+const { DOCS_INCLUDE } = require('../helpers/jobDocs');
 
 // GET /api/communications?customerId=X — timeline for a customer
 router.get('/', requireAuth, async (req, res, next) => {
@@ -44,7 +45,7 @@ router.get('/', requireAuth, async (req, res, next) => {
     if (customerId) {
       const jobs = await prisma.job.findMany({
         where: { customerId, ...jobScope(req.user) },
-        include: { quote: true, invoice: true },
+        include: DOCS_INCLUDE,
       });
 
       const timeline = [];
@@ -64,24 +65,24 @@ router.get('/', requireAuth, async (req, res, next) => {
       });
 
       jobs.forEach(j => {
-        if (j.quote) {
+        for (const q of j.quotes) {
           timeline.push({
-            id: `quote-${j.quote.id}`,
+            id: `quote-${q.id}`,
             type: 'quote',
-            subject: `Quote ${j.quote.number || `#${j.quote.id}`} for Job #${j.id}`,
-            body: `Amount: ${formatMoney(j.quote.amount, j.quote.currency)} — Status: ${j.quote.status}`,
-            createdAt: j.quote.createdAt,
+            subject: `Quote ${q.number || `#${q.id}`} for Job #${j.id}`,
+            body: `Amount: ${formatMoney(q.amount, q.currency)} — Status: ${q.status}`,
+            createdAt: q.createdAt,
             category: 'financial',
             jobId: j.id,
           });
         }
-        if (j.invoice) {
+        for (const inv of j.invoices) {
           timeline.push({
-            id: `invoice-${j.invoice.id}`,
+            id: `invoice-${inv.id}`,
             type: 'invoice',
-            subject: `Invoice ${j.invoice.number || `#${j.invoice.id}`} for Job #${j.id}`,
-            body: `Amount: ${formatMoney(j.invoice.amount, j.invoice.currency)} — Status: ${j.invoice.status}`,
-            createdAt: j.invoice.createdAt,
+            subject: `Invoice ${inv.number || `#${inv.id}`} for Job #${j.id}`,
+            body: `Amount: ${formatMoney(inv.amount, inv.currency)} — Status: ${inv.status}`,
+            createdAt: inv.createdAt,
             category: 'financial',
             jobId: j.id,
           });
