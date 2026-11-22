@@ -1,36 +1,49 @@
 # Security status: Modern Blue Collar
 
 **Date:** 2026-11-21
-**Code:** `mbc/sandbox-revival` at `808631f` (job activity log merged). Later merges can change this page;
-re-run the suites in §5 before relying on it.
-**Written by:** the MBC revival team (Compliance & Docs), from reading the code and running the test suites.
-This is not an external penetration test. No production deployment of this code exists yet.
+**Code:** `mbc/sandbox-revival` at `6d63a31` (accounts, several documents per job, imports/exports, QuickBooks
+and Xero merged). Later merges can change this page; re-run the suites in §5 before relying on it.
+**Written by:** the MBC revival team (Compliance & Docs), from reading the code and running every suite.
+This is not an external penetration test. **No production deployment of this code exists yet**, and the
+Docker / VPS path (`DEPLOYMENT.md`) has not been run on a real server (§4.8).
 
-This page replaces the "Security Audit Report" dated 2026-03-24. In Phase 1 the Red Team found that report's
-claims 3 (locking on all writes), 6 (JWT secret enforced), 7 (numeric id validation), 8 (CSP) and 9 (audit
-trail) false or only partly true, and also its claims that every route had a role guard. Every line below
-names the file that does the work and the test that shows it. A control with no test is marked as such.
+This page replaces the "Security Audit Report" dated 2026-03-24, whose claims of locking on all writes, an
+enforced JWT secret, numeric id validation, a strict CSP, an audit trail and a role guard on every route the Red
+Team found false or only partly true in Phase 1. Every row below names the file that does the work and the
+test that shows it. A control with no test says so.
 
-Finding IDs (RT-, PLAT-, UX-, WL-, GTM-) refer to `/home/claude/mbc-team/FINDINGS.md`.
+Finding IDs (RT-, PLAT-, UX-, WL-, GTM-, GAP-, DOC-) refer to `/home/claude/mbc-team/FINDINGS.md`.
 
 ---
 
 ## 1. Test results on this commit
 
-Run on 2026-11-21 against throwaway databases (`TEST_DATABASE_URL=.../mbc_docs_test`):
+Run on 2026-11-21 against throwaway databases (`TEST_DATABASE_URL=.../mbc_docs2_test`), Chrome and `pg_dump` 16
+available, so nothing was skipped:
 
 | Suite | Command | Result |
 |---|---|---|
 | Prisma-level API | `npm test` | 69 / 69 pass |
-| Red Team | `npm run test:redteam` | 46 / 48 pass. **Failing: RT-25, RT-3** (front end, see §3) |
-| Backend contract | `npm run test:backend` | 21 / 21 pass (RT-30 skips if `pg_dump` is not on PATH) |
-| Job activity log | `npm run test:activity` | 16 / 16 pass |
-| White-label | `npm run test:whitelabel` | 36 / 36 pass |
-| Sandbox drivers | `npm run test:platform` | 12 / 12 pass (2 backup tests skip without `DATABASE_URL`) |
-| UI walk | `npm run test:ui` | Inspection tool, always exits 0. Not counted here |
+| Red Team | `npm run test:redteam` | 48 / 48 pass (RT-3 stored XSS and RT-25 pages now pass) |
+| Backend contract | `npm run test:backend` | 36 / 36 pass |
+| Job activity log | `npm run test:activity` | 18 / 18 pass |
+| Line-item documents, money, locale | `npm run test:documents` | 21 / 21 pass |
+| Imports, exports, Xero, QuickBooks | `npm run test:integrations` | 19 / 19 pass (QuickBooks against a local stub) |
+| Accounts (passwords, leavers, invites) | `npm run test:accounts` | 25 / 25 pass |
+| White-label | `npm run test:whitelabel` | 43 / 43 pass |
+| Platform drivers, backup and restore | `npm run test:platform` | 22 / 22 pass |
+| UI walk (headless Chrome) | `npm run test:ui` | **exits 1**: 78 / 78 page captures clean (no console, page or HTTP errors, no placeholder text), XSS segment all pass, main flow 25 / 26 (see §1.1) |
 
-`npm audit --omit=dev`: 3 high, all in the `intuit-oauth` → `query-string` → `decode-uri-component` chain,
-no upstream fix (PLAT-7).
+`npm audit --omit=dev`: **0 vulnerabilities** (the `intuit-oauth` chain behind PLAT-7 was removed; QuickBooks now
+uses `fetch`). `npm audit` including dev dependencies reports 2 moderate advisories (`minimatch` via `nodemon`,
+used only by `npm run dev`).
+
+### 1.1 UI walk
+
+`UI_PORT=3179 npm run test:ui` against a fresh sandbox database. The one failing flow step is
+**7. Invite a team member**: since B3 the invite link is `<APP_URL>/accept-invite.html#token=…`, but the walk still
+expects a Google sign-in link, the Team page still labels it "starts Sign in with Google", and
+`accept-invite.html` does not exist yet (§3, first row). Frontend owns the page and the walk.
 
 ---
 
@@ -42,25 +55,35 @@ no upstream fix (PLAT-7).
 
 | Control | Where | Proven by |
 |---|---|---|
-| With `NODE_ENV=production` the server refuses to start if `JWT_SECRET` is missing, under 32 characters, low-variety, a placeholder, or any value ever published in this repo | `helpers/security.js` (`jwtSecretProblem`, `assertBootConfig`), `helpers/publishedSecrets.js`, called first in `server.js` | redteam `RT-6` |
-| Outside production a missing secret gets a random per-process secret and a warning (sessions end on restart) | `helpers/security.js` (`getJwtSecret`) | backend `RT-6 outside production…` |
-| `DEMO_MODE=true` with `NODE_ENV=production` refuses to start | `helpers/security.js` | redteam `RT-23` |
-| `/api/brand` returns demo login details only in demo mode | `server.js` (`/api/brand`) | backend `RT-23 /api/brand exposes demoLogin only in demo mode` |
-| An invalid `BRAND_*` value (unknown trade, bad colour, unsafe logo URL, unknown time zone) stops the server at boot | `helpers/brandValidate.js`, `brand.config.js` | whitelabel `WL-5…`, `WL-6…`, `WL-7…`, `brand: invalid BRAND_TIMEZONE…` |
-| Twilio, QuickBooks and Google make no network call when `SANDBOX_MODE=true`, when `DEMO_MODE=true` (Twilio, QuickBooks) or when credentials are missing or placeholders; routes answer 503 | `helpers/integrations.js` | platform `integrations: …` (3 tests); redteam `[regression] QuickBooks / SMS / Google are inert in sandbox` |
+| With `NODE_ENV=production` the server refuses to start if `JWT_SECRET` is missing, under 32 characters, low-variety, a placeholder, or any value ever published in this repo | `helpers/security.js` (`jwtSecretProblem`, `assertBootConfig`), `helpers/publishedSecrets.js`, first thing in `server.js` | redteam `RT-6` |
+| Outside production a **published or placeholder** secret also stops the server, unless `SANDBOX_MODE=true` (then a random per-process secret is used, with a warning). A missing secret gets a random per-process secret | `helpers/security.js` | backend `2c non-production refuses a published / placeholder JWT_SECRET…`, `RT-6 outside production…` |
+| `npm run sandbox` writes a fresh random `JWT_SECRET` into whichever env file it uses (including `ENV_FILE=.env.demo.<slug>`) and refuses a known secret from the shell; `seed-demo --print-env` writes a fresh random secret (file mode 0600). Fixes DOC-1 | `scripts/sandbox.js` (`fillGeneratedSecrets`), `scripts/seed-demo.js` | backend `2c sandbox.js writes a random JWT_SECRET…`, `2c seed-demo --print-env: fresh random JWT_SECRET…` |
+| `npm run sandbox` listens on `127.0.0.1` unless `HOST` is set. `server.js` honours `HOST` (unset = all interfaces, for Docker) | `scripts/sandbox.js`, `server.js` | backend `2c sandbox.js serves on 127.0.0.1 by default (HOST env to override)` |
+| `DEMO_MODE=true` with `NODE_ENV=production` refuses to start; `/api/brand` returns the demo login only in demo mode | `helpers/security.js`, `server.js` | redteam `RT-23`; backend `RT-23 /api/brand exposes demoLogin only in demo mode` |
+| Invalid `BRAND_*` values (unknown trade, bad colour, unsafe logo URL, unknown time zone, bad locale / tax / job-type settings) stop the server at boot | `helpers/brandValidate.js`, `helpers/locale.js`, `brand.config.js` | whitelabel `WL-5…`, `WL-6…`, `WL-7…`, `B3 job types: BRAND_JOB_TYPES…`; documents `locale: … bad config fails fast` |
+| `TECH_VISIBILITY` other than `own` / `all` falls back to `own` with a boot warning | `server.js`, `helpers/access.js` | code review (the two valid values are tested, §2.3) |
+| Twilio, QuickBooks and Google make no network call when `SANDBOX_MODE=true`, when `DEMO_MODE=true` (Twilio, QuickBooks) or with missing / placeholder credentials; routes answer 503 | `helpers/integrations.js`, `helpers/qbo.js` | platform `integrations: …` (3 tests); redteam `[regression] QuickBooks / SMS / Google are inert in sandbox`; integrations `qbo: intuit-oauth is gone; sandbox server answers 503…` |
+| QuickBooks endpoint overrides (`QBO_AUTHORIZE_URL`, `QBO_TOKEN_URL`, `QBO_API_BASE`, used by the test stub) must be `https` in production | `helpers/qbo.js` | code review |
 
-### 2.2 Authentication and sessions
+### 2.2 Authentication, passwords and sessions
 
 | Control | Where | Proven by |
 |---|---|---|
-| Session tokens are HS256 only and must carry an integer user id and an expiry; `alg=none` and expired tokens are refused | `helpers/security.js` (`verifyToken`) | redteam `[regression] alg=none and expired tokens are rejected` |
-| On every request the user row is re-read: deactivated or deleted users are refused and the role comes from the database, not the token | `routes/auth.js` (`requireAuth`, `userFromToken`) | redteam `RT-5a`, `RT-5b`, `RT-5c` |
-| Token lifetime follows `JWT_EXPIRES` (default 8h) for password and Google sign-in | `helpers/security.js` (`signToken`) | backend `PLAT-3 one-time code…` (checks a 15m expiry) |
-| Passwords are stored as bcrypt hashes (cost 12 for `POST /api/users` and the super-admin seed) | `routes/users.js`, `seed_superadmin.js` | `npm test` `Password hashes correctly` |
-| Login and the Google code exchange are limited to 20 requests per 15 minutes per client IP; `/api/*` to 200 | `server.js` (`authLimiter`, `apiLimiter`) | redteam `[regression] login is rate-limited` |
-| Behind a proxy, `TRUST_PROXY` makes the limiter key on the real client IP; without it `X-Forwarded-For` is ignored | `server.js` (`parseTrustProxy`) | backend `RT-24` |
-| Google sign-in is fail-closed: an existing active user with a verified Google email signs in; an unknown email is created only if its domain is in `GOOGLE_ALLOWED_DOMAINS` (empty = nobody); deactivated users and unverified emails are refused | `routes/googleAuth.js` (`resolveGoogleUser`) | backend `PLAT-3 Google gate…` (2 tests) |
-| No JWT in any URL: Google redirects with a single-use code that expires in 60 s and is exchanged by POST; OAuth `state` is random and checked against an HttpOnly cookie | `routes/googleAuth.js` | backend `PLAT-3 one-time code…` |
+| Session tokens are HS256 only, carry an integer user id, an expiry and the user's `sessionVersion` (`sv`); `alg=none`, expired and stale-`sv` tokens are refused | `helpers/security.js` (`signToken`, `verifyToken`), `routes/auth.js` (`userFromToken`) | redteam `[regression] alg=none and expired tokens are rejected…`; accounts `password change: … revokes OTHER sessions…` |
+| The user row is re-read on every request: deactivated or deleted users are refused, the role comes from the database, not the token | `routes/auth.js` (`requireAuth`) | redteam `RT-5a`, `RT-5b`, `RT-5c` |
+| **Session revocation**: password change, password reset, admin reset and deactivation bump `sessionVersion`, so every older token answers 401. Deactivation, deletion or a role change also disconnects the user's live sockets | `routes/auth.js`, `routes/users.js`, `server.js` (socket handshake) | accounts `password change…`, `admin reset: temporary password…`, `leavers: deactivate ends sessions and sockets at once…`; backend `2c sockets: deactivating, demoting or deleting a user disconnects their live sockets` |
+| Passwords: bcrypt (cost 12); rule ≥ `PASSWORD_MIN_LENGTH` (default 10, never below 8) and ≤ 72 bytes on every path that sets one (change, reset, accept-invite, `POST /api/users`). Closes DOC-6 | `helpers/authTokens.js` (`checkPassword`, `hashPassword`) | accounts `password change: current + new, min length…`; `npm test` `Password hashes correctly` |
+| **Password change** needs the current password; failures are rate-limited per user (`LOGIN_MAX_PER_EMAIL`); API keys are refused | `routes/users.js` (`PATCH /api/users/me/password`), `server.js` (`passwordChangeLimiter`) | accounts `password change: …`, `password change: API keys are refused…` |
+| **Forced password change**: a generated super-admin password (`seed_superadmin.js`), users created by `POST /api/users` (default) and an admin "temporary password" reset set `mustChangePassword`; until it is changed every API call except `/me`, change password and logout answers 403 `PASSWORD_CHANGE_REQUIRED` (server-side) | `routes/auth.js` (`PASSWORD_CHANGE_ALLOWED`), `seed_superadmin.js`, `routes/users.js` | accounts `temporary password gate…`, `seed_superadmin: a generated password is temporary…` |
+| **Forgot / reset password**: `POST /api/auth/forgot` always answers the same 200 (no account enumeration); the link is single-use, expires after `RESET_TOKEN_TTL_MINUTES` (30), only its sha256 is stored, at most 3 mails per account per 15 min, `RESET_RATE_MAX` (20) requests per IP per 15 min | `routes/auth.js`, `helpers/authTokens.js`, `server.js` (`resetLimiter`) | accounts `forgot password: always 200…`, `forgot / reset are rate limited per IP…` |
+| **Admin reset** (temporary password shown once, or a reset link) follows the role matrix: admin / super-admin targets need a super-admin, not yourself, not a deactivated user | `routes/users.js` (`POST /api/users/:id/reset-password`) | accounts `admin reset: temporary password…; role matrix`, `admin reset: link mode…` |
+| **Invites**: a new email gets a user plus a single-use accept-invite link (`INVITE_TTL_HOURS`, default 168) in one transaction; accepting sets a password and signs in; re-inviting replaces the link; a mail failure never leaves a half-done state | `routes/invites.js`, `helpers/authTokens.js` | accounts `invites: …` (3 tests), `invite accept / validate are rate limited per IP` |
+| **Login limiter counts failures only**: `LOGIN_MAX_PER_EMAIL` (10) per IP + email and `LOGIN_MAX_PER_IP` (50) per IP, per 15 min; successful sign-ins never count (an office on one IP is not locked out). Google code exchange: `LOGIN_MAX_PER_IP` failures per IP | `server.js` (`loginPerEmailLimiter`, `loginPerIpLimiter`, `exchangeLimiter`) | accounts `login limiter: successful sign-ins never count…`; redteam `[regression] login is rate-limited` (title still says 20; it checks a 429 after 21 failures) |
+| Other API calls: `RATE_LIMIT_USER_MAX` (1000) per signed-in user or API key and `RATE_LIMIT_IP_MAX` (300) per IP for anonymous calls, per 15 min | `server.js` (`apiLimiter`) | documents `UX-15 the API limiter counts signed-in users separately…` |
+| Behind a proxy, `TRUST_PROXY` makes the limiters key on the real client IP; without it `X-Forwarded-For` is ignored | `server.js` (`parseTrustProxy`) | backend `RT-24` |
+| Google sign-in is fail-closed: an existing active user with a **verified** Google email signs in (a missing `email_verified` is refused); an unknown email is created only if its domain is in `GOOGLE_ALLOWED_DOMAINS` (empty = nobody); deactivated users are refused | `routes/googleAuth.js` (`resolveGoogleUser`) | backend `PLAT-3 Google gate…` (2 tests); documents `Google sign-in requires a positive email_verified` |
+| No JWT in any URL: Google redirects with a single-use code (60 s) exchanged by POST; OAuth `state` is random and checked against an HttpOnly cookie | `routes/googleAuth.js`, `helpers/cookies.js` | backend `PLAT-3 one-time code…` |
+| The last active super-admin can never be deactivated, demoted or deleted | `routes/users.js` | accounts `leavers: the last active super-admin…` |
 
 ### 2.3 Authorisation
 
@@ -68,64 +91,77 @@ Roles are `super-admin`, `admin`, `dispatcher`, `office`, `technician` (`helpers
 
 | Control | Where | Proven by |
 |---|---|---|
-| Nobody can raise their own role or change their own active flag; only a super-admin can create, edit or promote admins and super-admins; unknown role strings are rejected | `routes/users.js`, `routes/invites.js` | redteam `RT-1a`, `RT-1b`, `RT-1c`, `RT-7a`, `RT-7b`; backend `role matrix…` |
-| Deletes of jobs, customers and communication entries are admin-only; price book, quote and invoice writes are admin-only; exports, backups and the user list are admin-only | `helpers/roles.js` groups + `requireRole` on each route | redteam `RT-8a`–`RT-8d`, `[regression] billing writes are admin-only…` |
-| Technicians see only their own jobs and the customers, invoices, quotes and communications on them; they may change only status and notes on their own job (not cancel, not reschedule) and cannot create jobs | `helpers/access.js`, `routes/jobs.js`, `routes/customers.js`, `routes/invoices.js`, `routes/quotes.js`, `routes/communications.js` | redteam `RT-21`; backend `RT-21 technicians list only their own…`, `RT-8 technician may update status/notes…` |
-| Only office roles send SMS, and only to a number that belongs to a customer on record | `routes/sms.js` | redteam `RT-16`; backend `RT-16 office roles can SMS a customer number on record` |
-| API keys: only the bcrypt hash is stored; lookup prefix is 16 characters; a key acts as its creator with the creator's current role and stops working when the creator is deactivated; `read` scope allows GET/HEAD only, `write` the rest | `middleware/apiKeyAuth.js`, `routes/auth.js` (`requireAuth`, `scopeFor`) | redteam `RT-4`, `RT-22`, `[regression] revoked API key is rejected…`; backend `RT-22 new API keys use a 16-char prefix…` |
-| API keys cannot manage users, API keys, invites, backups or QuickBooks connections (a signed-in person is required) | `routes/auth.js` (`requireSession`) on those routes | code review (redteam `RT-1c` covers a read-only key; no test uses a write-scoped key against these routes) |
-| Socket.io connections need a valid token; presence identity comes from the token, never from the message; malformed events cannot crash the process; the presence REST endpoints need sign-in | `server.js` (`io.use`, `safeHandler`, `/api/presence`) | redteam `RT-2`, `RT-14a`, `RT-14b`; backend `RT-14` |
-| QuickBooks connect is admin-only; the OAuth `state` is random, single-use, valid 10 minutes and bound to both the admin and their browser cookie | `routes/quickbooks.js` | backend `PLAT-4…` |
+| Nobody can raise their own role, change their own active flag or deactivate themselves; only a super-admin can create, edit, promote, reset, deactivate or re-invite admins and super-admins; unknown roles are rejected | `routes/users.js`, `routes/invites.js` | redteam `RT-1a`–`RT-1c`, `RT-7a`, `RT-7b`; backend `role matrix…`; accounts `leavers: role change follows the matrix…` |
+| Deletes of jobs, customers and communication entries are admin-only; price book, quote and invoice writes, document email, imports, exports, backups and the user list are admin-only | `helpers/roles.js` groups + `requireRole` on each route | redteam `RT-8a`–`RT-8d`, `[regression] billing writes are admin-only…`; documents `roles: only admin roles write, email or invoice-from-quote…`; integrations `import: admin only…`, `exports: … admin only` |
+| **`TECH_VISIBILITY=own`** (default): technicians see only their own jobs and the customers, quotes, invoices, photos, activity and communications on them. **`all`**: technicians may READ every job and customer (schedule, detail, photos, activity); quotes / invoices of other people's jobs are null and other customers' communications are empty; writes stay own-job only. Either way they may change only status and notes (not cancel, not reschedule) and cannot create jobs or send SMS | `helpers/access.js`, `routes/jobs.js`, `routes/customers.js`, `helpers/documentRoutes.js`, `routes/communications.js` | backend `2c TECH_VISIBILITY=own…`, `2c TECH_VISIBILITY=all…`, `RT-21…`, `RT-8 technician may update status/notes…`; redteam `RT-21` |
+| A technician may delete only photos they uploaded, on their own jobs (`NOT_OWNER`); office roles any photo | `routes/jobs.js` | backend `2c photos: … a technician may delete only photos they uploaded` |
+| Only office roles send SMS, and only to a number that belongs to a customer on record (matched on E.164) | `routes/sms.js` | redteam `RT-16`; backend `RT-16…`, `2c WL-12 customers and users store E.164…; SMS goes to E.164` |
+| API keys: only the bcrypt hash is stored; 16-character lookup prefix; a key acts as its creator with the creator's current role and stops working when the creator is deactivated; `read` scope allows GET/HEAD only | `middleware/apiKeyAuth.js`, `routes/auth.js` | redteam `RT-4`, `RT-22`, `[regression] revoked API key is rejected…`; backend `RT-22…` |
+| A signed-in person (not an API key) is required to manage users, API keys, invites, backups, QuickBooks, to change a password, and to commit an import | `routes/auth.js` (`requireSession`) on those routes | accounts `password change: API keys are refused`; integrations `import: … real run refused for API keys`; other routes code review (redteam `RT-1c` covers a read-only key) |
+| Socket.io needs a valid token at the handshake (re-checked on reconnect); presence identity comes from the token, never from the message; malformed events cannot crash the process; the presence REST endpoints need sign-in | `server.js` (`io.use`, `safeHandler`, `/api/presence`) | redteam `RT-2`, `RT-14a`, `RT-14b`; backend `RT-14` |
+| QuickBooks connect is admin-only; the OAuth `state` is random, single-use, valid 10 minutes and bound to both the admin and their browser cookie | `routes/quickbooks.js` | backend `PLAT-4…`; integrations `qbo OAuth: … state single-use` |
 
-### 2.4 Input, output and data integrity
-
-| Control | Where | Proven by |
-|---|---|---|
-| Quote and invoice amounts must be finite and greater than 0; invoice status is `unpaid`, `paid`, `overdue` or `void` | `helpers/validate.js`, `routes/quotes.js`, `routes/invoices.js` | redteam `RT-11a`–`RT-11d` |
-| Job status is `pending`, `scheduled`, `in-progress`, `completed` or `cancelled`; reopening clears `completedAt` | `routes/jobs.js` | redteam `RT-12a`, `RT-12b` |
-| A technician cannot be booked into overlapping slots (`SCHEDULE_CONFLICT`). The check runs under a per-technician Postgres advisory lock so two simultaneous bookings cannot both pass | `routes/jobs.js` | redteam `RT-13` (sequential case; the concurrent case is code review only) |
-| Optimistic locking on PATCH/PUT for **jobs, customers, quotes and invoices**: `version` is required (400 `VERSION_REQUIRED`) and the write is one atomic `UPDATE … WHERE version = $n` (409 `VERSION_CONFLICT`) | `helpers/optimisticUpdate.js` | redteam `RT-9`, `[regression] stale version gets 409`; backend `RT-9…` |
-| Query strings are flat strings: nested or repeated keys cannot reach Prisma as operators | `server.js` (`query parser`, query sanitiser) | backend `RT-28` |
-| Errors: Prisma and multer errors are mapped to 4xx with a short message; unknown errors are a generic 500; no Prisma text, SQL or stack frames reach the client | `helpers/errorHandler.js` | redteam `RT-17a`–`RT-17d`; backend `RT-17…` |
-| JSON bodies are limited to 1 MB | `server.js` (`express.json({ limit: '1mb' })`) | no dedicated test |
-| Photo uploads: one file, 10 MB, type detected from the bytes (JPEG, PNG, GIF, WebP, HEIC/HEIF, AVIF); HTML and SVG are refused; storage keys cannot escape the storage root; deleting a job deletes its photo files | `routes/jobs.js`, `helpers/imageSniff.js`, `helpers/storage.js` | redteam `RT-20a`, `RT-20b`, `RT-17d`, `RT-19`, `[regression] upload filename path traversal…`; platform `storage: local driver rejects path-traversal keys` |
-| CSV exports: cells starting with `= + - @`, tab or CR are prefixed so spreadsheets show them as text | `routes/exports.js` (`csvCell`) | redteam `RT-10` |
-| Database access goes through Prisma; the two raw queries (`routes/sms.js`, `routes/jobs.js`) are tagged templates, so values are bound parameters | those files | code review only |
-
-### 2.5 Headers, origins, webhooks
+### 2.4 Input, money and data integrity
 
 | Control | Where | Proven by |
 |---|---|---|
-| Content-Security-Policy on every response: `default-src 'self'`, `object-src 'none'`, `frame-ancestors 'none'`, `base-uri 'self'`, `form-action 'self'`, `connect-src 'self'` (but see §3: inline scripts allowed) | `server.js` (`helmet`) | redteam `RT-15`; backend `RT-15 CSP allows the inline pages but blocks plugins, framing and base hijack` |
-| `X-Powered-By` removed; helmet's other default headers set | `server.js` | redteam `[regression] alg=none… x-powered-by hidden` |
+| **Money is `Decimal(12,2)`** in the database (quantities `Decimal(12,3)`, tax rates `Decimal(6,3)`); totals are computed with decimal arithmetic, half-up per line and per tax rate; client-sent totals are ignored when lines are sent | `prisma/schema.prisma`, migration `20261121140000_documents_locale`, `helpers/documents.js`, `helpers/prisma.js` | documents `totals: per-line half-up rounding to cents, Decimal (not float) arithmetic`, `totals: 13.5 % and 23 % VAT…`, `IE quote with lines: server computes totals…` |
+| Quote / invoice numbers are unique and gap-free under concurrency; a failed create uses no number | SQL function `mbc_next_document_number`, `helpers/documentRoutes.js` | documents `numbers: unique and gap-free under 20 concurrent creates…` |
+| A sent quote or a sent / paid / overdue / void invoice is locked: only its status may change (409 `DOCUMENT_LOCKED`); locked documents cannot be deleted | `helpers/documents.js`, `helpers/documentRoutes.js` | documents `immutability: a sent quote / paid invoice only accepts status changes` |
+| One live (non-void) invoice per quote (partial unique index); a job may have several quotes and invoices | migration `20261121180000_accounts_multi_documents`, `routes/invoices.js` | accounts `documents: a job may have several quotes and invoices; one live invoice per quote…`; redteam `RT-17a` |
+| Amounts must be finite and > 0 (invoices) / ≥ 0 (quotes); statuses are fixed lists; reopening a job clears `completedAt` | `helpers/validate.js`, `routes/jobs.js`, `helpers/documentRoutes.js` | redteam `RT-11a`–`RT-11d`, `RT-12a`, `RT-12b` |
+| A technician cannot be double-booked (`SCHEDULE_CONFLICT`), checked under a per-technician Postgres advisory lock | `routes/jobs.js` | redteam `RT-13` (sequential case; the concurrent case is code review only) |
+| Optimistic locking on PATCH/PUT for jobs, customers, quotes and invoices: `version` required, one atomic `UPDATE … WHERE version = $n` (409 `VERSION_CONFLICT`) | `helpers/optimisticUpdate.js` | redteam `RT-9`, `[regression] stale version gets 409`; backend `RT-9…` |
+| **Phone numbers are normalised to E.164** for customers (by the customer's country, else the brand country), users and invites; invalid numbers are 400 `INVALID_PHONE`; SMS always goes to the E.164 number | `helpers/phone.js`, `routes/customers.js`, `routes/users.js`, `routes/invites.js`, `routes/sms.js` | backend `2c WL-12 helpers/phone…`, `2c WL-12 customers and users store E.164…`, `2c WL-12 on an IE brand…` |
+| Addresses validated by locale (IE: line 1, town, county required, Eircode normalised; US ZIP format); never a 500 | `helpers/locale.js`, `routes/customers.js` | documents `addresses: IE requires line 1 / town / county…` |
+| Query strings are flat strings (no Prisma operators); JSON bodies ≤ 1 MB | `server.js` | backend `RT-28`; body limit has no dedicated test |
+| Errors are mapped to 4xx with a short message and a code; no Prisma text, SQL or stack frames reach the client | `helpers/errorHandler.js` | redteam `RT-17a`–`RT-17d`; backend `RT-17…` |
+| Photo uploads: one file, 10 MB, type detected from the bytes (JPEG, PNG, GIF, WebP, HEIC/HEIF, AVIF); HTML and SVG refused; storage keys cannot escape the storage root; deleting a job deletes its photo files | `routes/jobs.js`, `helpers/imageSniff.js`, `helpers/storage.js` | redteam `RT-20a`, `RT-20b`, `RT-17d`, `RT-19`, `[regression] upload filename path traversal…`; platform `storage: local driver rejects path-traversal keys` |
+| Imports: dry run by default (writes nothing); one transaction per batch, a failing batch rolls back; file size ≤ `IMPORT_MAX_BYTES`; a sha256 guard so the committed file is the one that was reviewed; undo | `routes/imports.js`, `helpers/importer.js`, `routes/pricebook.js`, `helpers/pricebookImport.js` | integrations `import dry run…`, `import commit…` (2 tests); accounts `pricebook import: …` |
+| CSV exports: cells starting with `= + - @`, tab or CR are prefixed so spreadsheets show them as text; RFC 5987 file names | `helpers/csv.js`, `routes/exports.js` | redteam `RT-10`; integrations `exports: … formula escaping kept`; documents `WL-14…` |
+| Database access goes through Prisma; raw queries are tagged templates (bound parameters), except one fixed SQL string with a bound time-zone parameter at boot | `routes/sms.js`, `routes/jobs.js`, `server.js`, `helpers/calendarDate.js` | code review only |
+
+### 2.5 Headers, origins, pages
+
+| Control | Where | Proven by |
+|---|---|---|
+| **Strict Content-Security-Policy**: `script-src 'self'`, `script-src-attr 'none'`, `style-src 'self'` (no `'unsafe-inline'` anywhere), `img-src 'self' data: blob:` (+ the https origin of an external logo), `connect-src 'self'` + same-host ws/wss, `object-src 'none'`, `frame-ancestors 'none'`, `base-uri 'self'`, `form-action 'self'`. No page uses inline `<script>`, `on*` attributes, `style=""` or `<style>` | `server.js` (`helmet`), `helpers/csp.js`, `backend/public/` | backend `RT-15 CSP: scripts and styles from self only…`, `2c CSP static check: no inline <script>, on* handler, style attribute or <style> in public/`, `2c CSP in a real browser: every page in public/ loads with zero violations (signed out, admin, technician)`; redteam `RT-15` |
+| **Stored XSS**: customer and job data is rendered as text | `backend/public/js/` (text nodes / escaping) | redteam `RT-3` (headless Chrome); `test:ui` XSS segment |
+| Every page parses and runs (RT-25 / UX-1 fixed) | `backend/public/` | redteam `RT-25`; `demo:check --headless` |
+| HTML is served `Cache-Control: no-store`; `X-Powered-By` removed; helmet's other headers (HSTS, nosniff, …) set | `server.js` | documents `/api/brand: … HTML is no-store`; redteam `[regression] … x-powered-by hidden` |
 | CORS: same-origin only unless `APP_URL` / `CORS_ORIGINS` name an origin (Express and Socket.io) | `server.js` (`allowedOrigins`) | backend `RT-27` |
-| Gmail webhook: 503 until `GMAIL_WEBHOOK_SECRET` (16+ characters) is set; wrong secret 401; compared in constant time. (The handler itself is still a placeholder.) | `routes/communications.js` | redteam `RT-26`; backend `RT-26…` |
-| The invites router is mounted once (`/api/invites`); the old `/api/auth/send` path is gone | `server.js`, `routes/invites.js` | backend `invites: … RT-29` |
+| Gmail webhook: 503 until `GMAIL_WEBHOOK_SECRET` (16+ characters) is set; wrong secret 401; constant-time compare. (The handler itself is still a placeholder.) | `routes/communications.js` | redteam `RT-26`; backend `RT-26…` |
 
-### 2.6 Secrets and integrations at rest
-
-| Control | Where | Proven by |
-|---|---|---|
-| QuickBooks tokens are stored in the `IntegrationToken` table encrypted with AES-256-GCM; the key is `INTEGRATION_ENCRYPTION_KEY` or, if unset, derived from `JWT_SECRET` (HKDF); the status endpoint never returns tokens | `helpers/secretBox.js`, `routes/quickbooks.js` | backend `PLAT-4…` |
-| `npm run sandbox` replaces any placeholder or published `JWT_SECRET` in the local `.env.sandbox` with a random one | `scripts/sandbox.js` (`fillGeneratedSecrets`) | code review only |
-
-### 2.7 Job activity log (GTM-18)
+### 2.6 Secrets, backups and exports
 
 | Control | Where | Proven by |
 |---|---|---|
-| Every committed change to a **job** writes an entry in the same transaction: created, updated, status changed, assigned, rescheduled, note, photo added/removed, deleted. Rejected or rolled-back changes write nothing | `helpers/activity.js`, `routes/jobs.js` | activity `created…`, `status_changed…`, `assigned…`, `rescheduled…`, `note…`, `updated…`, `photo_added / photo_removed…`, `atomic…` |
-| Each entry names the actor: user, API key (and its owner) or system; names survive user deletion | `helpers/activity.js` | activity `API-key actor…`, `actor names survive…` |
-| Append-only through the API: no route edits or deletes entries; deleting a job keeps its history plus a tombstone | `routes/activity.js`, migration `20261121150000_job_activity` (FK `ON DELETE SET NULL`, CHECK on `type`) | activity `append-only…`, `tombstone…` (2 tests) |
-| Technicians read only their own jobs' activity; office roles read all | `routes/activity.js` | activity `scoping…` |
+| QuickBooks tokens are stored AES-256-GCM encrypted (`INTEGRATION_ENCRYPTION_KEY`, else derived from `JWT_SECRET`); refresh tokens rotate and are persisted before use; status endpoints never return tokens | `helpers/secretBox.js`, `helpers/qbo.js`, `routes/quickbooks.js` | backend `PLAT-4…`; integrations `qbo OAuth: … tokens encrypted…`, `qbo tokens: expired access token is refreshed…` |
+| **Backups**: nightly at 03:00 (brand time zone) and on demand: `pg_dump` + the photo folder (`STORAGE_DRIVER=local`) + a manifest with sha256s and row counts. With `BACKUP_ENCRYPTION_KEY` set, dump and photo archive are AES-256-GCM encrypted before they touch disk (provision.sh generates the key). A failing dump, archive or upload fails the run loudly; optional heartbeat ping | `backup.js`, `scripts/backup-run.js` | platform `backup: local driver…`, `backup: a failing pg_dump fails the backup…`, `backup: uploads (STORAGE_DRIVER=local) are archived and restored byte-identical`, `backup: heartbeat…`, `backup: BACKUP_DRIVER=s3 without a bucket fails loudly` |
+| **Restore**: `npm run restore` verifies sha256s, decrypts (tag checked before anything is written; wrong key or tampering refused), refuses a non-empty database without `--force`, restores in one transaction and compares row counts; local or S3 | `scripts/restore.mjs` | platform `restore: plain backup → scratch DB has identical row counts…`, `restore: encrypted round trip…`, `backup: S3 driver uploads the whole set…; restore latest-remote round-trips it` |
+| **Export everything** (`GET /api/exports/all`, admin): a zip of every table as CSV plus the photos, a manifest and `SHA256SUMS`. Password hashes, API keys, integration tokens and auth tokens are never exported | `routes/exports.js`, `helpers/zip.js` | integrations `exports/all: zip of every table + photos, manifest row counts and sha256 verify, secrets never exported` |
+| Backup run responses never include a server path; manual runs have a cooldown (`BACKUP_COOLDOWN_SECONDS`) | `routes/backup.js` | backend `RT-30…` |
+
+### 2.7 Activity log (audit trail scope: jobs and documents)
+
+| Control | Where | Proven by |
+|---|---|---|
+| Every committed change to a **job** writes an entry in the same transaction: created, updated, status changed, assigned, rescheduled, note, photo added / removed, deleted. Rejected or rolled-back changes write nothing | `helpers/activity.js`, `routes/jobs.js` | activity `created…`, `status_changed…`, `assigned…`, `rescheduled…`, `note…`, `updated…`, `photo_added / photo_removed…`, `atomic…` |
+| **Documents**: creating a quote or invoice (including invoice-from-quote) logs `quote_created` / `invoice_created`; a quote or invoice **status** change (including a quote marked sent by email) logs `updated` with from / to status, on the job's log | `helpers/documentRoutes.js`, `routes/invoices.js` | activity `documents: POST /api/quotes logs quote_created…`, `documents: POST /api/invoices logs invoice_created…` |
+| Each entry names the actor (user, API key and its owner, or system); names survive user deletion | `helpers/activity.js` | activity `API-key actor…`, `actor names survive…` |
+| Append-only through the API; deleting a job keeps its history plus a tombstone | `routes/activity.js`, migration `20261121150000_job_activity` (FK `ON DELETE SET NULL`, CHECK on `type`) | activity `append-only…`, `tombstone…` (2 tests) |
+| Technicians read activity only for jobs they can see (per `TECH_VISIBILITY`); office roles read all, including deleted jobs | `routes/activity.js` | activity `scoping…`; backend `2c TECH_VISIBILITY…` |
 
 ### 2.8 Deployment shape and demo data
 
 | Control | Where | Proven by |
 |---|---|---|
-| Docker Compose does not publish Postgres; MinIO and Mailpit (demo profile) bind to 127.0.0.1; the app's host bind address is `APP_BIND` | `docker-compose.yml`, `docker-compose.db-port.yml` | code review only (no Docker daemon in the team sandbox) |
-| `seed:demo` refuses databases whose name lacks `demo`, `sandbox`, `test` or `wl` and refuses `NODE_ENV=production`; demo people, emails and phone numbers are fictional (reserved domains, 555-01xx, ComReg drama ranges) | `demo/lib/guard.js`, `demo/lib/dataset.js` | whitelabel `guard: only demo-named databases are seeded`, `seed data … fictional, no client names`, `prospects: reserved email domains only…` |
-| The client-name denylist is kept out of git (`backend/demo/denylist.local.txt` is ignored) | `.gitignore`, `demo/lib/guard.js` | whitelabel `denylist: real list stays out of git…` |
-| `npm test` and the other database suites run only against `TEST_DATABASE_URL`, refuse the app database, and (for `npm test`) require "test" in the database name | `tests/api.test.js` and suite headers | the suites refuse to start otherwise (no separate test) |
+| Production compose: only Caddy publishes ports (80/443); app and Postgres 16 are not published. Local demo compose: Postgres not published, MinIO and Mailpit on 127.0.0.1, app bind `APP_BIND` | `docker-compose.prod.yml`, `docker-compose.yml`, `docker-compose.db-port.yml` | code review only (no Docker daemon in the team sandbox; §4.8) |
+| `deploy/provision.sh` forces `NODE_ENV=production`, `DEMO_MODE=false`, `SANDBOX_MODE=false`, `TRUST_PROXY=1` and generates `JWT_SECRET`, `POSTGRES_PASSWORD`, `INTEGRATION_ENCRYPTION_KEY`, `BACKUP_ENCRYPTION_KEY` | `deploy/provision.sh` | lint only (`bash -n`, shellcheck); not run on a server |
+| `seed:demo` refuses databases whose name lacks `demo`, `sandbox`, `test` or `wl` and refuses `NODE_ENV=production`; demo people, emails and phone numbers are fictional | `demo/lib/guard.js`, `demo/lib/dataset.js` | whitelabel `guard: only demo-named databases are seeded`, `seed data … fictional, no client names`, `prospects: reserved email domains only…` |
+| Real prospect files can live outside the repo: `DEMO_PROSPECT` / `--prospect` take an absolute path; a path inside the repo other than `demo/prospects/` is refused. Fixes DOC-2 | `helpers/prospectPath.js` | backend `2c seed-demo --print-env: … external prospect file by absolute path` |
+| The client-name denylist is kept out of git | `.gitignore`, `demo/lib/guard.js` | whitelabel `denylist: real list stays out of git…` |
+| Database test suites run only against `TEST_DATABASE_URL`, refuse the app database, and require "test" in the database name | suite headers | the suites refuse to start otherwise (no separate test) |
 
 ---
 
@@ -133,62 +169,51 @@ Roles are `super-admin`, `admin`, `dispatcher`, `office`, `technician` (`helpers
 
 | Area | What is done | What is not | IDs |
 |---|---|---|---|
-| **Content-Security-Policy** | Policy sent on every page (§2.5) | `script-src` and `script-src-attr` include `'unsafe-inline'` because the pages use inline `<script>` blocks and `onclick` attributes. The CSP therefore does **not** stop injected script. Removing it means moving page scripts into files | RT-15 |
-| **Cross-site scripting** | Server-side: uploads refuse HTML/SVG; error bodies carry no markup | Pages build HTML with `innerHTML` from stored data. **redteam `RT-3` fails on this commit.** Combined with the inline-script CSP and the session token in `localStorage`, a stored XSS can take over the session of whoever views the record. Frontend Phase 2 is rewriting the pages | RT-3 (open, High) |
-| **Pages load at all** | API works end to end (see suites) | **redteam `RT-25` fails:** five pages (`index.html` login/dashboard, `customers`, `customer-detail`, `dispatch`, `quote-invoice`) have a quoting SyntaxError and do not run, so nobody can sign in through the UI on this commit | RT-25 / UX-1 / WL-1 (Critical, in progress) |
-| **Audit logging** | Job changes only (§2.7) | Not logged: changes to customers, quotes, invoices, price book, users, roles, API keys; sign-ins and failed sign-ins; exports; SMS sends; backups. `quote_created` / `invoice_created` exist in the helper and the table's CHECK list but **the quote and invoice routes do not call them yet**. The customer communications log is ordinary data (admins can delete entries), not an audit trail. There is no request log: the app logs errors to the console only | GTM-18 |
-| **Optimistic locking** | Jobs, customers, quotes, invoices | Price book items and users have no `version`: last write wins | RT-9 |
-| **Passwords** | bcrypt; `POST /api/users` requires 10–72 characters | The length rule has no test. Seeds do not apply it (demo password `demo1234` is 8 characters). There is **no password change or reset flow** (`PATCH /api/users/:id` refuses `password`); invited users get an unusable random password and can only sign in with Google. No MFA. No per-account lockout (only the per-IP rate limit) | RT-7 (part) |
-| **Sessions** | Short-lived JWT, re-checked against the user row on every request | Token is a bearer token in `localStorage` (readable by any script on the page). Logout only discards it in the browser; it stays valid until expiry unless the user is deactivated or demoted or `JWT_SECRET` is rotated (which signs everyone out and, without `INTEGRATION_ENCRYPTION_KEY`, also makes stored QuickBooks tokens unreadable) | RT-5 (part) |
-| **Rate limiting** | Per IP, per process (§2.2) | Counters are in memory: they reset on restart and are not shared between processes. One office behind one IP shares the 200 / 15 min budget | UX-15 |
-| **HTTPS** | helmet sends `Strict-Transport-Security`; cookies get `Secure` in production | The app does not terminate TLS. A reverse proxy (Caddy in the hosting plan) must, and `TRUST_PROXY` must then be set | – |
-| **Exports** | CSV for customers, jobs, invoices; formula injection neutralised; admin-only | No export-everything (quotes, communications, photos, activity are not exported). A brand name containing a curly apostrophe breaks every export with a 500, and non-ASCII names are garbled in the filename | GTM-20, WL-14 |
-| **Backups** | Nightly `pg_dump` at 03:00 (brand time zone), gzipped; fails loudly; local or S3-compatible upload; admin-only manual run with cooldown | Dumps are **not encrypted**; **photos are not backed up**; no restore script or tested restore; settings still use `WASABI_*` names. Platform is reworking this in Phase 2c (see DEPLOYMENT.md once updated) | GTM-16, GTM-12 |
-| **Dependencies** | Upgraded in PLAT-7 | 3 high (no upstream fix) via `intuit-oauth`, which is only needed for QuickBooks. Decision for Alex: drop it until real QuickBooks sync is built | PLAT-7 |
-| **Integrations** | Inert unless configured; QuickBooks OAuth hardened | QuickBooks invoice sync is a stub that returns success without sending anything. Gmail sync and webhook handlers are placeholders | GTM-4 |
+| **Password reset and invites, end to end** | API complete and tested (§2.2): reset and invite mails carry links to `reset-password.html` and `accept-invite.html` | **Those two pages are not in `backend/public/` on this commit** (both answer 404 on a running sandbox). The login page has no "Forgot password" link, and there is no "choose a new password" screen for `PASSWORD_CHANGE_REQUIRED`, no change-password form and no Team-page buttons for deactivate / role / reset. A user who is sent a reset or invite link cannot finish in the browser until the Frontend work lands; an admin-created user with a temporary password is stuck at 403 | GAP-1, GAP-2, GAP-4 |
+| **Audit logging** | Jobs and documents (§2.7) | Not logged: edits to a draft document's lines / amount / notes, deletes of draft documents, customer changes, price book, users, roles, password resets, API keys, sign-ins and failed sign-ins, imports, exports, SMS sends, backups. The communications log is ordinary data (admins can delete entries), not an audit trail. There is no request log: the app logs errors to the console only | GTM-18 |
+| **Optimistic locking** | Jobs, customers, quotes, invoices | Price book items and users have no `version`: last write wins | RT-9, DOC-7 |
+| **Sessions** | Short JWT, re-checked against the user row and `sessionVersion` on every request; revoked by password change / reset / deactivation | Token is a bearer token in `localStorage` (readable by any script on the page; the strict CSP makes injecting one much harder). **Logout only discards it in the browser**: it stays valid until it expires (`JWT_EXPIRES`, 8 h) unless one of the revoking events happens. No MFA | RT-5 (part) |
+| **Rate limiting** | Per user / key / IP, failures-only on login (§2.2) | In memory (§4.1): reset by a restart, not shared between processes. After `LOGIN_MAX_PER_EMAIL` failures the **correct** password is also refused (429) from that IP for up to 15 minutes, which an attacker can use to lock a known email out from their own IP only | UX-15, GAP-3 |
+| **HTTPS** | HSTS header; cookies `Secure` in production; Caddy terminates TLS in the production compose | The app does not terminate TLS; `TRUST_PROXY` must be set behind a proxy (provision.sh does). Not yet seen working on a real server | – |
+| **Backups** | Encrypted (when the key is set) dumps and local photos, upload, heartbeat, tested restore (§2.6) | Encryption is **optional in the code**: without `BACKUP_ENCRYPTION_KEY` (sandbox, Docker demo, hand-written `.env`) dumps are plain gzip. With `STORAGE_DRIVER=s3` the app does **not** back up the photo bucket (the bucket's own versioning / lifecycle must). Monthly long-term copies are manual (DEPLOYMENT.md §4) | GTM-16, GTM-12 |
+| **Integrations** | QuickBooks invoice push, payment sync-back and token refresh are real code, tested against a local stub; Xero export follows the published template | **Neither has been used against a real Intuit or Xero company.** Tax code ids, item id and Xero tax-rate names are per-client settings that must be confirmed (`X-MBC-Xero-Unmapped-Tax` warns on placeholders). Gmail sync and webhook handlers are placeholders. Twilio and SMTP have only been exercised in sandbox mode (outbox, suppressed SMS) | GTM-4 |
+| **Erasure / retention** | Admin deletes for customers, jobs, communications; export everything (§2.6) | No per-person export. Deleting a customer fails (409) while jobs or communications reference it, so erasure is an ordered manual delete. Activity entries keep job snapshots after the job is deleted and have no delete route. No automated purge, no "anonymise customer" action | – |
+| **Photo metadata (DOC-4)** | Type checked from bytes | Photos are stored **exactly as uploaded**, including EXIF (time, device and **GPS location**). No stripping on upload | DOC-4 |
+| **SMS opt-out (DOC-5)** | Office roles only, customer numbers only, inert in sandbox | The confirmation and reminder texts (`routes/sms.js`) have **no "Reply STOP to opt out" line** and there is no opt-out list. Needed before US SMS use (TCPA / 10DLC) | DOC-5 |
 
 ---
 
 ## 4. Known open (design limits and work in progress)
 
-1. **In-memory state, single process only.** Google one-time login codes (`routes/googleAuth.js`, `loginCodes`),
-   QuickBooks OAuth states (`routes/quickbooks.js`, `pendingStates`), presence (`server.js`, `presence`),
-   rate-limit counters and the backup running/cooldown flags (`routes/backup.js`) live in process memory. A restart
-   drops them (users retry sign-in or QuickBooks connect; presence rebuilds). Running two app processes behind a
-   load balancer would break Google sign-in and QuickBooks connect and split the rate limits. The hosting plan is
-   one process per client, which is fine; anything else needs a shared store first.
-2. **Single-tenant by design.** There is no Company model and no tenant column. Isolation between clients exists
-   only because each client gets its own server, database, storage and secrets. API keys and roles are global to
-   an instance. Never point two clients at one database.
-3. **Money is stored as `Float`** (`Quote.amount`, `Invoice.amount`, price book `price`/`cost`, inventory and part
-   costs in `prisma/schema.prisma`). Validation stops zero, negative and non-finite amounts, but binary floating
-   point can still round cents. The move to `Decimal` with line items and tax is in progress on the Backend branch
-   (GTM-9, RT-11 remainder) and is not on this commit.
-4. **Migrations are hand-written SQL.** The team sandbox cannot run Prisma's native schema engine, so schema changes
-   are written by hand and applied with `scripts/migrate-deploy.mjs` (Prisma's engine compiled to WebAssembly).
-   That path goes through the `pg` driver adapter, which **splits each migration file on every `;`**
-   (`@prisma/adapter-pg`, `executeScript`): no PL/pgSQL functions or triggers, and no `;` inside comments or string
-   literals (PLAT-15). No drift check between `schema.prisma` and the migrations has been run yet; it needs a machine
-   with the native engine (Alex's Mac, see `docs/RUN-ON-MAC.md` §1.4). The `JobActivity_jobId_fkey` foreign key is
-   deliberately in the migration but not in `schema.prisma`, so a drift check is expected to report it.
-5. **No retention or erasure tooling.** Deleting a customer fails (409) while jobs or communications reference it,
-   so erasure is a manual, ordered delete. Activity entries keep job snapshots (title, description, notes,
-   schedule, ids) after the job is deleted and have no delete route; erasing them needs direct database access.
-   There is no automated purge and no "anonymise customer" action.
-6. **No monitoring or alerting** in the code: `/api/health` exists for an external checker; nothing reports backup
-   failures (GTM-12).
-7. **Repository visibility.** The GitHub repository is public. Client branch history contains a committed
-   `backend/.env` and client names (WL-16); README and `package.json` say MIT (GTM-13, see `LICENSE-PROPOSAL.md`).
+1. **In-memory state, single process only.** These live in process memory and reset on restart: all rate-limit
+   counters (API, login, reset, password change) and the 3-mails-per-account reset throttle (`routes/auth.js`
+   `resetsByUser`); Google one-time login codes (`routes/googleAuth.js` `loginCodes`); QuickBooks OAuth states
+   (`routes/quickbooks.js` `pendingStates`); presence (`server.js` `presence`); the "one at a time" locks for
+   backups (plus the cooldown), imports (`IMPORT_RUNNING`) and export-everything (`EXPORT_RUNNING`), and the
+   QuickBooks token-refresh serialisation. A restart makes users retry sign-in or QuickBooks connect and clears
+   lockouts. Two app processes behind a load balancer would break Google sign-in and QuickBooks connect, split the
+   limits and allow concurrent imports. The hosting plan is one process per client, which is fine; anything else
+   needs a shared store first. (Reset and invite **links** are in the database and survive restarts.)
+2. **Single-tenant by design.** No Company model, no tenant column. Isolation between clients exists only because
+   each client gets its own server, database, storage and secrets. Never point two clients at one database.
+3. **Migrations are hand-written SQL**, applied by Prisma's engine compiled to WebAssembly
+   (`scripts/migrate-deploy.mjs`), because the team sandbox cannot run the native engine. The statement splitter
+   now respects quotes, dollar-quoting and comments (PLAT-15 fixed; platform `sql-split: …` and
+   `migrate-deploy: applies a migration with a PL/pgSQL body…`). **No drift check against `schema.prisma` has been
+   run yet**: it needs the native engine (Alex's Mac, `docs/RUN-ON-MAC.md` §1.4, which lists the deliberate
+   differences: the `JobActivity_jobId_fkey` foreign key and the partial unique index `Invoice_quoteId_live_key`
+   are in SQL only).
+4. **No MFA**, no session list or "sign out everywhere" button (a password change does sign out everywhere).
+5. **No monitoring in the code** beyond `/api/health` and the backup heartbeat (GTM-12).
+6. **Repository visibility.** The GitHub repository is public; client branch history contains a committed
+   `backend/.env` and client names (WL-16); README and `package.json` say MIT (GTM-13, `LICENSE-PROPOSAL.md`).
    Decisions for Alex and Paul.
-8. **Prospect demo env files keep a published `JWT_SECRET`** (found while writing this page; not yet in
-   FINDINGS.md). `seed-demo.js --print-env` copies `JWT_SECRET=__GENERATE_ON_FIRST_RUN__` from
-   `.env.sandbox.example`, and `scripts/sandbox.js` only replaces placeholder secrets when `ENV_FILE` is **not** set,
-   so `ENV_FILE=.env.demo.<slug> npm run sandbox` boots (development mode, warning only) with a secret anyone can
-   read in this public repo. `server.listen(PORT)` listens on all network interfaces, so anyone who can
-   reach the machine (same Wi-Fi, a tunnel) could forge a super-admin token for that demo. Until fixed, put a random value in the generated file
-   (`docs/RUN-ON-MAC.md` §3 shows how).
-9. **Address and phone handling** are US-shaped (required city/ZIP, state default `KS`, no phone normalisation).
-   Not a security issue, but missing fields currently surface as validation errors (WL-11, WL-12).
+7. **Demo instances advertise their login.** `DEMO_MODE=true` returns the admin email and password from
+   `/api/brand`. Safe on `127.0.0.1` (the sandbox default); with `HOST=0.0.0.0` anyone on the same network can sign
+   in. Use it only on a network you control (RUN-ON-MAC §1.5).
+8. **Docker / VPS path not run on a real server.** `docker-compose.prod.yml`, Caddy/TLS, ufw, `provision.sh` and
+   `update.sh` are lint-checked only; the team sandbox has no Docker daemon. The first real-server test is
+   `DEPLOYMENT.md` §10. Until it has passed, nothing on this page about the production shape is proven.
 
 ---
 
@@ -199,28 +224,28 @@ From `backend/`, with a PostgreSQL role that can create databases (the sandbox u
 ```bash
 npm install
 export TEST_DATABASE_URL="postgresql://mbc:mbc_sandbox@localhost:5432/mbc_verify_test?schema=public"
-PGPASSWORD=mbc_sandbox createdb -h localhost -U mbc mbc_verify_test
-# (npm test needs the database to exist; the node:test suites create it if missing)
+PGPASSWORD=mbc_sandbox createdb -h localhost -U mbc mbc_verify_test   # npm test needs it to exist
 
-npm test                    # Prisma-level suite (69). Refuses unless the DB name contains "test"
-npm run test:redteam        # 48 attack tests. RT-3 needs Chrome (CHROME_PATH on a Mac)
-npm run test:backend        # 21 contract tests. RT-30 needs pg_dump on PATH
-npm run test:activity       # 16 activity-log tests
-npm run test:whitelabel     # 36 brand / seed / demo tests (creates <db>_wl; needs CREATEDB)
-DATABASE_URL="$TEST_DATABASE_URL" npm run test:platform   # 12 driver tests
-npm audit --omit=dev        # production dependency advisories
+npm test                     # 69. Refuses unless the DB name contains "test"
+npm run test:redteam         # 48. RT-3 needs Chrome (CHROME_PATH on a Mac)
+npm run test:backend         # 36. CSP browser test needs Chrome; RT-30 needs pg_dump
+npm run test:activity        # 18
+npm run test:documents       # 21 (creates/drops a scratch <db>_mig_<run> database)
+npm run test:integrations    # 19 (QuickBooks against a local stub)
+npm run test:accounts        # 25
+npm run test:whitelabel      # 43 (creates <db>_wl; needs CREATEDB)
+npm run test:platform        # 22 (backup/restore tests need pg_dump, psql and tar)
+npm audit --omit=dev         # production dependency advisories (0 on 6d63a31)
 ```
 
-The database suites clean up only their own rows and can share one `TEST_DATABASE_URL`. Never point them at a
-database with data you want to keep.
+`npm run test:ui` needs a sandbox database and Chrome; see `SETUP.md` §5.
 
 Manual checks not covered by a suite:
 
-- `curl -sI http://localhost:<port>/ | grep -i content-security-policy` shows the policy in §2.5.
+- `curl -sI http://127.0.0.1:<port>/ | grep -i content-security-policy` shows the policy in §2.5.
 - `NODE_ENV=production JWT_SECRET= node server.js` exits with `[CONFIG] FATAL`.
-- `docker compose config` shows no `ports:` on `postgres`, and `127.0.0.1:` on MinIO and Mailpit.
-- `npm run demo:check -- --port <port>` before any demo (it warns that `/api/brand` does not yet return `logoUrl` /
-  `faviconUrl`, see WL-7).
+- `docker compose -f docker-compose.prod.yml config` shows `ports:` on `caddy` only.
+- `npm run demo:check -- --port <port> --headless` says `READY` before any demo.
 
 When a fix lands, move its row from §3 or §4 to §2 with the test that proves it, and update the date and commit
 at the top.
