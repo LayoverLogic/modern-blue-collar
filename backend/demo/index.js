@@ -23,6 +23,27 @@ class TradeConflictError extends Error {
   constructor(message) { super(message); this.name = 'TradeConflictError'; }
 }
 
+/**
+ * Which demo locale to seed (M3): --locale, else the prospect's own locale,
+ * else the instance's BRAND_COUNTRY (brand.locale.country), else US. With
+ * `strict`, a locale that differs from BRAND_COUNTRY is refused (an Irish
+ * instance must not get Anytown, KS addresses and +1 phones, nor the reverse);
+ * the error is a TradeConflictError (exit code 2, like a trade mismatch).
+ */
+function resolveDemoLocale({ brand, prospect, localeCode, strict = true }) {
+  const brandCC = brand && brand.locale && brand.locale.country ? String(brand.locale.country).toUpperCase() : null;
+  const code = String(localeCode || prospect.locale || brandCC || 'US').toUpperCase();
+  if (strict && brandCC && code !== brandCC) {
+    const why = localeCode ? `--locale ${code}` : `Prospect "${prospect.slug}" is set in ${code} (its "locale")`;
+    throw new TradeConflictError(
+      `${why} but this instance runs BRAND_COUNTRY=${brandCC} — the demo would show ${code} addresses, phones and tax on a ${brandCC} instance.\n` +
+      (localeCode ? '  Drop --locale (the default follows BRAND_COUNTRY), or set BRAND_COUNTRY / BRAND_TIMEZONE for that country.\n'
+        : `  Generate its env file and start the instance with it:\n    node scripts/seed-demo.js --prospect ${prospect.slug} --print-env\n    ENV_FILE=.env.demo.${prospect.slug} npm run sandbox\n`),
+    );
+  }
+  return loadLocale(code);
+}
+
 /** Throw if the prospect was written for a different trade than the instance runs. */
 function assertProspectMatchesBrand(prospect, brand) {
   const want = prospect.brand && prospect.brand.BRAND_TRADE_TYPE;
@@ -46,8 +67,8 @@ async function runSeedDemo({
   mode = 'all', now = new Date(), seed, password, keepEmails = [], log = () => {},
 }) {
   const prospect = typeof prospectName === 'object' ? prospectName : loadProspect(prospectName);
-  const locale = loadLocale(localeCode || prospect.locale || 'US');
   assertProspectMatchesBrand(prospect, brand);
+  const locale = resolveDemoLocale({ brand, prospect, localeCode });
   const dataset = buildDataset({ brand, prospect, locale, now, seed });
   if (mode !== 'pricebook' && !password) {
     throw new Error('DEFAULT_PASSWORD is not set — it is the password for the seeded demo team (e.g. DEFAULT_PASSWORD=demo1234 in .env.sandbox). There is no built-in fallback.');
@@ -82,6 +103,7 @@ async function runSeedDemo({
     summary.inventory = await seedLib.seedInventory(prisma, dataset);
     summary.people = await seedLib.seedPeopleAndJobs(prisma, dataset, { password });
     const p = summary.people;
+    if (p.phonesFixed) log(`rewrote ${p.phonesFixed} older demo phone numbers to E.164`);
     if (!p.jobs && !p.customers && state.seeded) {
       log(`demo data already present for "${prospect.slug}" — nothing added (use --reset for fresh dates)`);
       if (p.activity) log(`backfilled ${p.activity} activity entries for jobs seeded before the activity log existed`);
@@ -95,7 +117,7 @@ async function runSeedDemo({
 
 /** Contents of .env.demo.<slug>: the sandbox example with the prospect's BRAND_* values. */
 function renderProspectEnv({ prospect, brandTrade, port, databaseName, exampleFile }) {
-  const locale = loadLocale(prospect.locale || 'US');
+  const locale = loadLocale(prospect.locale || (prospect.brand && prospect.brand.BRAND_COUNTRY) || 'US');
   const overrides = { ...(prospect.brand || {}) };
   if (!overrides.BRAND_TRADE_TYPE) overrides.BRAND_TRADE_TYPE = brandTrade;
   if (!overrides.BRAND_TIMEZONE) overrides.BRAND_TIMEZONE = locale.timezone;
@@ -130,7 +152,7 @@ function renderProspectEnv({ prospect, brandTrade, port, databaseName, exampleFi
 }
 
 module.exports = {
-  runSeedDemo, renderProspectEnv, assertProspectMatchesBrand, TradeConflictError, DemoGuardError,
+  runSeedDemo, renderProspectEnv, assertProspectMatchesBrand, resolveDemoLocale, TradeConflictError, DemoGuardError,
   assertDemoDatabase, loadProspect, loadLocale, listProspects, buildDataset,
   backendDir: path.join(__dirname, '..'),
 };

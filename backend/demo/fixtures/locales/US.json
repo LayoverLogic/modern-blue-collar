@@ -5,10 +5,11 @@
   "timezone": "America/Chicago",
   "invoiceTermsDays": 14,
   "phone": {
-    "note": "555-0100..555-0199 is reserved for fictional use in every NANP area code.",
+    "note": "555-0100..555-0199 is reserved for fictional use in every NANP area code. Templates are national; seeded rows are stored in E.164 (+1AAA55501nn), which `pattern` matches.",
     "landline": "({area}) 555-01{nn}",
     "mobile": "({area}) 555-01{nn}",
-    "pattern": "^\\(\\d{3}\\) 555-01\\d{2}$"
+    "pattern": "^\\+1\\d{3}55501\\d{2}$",
+    "nationalPattern": "^\\(\\d{3}\\) 555-01\\d{2}$"
   },
   "customerEmailDomain": "example.com",
   "firstNames": [
@@ -110,5 +111,33 @@
       "Heritage",
       "Senior Living"
     ]
-  ]
+  ],
+  "defaultArea": {
+    "note": "Used by prospects without an `area` (the generic default prospect): fictional towns, BRAND_DEFAULT_STATE (state null), ZIP-shaped codes.",
+    "state": null,
+    "phoneAreaCode": "555",
+    "towns": [
+      {
+        "name": "Anytown",
+        "postcodes": [
+          "00101",
+          "00102",
+          "00103"
+        ]
+      },
+      {
+        "name": "Springfield",
+        "postcodes": [
+          "00111",
+          "00112"
+        ]
+      },
+      {
+        "name": "Riverside",
+        "postcodes": [
+          "00121"
+        ]
+      }
+    ]
+  }
 }

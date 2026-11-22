@@ -5,8 +5,9 @@
  *   resetDemoData(prisma, { keepEmails })     → wipes business data (demo DBs only — callers guard)
  *   seedPricebook(prisma, dataset)            → idempotent per (industry, category, name)
  *   seedInventory(prisma, dataset)            → idempotent per name
- *   seedPeopleAndJobs(prisma, dataset, opts)  → team, customers, jobs, quotes, invoices, parts, comms,
- *                                               activity trails (GTM-18)
+ *   seedPeopleAndJobs(prisma, dataset, opts)  → team, customers, jobs, quotes, invoices (with lines and
+ *                                               the brand's tax, M4), parts, comms, activity trails
+ *                                               (GTM-18); rewrites older demo phones to E.164 (L4)
  *   writeActivityTrail(prisma, job, spec, ctx)  → JobActivity rows for one seeded job
  *
  * Trade switching (WL-4): the database does not know which trade it was seeded
@@ -18,6 +19,26 @@
 
 const bcrypt = require('bcryptjs');
 const activity = require('../../helpers/activity');
+const { toE164 } = require('../../helpers/phone');
+
+/**
+ * L4: demo rows seeded before phones were stored in E.164 ("(555) 555-0110")
+ * are rewritten in place the next time seed:demo runs (the sandbox runs it at
+ * every start). Only an unambiguous national number is changed.
+ */
+async function fixPhone(prisma, model, row, country) {
+  if (!row || !row.phone || /^\+\d{8,15}$/.test(row.phone)) return false;
+  const e164 = toE164(row.phone, country);
+  if (!e164) return false;
+  await prisma[model].update({ where: { id: row.id }, data: { phone: e164 } });
+  row.phone = e164;
+  return true;
+}
+
+/** Prisma line rows for a seeded quote / invoice (pricebook link by name). */
+const lineRows = (doc, pbByName) => (doc.lines || []).map(({ pricebookName, ...l }) => ({
+  ...l, pricebookItemId: (pbByName.get(pricebookName) || {}).id || null,
+}));
 
 /**
  * Turn a dataset job's symbolic trail (demo/lib/dataset.js activityTrail) into
@@ -129,7 +150,8 @@ async function seedPeopleAndJobs(prisma, dataset, { password }) {
     throw new Error('DEFAULT_PASSWORD is not set — it is the password for the seeded demo team (e.g. DEFAULT_PASSWORD=demo1234 in .env.sandbox).');
   }
   const hash = await bcrypt.hash(password, 10);
-  const out = { users: 0, customers: 0, jobs: 0, quotes: 0, invoices: 0, parts: 0, communications: 0, activity: 0 };
+  const out = { users: 0, customers: 0, jobs: 0, quotes: 0, invoices: 0, parts: 0, communications: 0, activity: 0, phonesFixed: 0 };
+  const country = dataset.meta.locale;
 
   // Seeded documents carry the instance currency (BRAND_COUNTRY / BRAND_CURRENCY),
   // not the column default USD — an Irish demo shows EUR.
@@ -138,18 +160,19 @@ async function seedPeopleAndJobs(prisma, dataset, { password }) {
   const userByEmail = new Map();
   for (const t of dataset.team) {
     let u = await prisma.user.findUnique({ where: { email: t.email } });
-    if (!u) { u = await prisma.user.create({ data: { ...t, password: hash } }); out.users++; }
+    if (!u) { u = await prisma.user.create({ data: { ...t, password: hash } }); out.users++; } else if (await fixPhone(prisma, 'user', u, country)) out.phonesFixed++;
     userByEmail.set(t.email, u);
   }
 
   const custByKey = new Map();
   for (const { key, ...c } of dataset.customers) {
     let row = await prisma.customer.findFirst({ where: { email: c.email } });
-    if (!row) { row = await prisma.customer.create({ data: { ...c, createdAt: new Date(c.createdAt) } }); out.customers++; }
+    if (!row) { row = await prisma.customer.create({ data: { ...c, createdAt: new Date(c.createdAt) } }); out.customers++; } else if (await fixPhone(prisma, 'customer', row, country)) out.phonesFixed++;
     custByKey.set(key, row);
   }
 
   const invByName = new Map((await prisma.inventoryItem.findMany()).map((i) => [i.name, i]));
+  const pbByName = new Map((await prisma.priceBookItem.findMany({ where: { industry: dataset.meta.industry } })).map((p) => [p.name, p]));
 
   for (const j of dataset.jobs) {
     const customer = custByKey.get(j.customerKey);
@@ -184,14 +207,21 @@ async function seedPeopleAndJobs(prisma, dataset, { password }) {
     out.jobs++;
     let quote = null; let invoice = null;
     if (j.quote) {
-      // amount-only document: subtotal = amount, taxTotal = 0 (contract 2b §2)
-      quote = await prisma.quote.create({ data: { jobId: job.id, amount: j.quote.amount, subtotal: j.quote.amount, taxTotal: 0, currency, status: j.quote.status, notes: j.quote.notes, createdAt: new Date(j.quote.createdAt), issuedAt: new Date(j.quote.createdAt) } });
+      // line-item document with the brand's tax (M4): amount = subtotal + taxTotal
+      const lines = lineRows(j.quote, pbByName);
+      quote = await prisma.quote.create({ data: {
+        jobId: job.id, amount: j.quote.amount, subtotal: j.quote.subtotal ?? j.quote.amount, taxTotal: j.quote.taxTotal ?? 0, currency,
+        status: j.quote.status, notes: j.quote.notes, createdAt: new Date(j.quote.createdAt), issuedAt: new Date(j.quote.createdAt),
+        ...(lines.length ? { lines: { create: lines } } : {}),
+      } });
       out.quotes++;
     }
     if (j.invoice) {
+      const lines = lineRows(j.invoice, pbByName);
       invoice = await prisma.invoice.create({
         data: {
-          jobId: job.id, amount: j.invoice.amount, subtotal: j.invoice.amount, taxTotal: 0, currency, status: j.invoice.status, notes: j.invoice.notes,
+          jobId: job.id, amount: j.invoice.amount, subtotal: j.invoice.subtotal ?? j.invoice.amount, taxTotal: j.invoice.taxTotal ?? 0, currency, status: j.invoice.status, notes: j.invoice.notes,
+          ...(lines.length ? { lines: { create: lines } } : {}),
           issuedAt: new Date(j.invoice.createdAt),
           dueDate: new Date(j.invoice.dueDate), paidAt: j.invoice.paidAt ? new Date(j.invoice.paidAt) : null,
           createdAt: new Date(j.invoice.createdAt),

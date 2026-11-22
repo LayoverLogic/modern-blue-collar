@@ -21,6 +21,9 @@
 'use strict';
 
 const { localDate, addDays, zonedToUtc } = require('./dates');
+const { toE164 } = require('../../helpers/phone');
+const { buildLocale } = require('../../helpers/locale');
+const { computeTotals } = require('../../helpers/documents');
 const { loadTrade } = require('./fixtures');
 const { JOB_TYPES_BY_COUNTRY, resolveJobType } = require('../../helpers/brandValidate');
 
@@ -130,14 +133,46 @@ function weekday(ymd, direction) {
   return ymd;
 }
 
-function phoneFactory(locale, prospect) {
+/** Fictional numbers from the locale templates, stored in E.164 like the API stores them (L4). */
+function phoneFactory(locale, area) {
   let nn = 0;
-  const area = (prospect.area && prospect.area.phoneAreaCode) || '555';
+  const code = (area && area.phoneAreaCode) || '555';
   return (kind = 'mobile') => {
     nn += 1;
     if (nn > 99) nn = 1;
     const tpl = locale.phone[kind] || locale.phone.mobile;
-    return tpl.replace('{area}', area).replace('{nn}', String(nn).padStart(2, '0'));
+    const national = tpl.replace('{area}', code).replace('{nn}', String(nn).padStart(2, '0'));
+    const e164 = toE164(national, locale.code);
+    if (!e164) throw new Error(`Demo locale ${locale.code}: phone "${national}" cannot be stored in E.164`);
+    return e164;
+  };
+}
+
+/**
+ * Tax for seeded documents (M4): the brand's default rate key when it is above
+ * 0 %, else its first non-zero rate; null when the brand charges no tax.
+ * brand.locale is set by brand.config.js; a bare buildBrand() result (tests)
+ * gets the country defaults of the demo locale.
+ */
+function demoTax(brand, locale) {
+  const loc = brand.locale || buildLocale({ BRAND_COUNTRY: locale.code }, brand);
+  const rates = loc.taxRates || [];
+  const pick = rates.find((r) => r.key === loc.taxDefault && r.rate > 0) || rates.find((r) => r.rate > 0);
+  return pick ? { key: pick.key, rate: pick.rate } : null;
+}
+
+/** Document lines + totals (helpers/documents.js maths, so totals match what the API computes). */
+function documentFor(lines, tax) {
+  const t = computeTotals(lines.map((l, i) => ({
+    position: i + 1, description: l.name, quantity: l.qty, unitPrice: l.price,
+    taxRateKey: tax ? tax.key : null, taxRate: tax ? tax.rate : 0, pricebookName: l.name,
+  })));
+  return {
+    subtotal: t.subtotal.toNumber(), taxTotal: t.taxTotal.toNumber(), amount: t.total.toNumber(),
+    lines: t.lines.map((l) => ({
+      position: l.position, description: l.description, quantity: l.quantity.toNumber(), unitPrice: l.unitPrice.toNumber(),
+      taxRateKey: l.taxRateKey, taxRate: l.taxRate.toNumber(), lineTotal: l.lineTotal.toNumber(), pricebookName: l.pricebookName,
+    })),
   };
 }
 
@@ -157,9 +192,14 @@ function buildDataset({ brand, prospect, locale, now = new Date(), seed } = {}) 
   const trade = loadTrade(brand.tradeType, locale);
   const seedStr = seed || prospect.seed || `${prospect.slug}:${brand.tradeType}:${locale.code}`;
   const rng = makeRng(seedStr);
-  const nextPhone = phoneFactory(locale, prospect);
+  // a prospect without its own area (the generic default) uses the locale's (M3 / M5)
+  const area = prospect.area || locale.defaultArea;
+  if (!area || !Array.isArray(area.towns) || !area.towns.length) throw new Error(`Demo locale ${locale.code} has no defaultArea and prospect ${prospect.slug} no area`);
+  const nextPhone = phoneFactory(locale, area);
+  const tax = demoTax(brand, locale);
   const today = localDate(now, tz);
-  const state = (prospect.area && prospect.area.state) || brand.defaultState;
+  // US: the area's state, else BRAND_DEFAULT_STATE; elsewhere the area's county/region
+  const state = area.state || (locale.code === 'US' ? brand.defaultState : null);
   const termsDays = locale.invoiceTermsDays || 14;
   const nowMs = now.getTime();
   const iso = (ms) => new Date(Math.min(ms, nowMs)).toISOString();
@@ -214,7 +254,7 @@ function buildDataset({ brand, prospect, locale, now = new Date(), seed } = {}) 
   const customers = [];
   for (let i = 0; i < nCust; i++) {
     const commercial = i >= nCust - nCommercial;
-    const town = prospect.area.towns[i % prospect.area.towns.length];
+    const town = area.towns[i % area.towns.length];
     const [lo, hi] = locale.houseNumber || [1, 999];
     let firstName; let lastName; let email;
     if (commercial) {
@@ -262,8 +302,9 @@ function buildDataset({ brand, prospect, locale, now = new Date(), seed } = {}) 
       if (!p) throw new Error(`Trade fixture ${brand.tradeType}: job "${t.baseName}" refers to unknown pricebook item "${ref}"`);
       return { name: p.name, qty, price: p.price };
     });
-    const amount = round2(lines.reduce((s, l) => s + l.qty * l.price, 0));
+    const amount = round2(lines.reduce((s, l) => s + l.qty * l.price, 0)); // before tax
     if (!(amount > 0)) throw new Error(`Trade fixture ${brand.tradeType}: job "${t.baseName}" totals ${amount}`);
+    const doc = documentFor(lines, tax); // lines with the brand's tax (M4)
 
     const customer = t.customer === 'commercial' && comCust.length
       ? comCust[comI++ % comCust.length] : resCust[resI++ % resCust.length];
@@ -284,7 +325,7 @@ function buildDataset({ brand, prospect, locale, now = new Date(), seed } = {}) 
     let quote = null;
     if (slot.quote || amount >= 750) {
       const status = slot.quote || 'approved';
-      quote = { amount, status, notes: lines.map((l) => `${l.qty} × ${l.name}`).join('; '), createdAt: iso(created + 3600000) };
+      quote = { ...doc, status, notes: lines.map((l) => `${l.qty} × ${l.name}`).join('; '), createdAt: iso(created + 3600000) };
     }
 
     let invoice = null;
@@ -294,7 +335,7 @@ function buildDataset({ brand, prospect, locale, now = new Date(), seed } = {}) 
       const due = new Date(`${addDays(completedYmd, termsDays)}T00:00:00.000Z`);
       const paid = slot.invoice === 'paid' ? new Date(completedAt.getTime() + 4 * 86400000) : null;
       invoice = {
-        amount,
+        ...doc,
         status: slot.invoice,
         dueDate: due.toISOString(),
         paidAt: paid ? iso(paid.getTime()) : null,
@@ -328,7 +369,7 @@ function buildDataset({ brand, prospect, locale, now = new Date(), seed } = {}) 
       notes: t.notes || null,
       customerKey: customer.key,
       techEmail: tech ? tech.email : null,
-      amount,
+      amount: doc.amount,
       quote,
       invoice,
       parts,
@@ -370,4 +411,4 @@ function buildDataset({ brand, prospect, locale, now = new Date(), seed } = {}) 
   };
 }
 
-module.exports = { buildDataset, makeRng, hash32, schedulePlan, activityTrail };
+module.exports = { buildDataset, makeRng, hash32, schedulePlan, activityTrail, demoTax };

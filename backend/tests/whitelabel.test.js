@@ -517,7 +517,12 @@ dbTest('seed:demo with a prospect: Irish heating firm on a plumbing-hvac instanc
   const r = run('scripts/seed-demo.js', ['--prospect', 'ie-heating-example', '--reset'], env);
   assert.equal(r.code, 0, r.out);
   const custs = await prisma.customer.findMany();
-  assert.ok(custs.every((c) => c.state === 'Co. Kildare' && /^0(20|89) /.test(c.phone)));
+  // L4: stored in E.164 (ComReg drama ranges +353 20 91x / +353 89 011 0)
+  assert.ok(custs.every((c) => c.state === 'Co. Kildare' && /^\+353(2091|890110)\d+$/.test(c.phone)), custs.map((c) => c.phone).join(', '));
+  // M4: documents carry VAT at the brand's default rate (this env: IE defaults → standard 23 %)
+  const invs = await prisma.invoice.findMany({ include: { lines: true } });
+  assert.ok(invs.length && invs.every((i) => i.taxTotal > 0 && i.lines.length && i.lines.every((l) => l.taxRateKey === 'standard' && l.taxRate === 23)), 'invoices without VAT lines');
+  assert.ok(invs.every((i) => Math.round(i.amount * 100) === Math.round((i.subtotal + i.taxTotal) * 100)));
   assert.ok((await prisma.priceBookItem.findMany()).some((p) => p.name === 'Annual Boiler Service'));
   // B3 item 10: stored job types are the Irish ones the brand offers
   const ieTypes = bv.buildBrand(env).jobTypes;
@@ -528,6 +533,8 @@ dbTest('seed:demo with a prospect: Irish heating firm on a plumbing-hvac instanc
   assert.equal(chk.code, 0, chk.out);
   assert.match(chk.out, /PASS\s+db\.wording .*IE wording/);
   assert.match(chk.out, /PASS\s+db\.currency .*EUR/);
+  assert.match(chk.out, /PASS\s+db\.tax .*carry VAT/);
+  assert.match(chk.out, /PASS\s+db\.addresses .*IE-shaped/);
   const wrong = run('scripts/seed-demo.js', ['--prospect', 'ks-plumbing-example'], env);
   assert.equal(wrong.code, 2);
   assert.match(wrong.out, /plumbing business but this instance runs BRAND_TRADE_TYPE=plumbing-hvac/);
@@ -702,7 +709,7 @@ test('B3 demo:check helpers: currency symbols and Recent Jobs order', () => {
   assert.deepEqual(demoChecks.orderProblems('x', 'Recent Jobs', []), ['no "Recent Jobs" section']);
 });
 
-dbTest('B3 seed:demo: amount-only documents have subtotal = amount, due dates are calendar dates; demo:check totals pass', async () => {
+dbTest('B3 seed:demo (US, no tax rates): subtotal = amount, tax 0, due dates are calendar dates; demo:check totals pass', async () => {
   const r = run('scripts/seed-demo.js', ['--reset'], { BRAND_TRADE_TYPE: 'electrical' });
   assert.equal(r.code, 0, r.out);
   const docs = [...await prisma.quote.findMany({ include: { lines: true } }), ...await prisma.invoice.findMany({ include: { lines: true } })];
@@ -724,4 +731,145 @@ dbTest('B3 seed:demo: amount-only documents have subtotal = amount, due dates ar
     assert.equal(bad.code, 1);
     assert.match(bad.out, /FAIL\s+db\.totals .*quote#/);
   } finally { await prisma.quote.update({ where: { id: q.id }, data: { subtotal: q.subtotal } }); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// B4 (Verifier #1): locale from BRAND_COUNTRY (M3), taxed documents (M4),
+// address shape (M5), E.164 phones (L4)
+// ═════════════════════════════════════════════════════════════════════════════
+test('M3 / M5 the default prospect follows the brand country: IE gets Irish towns, counties, Eircodes, +353 phones', () => {
+  for (const cc of ['US', 'IE']) {
+    const brand = bv.buildBrand({ BRAND_TRADE_TYPE: 'plumbing', BRAND_COUNTRY: cc, BRAND_TIMEZONE: cc === 'IE' ? 'Europe/Dublin' : 'America/Chicago' });
+    brand.locale = require('../helpers/locale').buildLocale({ BRAND_COUNTRY: cc }, brand);
+    const locale = demo.resolveDemoLocale({ brand, prospect: loadProspect('default') });
+    assert.equal(locale.code, cc);
+    const ds = buildDataset({ brand, prospect: loadProspect('default'), locale, now: NOW });
+    for (const c of ds.customers) {
+      assert.deepEqual(demoChecks.addressProblems(c, brand.locale), [], `${cc} ${c.address}, ${c.city}, ${c.state} ${c.zip}`);
+      assert.match(c.phone, cc === 'IE' ? /^\+353/ : /^\+1/);
+    }
+    if (cc === 'IE') {
+      assert.ok(ds.customers.every((c) => c.state === 'Co. Dublin' && !/Anytown|Springfield/.test(c.city)));
+      assert.ok(ds.jobs.filter((j) => j.invoice).every((j) => j.invoice.taxTotal > 0), 'IE invoices carry VAT');
+    } else {
+      assert.ok(ds.customers.every((c) => c.state === 'KS' && /^\d{5}$/.test(c.zip)));
+      assert.ok(ds.jobs.every((j) => !j.invoice || j.invoice.taxTotal === 0), 'US default: no sales tax configured');
+    }
+  }
+  // a prospect pinned to another country is refused for seeding (dry run previews it)
+  const us = bv.buildBrand({ BRAND_TRADE_TYPE: 'plumbing-hvac', BRAND_COUNTRY: 'US' });
+  us.locale = require('../helpers/locale').buildLocale({}, us);
+  assert.throws(() => demo.resolveDemoLocale({ brand: us, prospect: loadProspect('ie-heating-example') }), /set in IE .* BRAND_COUNTRY=US/);
+  assert.throws(() => demo.resolveDemoLocale({ brand: us, prospect: loadProspect('default'), localeCode: 'IE' }), /--locale IE/);
+  assert.equal(demo.resolveDemoLocale({ brand: us, prospect: loadProspect('ie-heating-example'), strict: false }).code, 'IE');
+  // an area is written for one country, so it must name its locale
+  assert.throws(() => validateProspect({ slug: 'x', emailDomain: 'x.example', area: { towns: [{ name: 'A', postcodes: ['00001'] }] } }, 'x.json'), /must say which "locale"/);
+});
+
+test('M4 seeded documents carry the brand tax: lines × rate, totals add up (US sales tax and IE VAT)', () => {
+  const env = { BRAND_TRADE_TYPE: 'electrical', BRAND_COUNTRY: 'US', BRAND_TAX_RATES: 'sales:8.5', BRAND_TIMEZONE: 'America/Chicago' };
+  const brand = bv.buildBrand(env);
+  brand.locale = require('../helpers/locale').buildLocale(env, brand);
+  const ds = buildDataset({ brand, prospect: loadProspect('default'), locale: loadLocale('US'), now: NOW });
+  const docs = ds.jobs.flatMap((j) => [j.quote, j.invoice].filter(Boolean));
+  assert.ok(docs.length >= 6);
+  for (const d of docs) {
+    assert.ok(d.lines.length >= 1 && d.lines.every((l) => l.taxRateKey === 'sales' && l.taxRate === 8.5));
+    const sub = d.lines.reduce((s, l) => s + Math.round(l.lineTotal * 100), 0);
+    assert.equal(sub, Math.round(d.subtotal * 100));
+    assert.equal(Math.round(d.taxTotal * 100), Math.round(d.subtotal * 8.5));
+    assert.equal(Math.round(d.amount * 100), Math.round(d.subtotal * 100) + Math.round(d.taxTotal * 100));
+  }
+  // a 0 % default (IE "zero") still seeds a realistic non-zero rate
+  const ie = { BRAND_TRADE_TYPE: 'hvac', BRAND_COUNTRY: 'IE', BRAND_TAX_DEFAULT: 'zero', BRAND_TIMEZONE: 'Europe/Dublin' };
+  const ib = bv.buildBrand(ie); ib.locale = require('../helpers/locale').buildLocale(ie, ib);
+  assert.deepEqual(require('../demo/lib/dataset').demoTax(ib, loadLocale('IE')), { key: 'standard', rate: 23 });
+});
+
+test('M4 / M5 demo:check FAILs untaxed documents on a taxed brand and addresses of another country (unit, fake rows)', async () => {
+  const env = { BRAND_TRADE_TYPE: 'electrical', BRAND_COUNTRY: 'IE', BRAND_TIMEZONE: 'Europe/Dublin' };
+  const brand = bv.buildBrand(env);
+  brand.locale = require('../helpers/locale').buildLocale(env, brand);
+  const doc = (id, taxTotal) => ({ id, jobId: 1, amount: 100 + taxTotal, subtotal: 100, taxTotal, currency: 'EUR', status: 'unpaid', lines: [] });
+  const rows = {
+    customer: [
+      { id: 1, firstName: 'A', phone: '+353890110101', address: '12 Elm St', city: 'Anytown', state: 'KS', zip: '00103' },
+      { id: 2, firstName: 'B', phone: '+353890110102', address: '3 Main Street', city: 'Naas', state: 'Co. Kildare', zip: 'W91 X2Y4' },
+    ],
+    invoice: [doc(1, 0), doc(2, 0), doc(3, 23)],
+    quote: [doc(4, 0)],
+  };
+  const res = await demoChecks.runDbChecks({ prisma: fakePrisma(rows), brand, now: NOW });
+  const by = (id) => res.find((r) => r.id === id) || {};
+  assert.equal(by('db.tax').level, 'FAIL', JSON.stringify(by('db.tax')));
+  assert.match(by('db.tax').msg, /only 1 of 4 quotes \/ invoices carry VAT/);
+  assert.equal(by('db.addresses').level, 'FAIL');
+  assert.match(by('db.addresses').msg, /customer#1 Eircode "00103" is not IE-shaped/);
+  assert.match(by('db.addresses').msg, /county "KS" is not an Irish county \(a US state\)/);
+  assert.doesNotMatch(by('db.addresses').msg, /customer#2/);
+  // fixed rows pass; a brand without tax rates is not asked for tax
+  const ok = { customer: [rows.customer[1]], invoice: [doc(1, 13.5), doc(2, 23)], quote: [doc(4, 0)] };
+  const res2 = await demoChecks.runDbChecks({ prisma: fakePrisma(ok), brand, now: NOW });
+  assert.equal(res2.find((r) => r.id === 'db.tax').level, 'PASS');
+  assert.equal(res2.find((r) => r.id === 'db.addresses').level, 'PASS');
+  const usBrand = bv.buildBrand({ BRAND_TRADE_TYPE: 'electrical' });
+  usBrand.locale = require('../helpers/locale').buildLocale({}, usBrand);
+  const res3 = await demoChecks.runDbChecks({ prisma: fakePrisma({ customer: [{ id: 3, firstName: 'C', phone: '+16205550101', address: '1 Main St', city: 'Newton', state: 'Co. Kildare', zip: 'W91 X2Y4' }], invoice: [doc(1, 0)] }), brand: usBrand, now: NOW });
+  assert.ok(!res3.some((r) => r.id === 'db.tax'), 'no tax rates → no tax check');
+  assert.match(res3.find((r) => r.id === 'db.addresses').msg, /ZIP code "W91 X2Y4" is not US-shaped.*state "Co\. Kildare" is not a US state/);
+});
+
+dbTest('M3 env-only BRAND_COUNTRY=IE: seed:demo (default prospect) gives an Irish demo; demo:check passes; L4 E.164 + legacy rows rewritten', async () => {
+  const env = { BRAND_TRADE_TYPE: 'plumbing', BRAND_COUNTRY: 'IE', BRAND_TIMEZONE: 'Europe/Dublin' };
+  const r = run('scripts/seed-demo.js', ['--reset'], env);
+  assert.equal(r.code, 0, r.out);
+  const custs = await prisma.customer.findMany();
+  assert.ok(custs.length >= 4);
+  assert.ok(custs.every((c) => c.state === 'Co. Dublin' && /^[AC-FHKNPRTV-Y]\d{2} [0-9AC-FHKNPRTV-Y]{4}$/.test(c.zip) && /^\+353/.test(c.phone)), JSON.stringify(custs[0]));
+  assert.ok(!custs.some((c) => /Anytown|Springfield|Riverside/.test(c.city)));
+  const users = await prisma.user.findMany({ where: { email: { endsWith: '@demo.test' }, role: { not: 'super-admin' } } });
+  assert.ok(users.length >= 5 && users.every((u) => /^\+353\d+$/.test(u.phone)), users.map((u) => u.phone).join(', '));
+  const quotes = await prisma.quote.findMany();
+  assert.ok(quotes.length && quotes.every((q) => q.currency === 'EUR' && q.taxTotal > 0));
+  const chk = run('scripts/demo-check.js', [], env);
+  assert.equal(chk.code, 0, chk.out);
+  assert.match(chk.out, /PASS\s+db\.addresses .*IE-shaped/);
+  assert.match(chk.out, /PASS\s+db\.tax /);
+  assert.doesNotMatch(chk.out, /db\.phones-e164/);
+  // L4: a row seeded before E.164 is rewritten by the next (idempotent) seed run
+  const c = custs[0];
+  const national = `0${c.phone.slice(4, 6)} ${c.phone.slice(6, 9)} ${c.phone.slice(9)}`;
+  await prisma.customer.update({ where: { id: c.id }, data: { phone: national } });
+  await prisma.user.update({ where: { id: users[0].id }, data: { phone: `0${users[0].phone.slice(4)}` } });
+  const warn = run('scripts/demo-check.js', [], env);
+  assert.match(warn.out, /WARN\s+db\.phones-e164/);
+  const again = run('scripts/seed-demo.js', [], env);
+  assert.equal(again.code, 0, again.out);
+  assert.match(again.out, /rewrote 2 older demo phone numbers to E\.164/);
+  assert.equal((await prisma.customer.findUnique({ where: { id: c.id } })).phone, c.phone);
+  // a US prospect on this Irish instance is refused (exit 2), nothing written
+  const before = await prisma.customer.count();
+  const wrong = run('scripts/seed-demo.js', ['--prospect', 'ks-plumbing-example'], { ...env, BRAND_TRADE_TYPE: 'plumbing' });
+  assert.equal(wrong.code, 2, wrong.out);
+  assert.match(wrong.out, /set in US .* BRAND_COUNTRY=IE/);
+  assert.equal(await prisma.customer.count(), before);
+});
+
+dbTest('M4 a US instance with sales tax: seeded documents carry it and demo:check passes db.tax; untaxed rows fail it', async () => {
+  const env = { BRAND_TRADE_TYPE: 'electrical', BRAND_TAX_RATES: 'sales:7.5' };
+  const r = run('scripts/seed-demo.js', ['--reset'], env);
+  assert.equal(r.code, 0, r.out);
+  const invs = await prisma.invoice.findMany({ include: { lines: true } });
+  assert.ok(invs.length && invs.every((i) => i.taxTotal > 0 && i.lines.every((l) => l.taxRateKey === 'sales')));
+  const chk = run('scripts/demo-check.js', [], env);
+  assert.equal(chk.code, 0, chk.out);
+  assert.match(chk.out, /PASS\s+db\.tax .*carry Sales tax/);
+  assert.match(chk.out, /PASS\s+db\.addresses .*US-shaped/);
+  // the same data checked as if it had been seeded without tax
+  await prisma.$executeRawUnsafe('UPDATE "Invoice" SET "amount" = "subtotal", "taxTotal" = 0');
+  await prisma.$executeRawUnsafe('UPDATE "Quote" SET "amount" = "subtotal", "taxTotal" = 0');
+  const bad = run('scripts/demo-check.js', [], env);
+  assert.equal(bad.code, 1);
+  assert.match(bad.out, /FAIL\s+db\.tax .*only 0 of/);
+  assert.equal(run('scripts/seed-demo.js', ['--reset'], { BRAND_TRADE_TYPE: 'electrical' }).code, 0);
 });

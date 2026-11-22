@@ -30,7 +30,8 @@
  *   --prospect <slug|file.json>  default: $DEMO_PROSPECT or "default". DEMO_PROSPECT may be a
  *                                slug or an ABSOLUTE path; --prospect may also be relative to
  *                                the current directory
- *   --locale <US|IE>             override the prospect's locale
+ *   --locale <US|IE>             override the prospect's locale (default: the prospect's, else
+ *                                BRAND_COUNTRY); seeding refuses one that differs from BRAND_COUNTRY
  *   --reset                      wipe customers, jobs, quotes, invoices, pricebook, inventory and
  *                                non-super-admin users first (required to switch trade on a DB)
  *   --print-env [--port N] [--out file] [--force]   write .env.demo.<slug> and exit (no DB needed)
@@ -68,7 +69,7 @@ const demo = require('../demo');
   if (flag('list')) {
     for (const s of demo.listProspects()) {
       const p = demo.loadProspect(s);
-      console.log(`${s.padEnd(24)} ${p.locale || 'US'}  ${(p.brand && p.brand.BRAND_TRADE_TYPE) || '(instance trade)'}  ${p.description || ''}`);
+      console.log(`${s.padEnd(24)} ${p.locale || '(instance country)'}  ${(p.brand && p.brand.BRAND_TRADE_TYPE) || '(instance trade)'}  ${p.description || ''}`);
     }
     return;
   }
@@ -111,7 +112,7 @@ const demo = require('../demo');
   if (Number.isNaN(now.getTime())) die('--now is not a valid date');
 
   if (flag('dry-run')) {
-    const ds = demo.buildDataset({ brand, prospect, locale: demo.loadLocale(arg('locale', null) || prospect.locale), now, seed: arg('seed', undefined) });
+    const ds = demo.buildDataset({ brand, prospect, locale: demo.resolveDemoLocale({ brand, prospect, localeCode: arg('locale', null), strict: false }), now, seed: arg('seed', undefined) });
     console.log(JSON.stringify({
       meta: ds.meta, team: ds.team.map((t) => `${t.email} ${t.role}`), customers: ds.customers.length,
       pricebook: ds.pricebook.length, inventory: ds.inventory.length,

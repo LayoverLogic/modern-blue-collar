@@ -1,16 +1,9 @@
 {
   "slug": "default",
-  "description": "Generic US demo for any trade: fictional town 'Anytown', reserved .test/.com example domains, 555-01xx phones. Trade, company name and colours come from the instance's BRAND_* env. Used by seed_jobs.js / the sandbox and Docker demo when DEMO_PROSPECT is unset.",
-  "locale": "US",
+  "description": "Generic demo for any trade, in the instance's own country (BRAND_COUNTRY): US → fictional 'Anytown', ZIP-shaped codes, 555-01xx phones; IE → Fingal towns, Eircode-shaped codes, ComReg drama-range phones. Reserved .test/.com example domains. Trade, company name, colours and tax come from the instance's BRAND_* env. Used by seed_jobs.js / the sandbox and Docker demo when DEMO_PROSPECT is unset.",
   "emailDomain": "demo.test",
-  "area": {
-    "state": null,
-    "phoneAreaCode": "555",
-    "towns": [
-      { "name": "Anytown",     "postcodes": ["00101", "00102", "00103"] },
-      { "name": "Springfield", "postcodes": ["00111", "00112"] },
-      { "name": "Riverside",   "postcodes": ["00121"] }
-    ]
-  },
-  "counts": { "customers": 10, "jobs": 14 }
+  "counts": {
+    "customers": 10,
+    "jobs": 14
+  }
 }

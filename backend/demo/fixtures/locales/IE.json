@@ -5,10 +5,11 @@
   "timezone": "Europe/Dublin",
   "invoiceTermsDays": 30,
   "phone": {
-    "note": "ComReg reserves 020 91x xxxx and 089 011 0xxx for drama/fictional use.",
+    "note": "ComReg reserves 020 91x xxxx and 089 011 0xxx for drama/fictional use. Templates are national; seeded rows are stored in E.164 (+3532091…, +353890110…), which `pattern` matches.",
     "landline": "020 910 01{nn}",
     "mobile": "089 011 01{nn}",
-    "pattern": "^(020 91\\d \\d{4}|089 011 0\\d{3})$"
+    "pattern": "^\\+353(2091\\d{5}|890110\\d{3})$",
+    "nationalPattern": "^(020 91\\d \\d{4}|089 011 0\\d{3})$"
   },
   "customerEmailDomain": "example.com",
   "firstNames": [
@@ -108,5 +109,23 @@
       "Kilbrook",
       "Community Centre"
     ]
-  ]
+  ],
+  "defaultArea": {
+    "note": "Used by prospects without an `area` (the generic default prospect): real Fingal towns with their Eircode routing keys; the 4-character unique ids are random, so the codes are fictional.",
+    "state": "Co. Dublin",
+    "towns": [
+      {
+        "name": "Swords",
+        "routingKey": "K67"
+      },
+      {
+        "name": "Malahide",
+        "routingKey": "K36"
+      },
+      {
+        "name": "Balbriggan",
+        "routingKey": "K32"
+      }
+    ]
+  }
 }

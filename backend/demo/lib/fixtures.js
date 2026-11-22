@@ -3,7 +3,10 @@
  *
  *   loadLocale('IE')                 → locale fixture
  *   loadTrade('plumbing-hvac', loc)  → { pricebook, inventory, jobs } with loc.<CC> overrides applied
- *   loadProspect('default' | path)   → validated prospect
+ *   loadProspect('default' | path)   → validated prospect. `locale` and `area` are optional:
+ *                                      without them the prospect follows the instance's
+ *                                      BRAND_COUNTRY and uses that locale's `defaultArea`
+ *                                      (demo/index.js resolveDemoLocale, dataset.js)
  *   listProspects()                  → slugs in demo/prospects/
  */
 'use strict';
@@ -98,11 +101,15 @@ function validateProspect(p, where) {
   const err = (m) => { throw new Error(`Prospect ${where}: ${m}`); };
   if (!p || typeof p !== 'object') err('not a JSON object');
   if (!/^[a-z0-9][a-z0-9-]{0,40}$/.test(p.slug || '')) err('"slug" must be lower-case letters, digits and dashes');
-  loadLocale(p.locale || 'US');
+  if (p.locale != null) loadLocale(p.locale);
   if (!isReservedEmailDomain(p.emailDomain)) {
     err(`"emailDomain" must be a reserved domain (example.com/.net/.org, *.example, *.test, *.invalid) — got "${p.emailDomain}"`);
   }
-  if (!p.area || !Array.isArray(p.area.towns) || !p.area.towns.length) err('"area.towns" must list at least one town');
+  // no area → the locale's defaultArea; an area is written for one country, so it needs a locale
+  if (p.area !== undefined) {
+    if (!p.area || !Array.isArray(p.area.towns) || !p.area.towns.length) err('"area.towns" must list at least one town');
+    if (p.locale == null) err('a prospect with an "area" must say which "locale" (US / IE) it is in');
+  }
   for (const k of Object.keys(p.brand || {})) if (!/^BRAND_[A-Z_]+$/.test(k)) err(`brand key "${k}" must be a BRAND_* variable`);
   if (p.brand && p.brand.BRAND_TRADE_TYPE) {
     try { normaliseTrade(p.brand.BRAND_TRADE_TYPE); } catch (e) { err(e.message); }

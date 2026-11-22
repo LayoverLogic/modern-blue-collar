@@ -50,7 +50,34 @@ function starterNames() {
 const sameFamily = (a, b) => a === b || [a, b].sort().join() === 'hvac,plumbing-hvac' || [a, b].sort().join() === 'plumbing,plumbing-hvac';
 
 const GARBAGE = /(^|[^A-Za-z])(undefined|NaN|\[object Object\])([^A-Za-z]|$)|^null$/;
-const FICTIONAL_PHONES = [/555-01\d{2}$/, /^(\+353\s?|0)20 ?91\d ?\d{4}$/, /^(\+353\s?|0)89 ?011 ?0\d{3}$/];
+const FICTIONAL_PHONES = [/555-01\d{2}$/, /^(\+353\s?|0)20 ?91\d ?\d{4}$/, /^(\+353\s?|0)89 ?011 ?0\d{3}$/,
+  // E.164, as stored (L4): +1 AAA 555 01nn · +353 20 91x xxxx · +353 89 011 0xxx
+  /^\+1\d{3}55501\d{2}$/, /^\+3532091\d{5}$/, /^\+353890110\d{3}$/];
+
+const US_STATES = new Set(('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC PR').split(' '));
+const IE_COUNTY = /^(Co\.?\s+|County\s+)?(Carlow|Cavan|Clare|Cork|Donegal|Dublin|Galway|Kerry|Kildare|Kilkenny|Laois|Leitrim|Limerick|Longford|Louth|Mayo|Meath|Monaghan|Offaly|Roscommon|Sligo|Tipperary|Waterford|Westmeath|Wexford|Wicklow)$/i;
+
+/**
+ * Address problems of one customer for the brand's country (M5): postcode
+ * shape (ZIP / Eircode), state vs county, and an explicit other country.
+ * `loc` is brand.locale (helpers/locale.js). → string[]
+ */
+function addressProblems(c, loc) {
+  const cc = (loc && loc.country) || 'US';
+  const out = [];
+  if (c.country && String(c.country).toUpperCase() !== cc) out.push(`country ${c.country} (brand is ${cc})`);
+  const zip = c.zip ? String(c.zip).trim() : '';
+  if (zip && loc && loc.postcodePattern && !new RegExp(loc.postcodePattern, 'i').test(zip)) out.push(`${loc.postcodeLabel || 'postcode'} "${zip}" is not ${cc}-shaped (e.g. ${loc.postcodeExample})`);
+  const st = c.state ? String(c.state).trim() : '';
+  if (cc === 'US') {
+    if (st && !US_STATES.has(st.toUpperCase())) out.push(`state "${st}" is not a US state`);
+    if (!zip) out.push('no ZIP code');
+  } else if (cc === 'IE') {
+    if (st && !IE_COUNTY.test(st)) out.push(`county "${st}" is not an Irish county${US_STATES.has(st.toUpperCase()) ? ' (a US state)' : ''}`);
+    if (!st) out.push('no county');
+  }
+  return out;
+}
 
 function results() {
   const list = [];
@@ -150,6 +177,20 @@ async function runDbChecks({ prisma, brand, denylist = [], now = new Date(), adm
   if (badTotals.length) R.fail('db.totals', `document totals do not add up: ${sample(badTotals)} — npm run seed:demo -- --reset`);
   else if (quotes.length + invoices.length) R.pass('db.totals', `every quote / invoice: total = subtotal + tax${quotes.concat(invoices).some((d) => (d.lines || []).length) ? ', subtotal = sum of lines' : ''}`);
 
+  // tax (M4): a brand with non-zero tax rates shows tax on most documents
+  {
+    const loc = brand.locale || {};
+    const taxed = (loc.taxRates || []).some((r) => r.rate > 0);
+    const docs = [...quotes.map((q) => ['quote', q]), ...invoices.map((i) => ['invoice', i])].filter(([, d]) => !d.reverseCharge);
+    if (taxed && docs.length) {
+      const withTax = docs.filter(([, d]) => cents(d.taxTotal) > 0).length;
+      const label = loc.taxLabel || 'tax';
+      if (withTax * 2 < docs.length) {
+        R.fail('db.tax', `only ${withTax} of ${docs.length} quotes / invoices carry ${label}, but BRAND_TAX_RATES is ${(loc.taxRates || []).map((r) => `${r.key}:${r.rate}`).join(',')} — a prospect sees untaxed documents; npm run seed:demo -- --reset`);
+      } else R.pass('db.tax', `${withTax} of ${docs.length} quotes / invoices carry ${label}`);
+    }
+  }
+
   // currency (11a): every document in the brand currency
   const cur = brandCurrency(brand);
   const wrongCur = [...quotes.map((q) => ['quote', q]), ...invoices.map((i) => ['invoice', i])].filter(([, d]) => d.currency && d.currency !== cur).map(([k, d]) => `${k}#${d.id} ${d.currency}`);
@@ -194,6 +235,16 @@ async function runDbChecks({ prisma, brand, denylist = [], now = new Date(), adm
   if (realPhones.length) R.warn('db.phones', `phone numbers outside the fictional ranges (555-01xx; IE 020 91x / 089 011 0): ${sample(realPhones)}`);
   const incomplete = customers.filter((c) => !c.firstName || !c.phone || !c.address || !c.city).map((c) => `customer#${c.id}`);
   if (incomplete.length) R.fail('db.customer-fields', `customers missing name/phone/address/city: ${sample(incomplete)}`);
+  // addresses in the brand's country shape (M5): no "Anytown, KS 00103" on an Irish instance
+  if (customers.length) {
+    const loc = brand.locale || null;
+    const cc = brandCountry(brand);
+    const bad = customers.flatMap((c) => addressProblems(c, loc || { country: cc }).map((p) => `customer#${c.id} ${p}`));
+    if (bad.length) R.fail('db.addresses', `addresses do not match BRAND_COUNTRY=${cc}: ${sample(bad)} — npm run seed:demo -- --reset`);
+    else R.pass('db.addresses', `all ${customers.length} customer addresses are ${cc}-shaped (state / county, ${(loc && loc.postcodeLabel) || 'postcode'})`);
+    const notE164 = [...customers.map((c) => ['customer', c]), ...users.map((u) => ['user', u])].filter(([, r]) => r.phone && !/^\+\d{8,15}$/.test(r.phone)).map(([k, r]) => `${k}#${r.id} "${r.phone}"`);
+    if (notE164.length) R.warn('db.phones-e164', `phones not stored in E.164 (sms: / tel: links may break): ${sample(notE164)} — npm run seed:demo rewrites demo rows`);
+  }
 
   // ── job activity feeds (GTM-18) ─────────────────────────────────────────
   // Every job has a trail that starts with "created" and ends in the job's
@@ -467,4 +518,4 @@ async function runHeadlessChecks({ port, denylist = [], email, password, token, 
   return R.list;
 }
 
-module.exports = { runDbChecks, runApiChecks, runHeadlessChecks, PAGES, GARBAGE, currencySymbol, orderProblems };
+module.exports = { runDbChecks, runApiChecks, runHeadlessChecks, PAGES, GARBAGE, currencySymbol, orderProblems, addressProblems };
