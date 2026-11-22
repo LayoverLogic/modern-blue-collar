@@ -7,7 +7,8 @@
  *
  * A result is { level: 'PASS' | 'WARN' | 'FAIL', id, msg }. FAIL means a
  * prospect would see something wrong (client names, "undefined", $0 amounts,
- * plumbing jobs in an electrical demo, a stale calendar); WARN is worth a look.
+ * plumbing jobs in an electrical demo, a stale calendar, a job activity feed
+ * that contradicts the job); WARN is worth a look.
  */
 'use strict';
 
@@ -55,9 +56,10 @@ function textFields(table, rows, fields) {
 
 async function runDbChecks({ prisma, brand, denylist = [], now = new Date(), adminEmail = process.env.ADMIN_EMAIL }) {
   const R = results();
-  const [users, customers, jobs, quotes, invoices, pricebook, inventory, comms] = await Promise.all([
+  const [users, customers, jobs, quotes, invoices, pricebook, inventory, comms, acts] = await Promise.all([
     prisma.user.findMany(), prisma.customer.findMany(), prisma.job.findMany(), prisma.quote.findMany(),
     prisma.invoice.findMany(), prisma.priceBookItem.findMany(), prisma.inventoryItem.findMany(), prisma.communication.findMany(),
+    prisma.jobActivity.findMany({ orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] }),
   ]);
 
   if (!customers.length || !jobs.length) {
@@ -76,6 +78,7 @@ async function runDbChecks({ prisma, brand, denylist = [], now = new Date(), adm
     ...textFields('pricebook', pricebook, ['industry', 'category', 'subcategory', 'name', 'description']),
     ...textFields('inventory', inventory, ['name', 'description', 'sku', 'location']),
     ...textFields('communication', comms, ['subject', 'body', 'from', 'to']),
+    ...acts.flatMap((a) => ['from', 'to'].filter((f) => a[f] != null).map((f) => ({ where: `activity#${a.id}.${f}`, value: JSON.stringify(a[f]) }))),
     ...Object.entries(brand).filter(([, v]) => typeof v === 'string').map(([k, v]) => ({ where: `brand.${k}`, value: v })),
   ];
   const deny = texts.flatMap((t) => denylistHits(t.value, denylist).map((h) => `${t.where} contains "${h}"`));
@@ -142,6 +145,45 @@ async function runDbChecks({ prisma, brand, denylist = [], now = new Date(), adm
   const incomplete = customers.filter((c) => !c.firstName || !c.phone || !c.address || !c.city).map((c) => `customer#${c.id}`);
   if (incomplete.length) R.fail('db.customer-fields', `customers missing name/phone/address/city: ${sample(incomplete)}`);
 
+  // ── job activity feeds (GTM-18) ─────────────────────────────────────────
+  // Every job has a trail that starts with "created" and ends in the job's
+  // current status and technician; nothing is dated in the future or before
+  // the job existed; actors are real users.
+  if (jobs.length) {
+    const byJob = new Map();
+    for (const a of acts) if (a.jobId != null) { if (!byJob.has(a.jobId)) byJob.set(a.jobId, []); byJob.get(a.jobId).push(a); }
+    const userIds = new Set(users.map((u) => u.id));
+    const quoteJobs = new Set(quotes.map((q) => q.jobId));
+    const invoiceJobs = new Set(invoices.map((i) => i.jobId));
+    const bad = []; const warn = [];
+    const soon = now.getTime() + 5 * 60000;
+    for (const j of jobs) {
+      const list = byJob.get(j.id) || [];
+      const tag = `job#${j.id}`;
+      if (!list.length) { bad.push(`${tag} has no activity`); continue; }
+      if (list[0].type !== 'created') bad.push(`${tag} first entry is "${list[0].type}", not "created"`);
+      const created = list.find((a) => a.type === 'created');
+      const lastOf = (type) => [...list].reverse().find((a) => a.type === type);
+      const lastStatus = lastOf('status_changed');
+      const status = lastStatus ? lastStatus.to && lastStatus.to.status : created && created.to && created.to.status;
+      if (status !== j.status) bad.push(`${tag} feed says "${status}", job is "${j.status}"`);
+      const lastAssign = lastOf('assigned');
+      const tech = lastAssign ? lastAssign.to && lastAssign.to.technicianId : created && created.to && created.to.technicianId;
+      if ((tech ?? null) !== (j.technicianId ?? null)) bad.push(`${tag} feed says technician ${tech ?? 'none'}, job has ${j.technicianId ?? 'none'}`);
+      const future = list.filter((a) => a.createdAt.getTime() > soon);
+      if (future.length) bad.push(`${tag} has ${future.length} entries dated in the future`);
+      const early = list.filter((a) => a.createdAt.getTime() < j.createdAt.getTime() - 60000);
+      if (early.length) bad.push(`${tag} has ${early.length} entries before the job was created`);
+      if (quoteJobs.has(j.id) && !lastOf('quote_created')) warn.push(`${tag} has a quote but no "quote_created" entry`);
+      if (invoiceJobs.has(j.id) && !lastOf('invoice_created')) warn.push(`${tag} has an invoice but no "invoice_created" entry`);
+      const ghosts = list.filter((a) => a.actorUserId != null && !userIds.has(a.actorUserId));
+      if (ghosts.length) warn.push(`${tag} has ${ghosts.length} entries by deleted users ("Deleted user")`);
+    }
+    if (bad.length) R.fail('db.activity', `job activity feeds missing or contradicting the job: ${sample(bad)} — npm run seed:demo (backfills) or --reset`);
+    else R.pass('db.activity', `${acts.length} activity entries; every one of ${jobs.length} jobs has a feed that matches its status and technician`);
+    if (warn.length) R.warn('db.activity-links', sample(warn));
+  }
+
   // ── calendar freshness ──────────────────────────────────────────────────
   const dated = jobs.filter((j) => j.scheduledDate);
   const todays = dated.filter((j) => j.scheduledDate === today);
@@ -204,6 +246,7 @@ async function runApiChecks({ base, brand, denylist = [], email, password }) {
     },
     '/api/users': (rows) => rows.flatMap((u) => [!u.firstName && `user#${u.id}.firstName`]),
   };
+  let jobsSeen = [];
   for (const [p, check] of Object.entries(need)) {
     let r;
     try { r = await getJson(base, p, token); } catch (e) { R.fail(`api.${p.slice(5)}`, e.message); continue; }
@@ -216,6 +259,26 @@ async function runApiChecks({ base, brand, denylist = [], email, password }) {
     if (hits.length) problems.push(`denylisted: ${hits.join(', ')}`);
     if (problems.length) R.fail(`api.${p.slice(5)}`, sample(problems, 4));
     else R.pass(`api.${p.slice(5)}`, `${Array.isArray(r.body) ? r.body.length : (r.body.items || []).length} rows, display fields present`);
+    if (p === '/api/jobs' && Array.isArray(r.body) && r.body.length) jobsSeen = r.body;
+  }
+
+  // job activity feed (GTM-18): the busiest-looking job shows a trail with names
+  if (jobsSeen.length) {
+    const job = jobsSeen.find((j) => j.status === 'completed') || jobsSeen[0];
+    let r;
+    try { r = await getJson(base, `/api/jobs/${job.id}/activity`, token); } catch (e) { r = { status: 0, text: e.message }; }
+    const problems = [];
+    if (r.status !== 200 || !Array.isArray(r.body)) problems.push(`HTTP ${r.status}`);
+    else {
+      if (!r.body.length) problems.push('empty feed');
+      problems.push(...r.body.filter((e) => !e.type || !e.createdAt || !(e.actor && e.actor.name)).map((e) => `activity#${e.id} missing type/createdAt/actor.name`));
+      if (r.body.length && r.body[r.body.length - 1].type !== 'created') problems.push('oldest entry is not "created"');
+      if (/"undefined"|\bNaN\b|\[object Object\]/.test(r.text)) problems.push('response contains "undefined"/NaN');
+      const hits = denylistHits(r.text, denylist);
+      if (hits.length) problems.push(`denylisted: ${hits.join(', ')}`);
+    }
+    if (problems.length) R.fail('api.activity', `/api/jobs/${job.id}/activity: ${sample(problems, 4)}`);
+    else R.pass('api.activity', `/api/jobs/${job.id}/activity: ${r.body.length} entries, actors named`);
   }
   return R.list;
 }

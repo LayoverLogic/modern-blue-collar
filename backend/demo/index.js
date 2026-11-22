@@ -84,8 +84,9 @@ async function runSeedDemo({
     const p = summary.people;
     if (!p.jobs && !p.customers && state.seeded) {
       log(`demo data already present for "${prospect.slug}" — nothing added (use --reset for fresh dates)`);
+      if (p.activity) log(`backfilled ${p.activity} activity entries for jobs seeded before the activity log existed`);
     } else {
-      log(`created ${p.users} users, ${p.customers} customers, ${p.jobs} jobs, ${p.quotes} quotes, ${p.invoices} invoices, ${p.parts} parts, ${p.communications} communications`);
+      log(`created ${p.users} users, ${p.customers} customers, ${p.jobs} jobs, ${p.quotes} quotes, ${p.invoices} invoices, ${p.parts} parts, ${p.communications} communications, ${p.activity} activity entries`);
     }
     summary.logins = dataset.team.map((t) => `${t.email} (${t.role})`);
   }

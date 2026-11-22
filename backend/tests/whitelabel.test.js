@@ -218,6 +218,29 @@ for (const c of COMBOS) {
     assert.ok(ds.jobs.some((j) => j.invoice && j.invoice.status === 'overdue' && new Date(j.invoice.dueDate) < NOW));
     assert.ok(ds.jobs.some((j) => j.invoice && j.invoice.status === 'paid' && new Date(j.invoice.paidAt) <= NOW));
     for (const j of ds.jobs) assert.ok(new Date(j.createdAt) <= NOW, `${j.title} created in the future`);
+
+    // activity trails (GTM-18): start with "created", chronological, never in
+    // the future, actors on the team, and they end in the job's own state
+    const teamEmails = new Set(ds.team.map((m) => m.email));
+    const techEmails = new Set(ds.team.filter((m) => m.role === 'technician').map((m) => m.email));
+    for (const j of ds.jobs) {
+      const a = j.activity;
+      assert.ok(a.length >= 1 && a[0].type === 'created', `${j.title}: trail starts with created`);
+      for (let i = 0; i < a.length; i++) {
+        assert.ok(teamEmails.has(a[i].actor), `${j.title}: actor ${a[i].actor}`);
+        assert.ok(new Date(a[i].at) <= NOW && new Date(a[i].at) >= new Date(j.createdAt), `${j.title}: ${a[i].type} at ${a[i].at}`);
+        if (i) assert.ok(a[i].at >= a[i - 1].at, `${j.title}: trail out of order`);
+      }
+      const statuses = a.filter((e) => e.type === 'status_changed');
+      assert.equal(statuses.length ? statuses[statuses.length - 1].to : 'pending', j.status, `${j.title}: trail ends in ${j.status}`);
+      const assigned = a.filter((e) => e.type === 'assigned');
+      assert.equal(assigned.length ? assigned[assigned.length - 1].tech : null, j.techEmail, `${j.title}: trail assigns ${j.techEmail}`);
+      for (const e of statuses.filter((x) => x.to !== 'scheduled')) assert.ok(techEmails.has(e.actor), `${j.title}: ${e.to} by a technician`);
+      assert.equal(a.some((e) => e.type === 'quote_created'), !!j.quote);
+      assert.equal(a.some((e) => e.type === 'invoice_created'), !!j.invoice);
+      if (j.notes) assert.ok(a.some((e) => e.type === 'note'));
+    }
+    assert.ok(ds.jobs.some((j) => j.activity.some((e) => e.type === 'rescheduled')), 'some job was rescheduled');
   });
 }
 
@@ -370,20 +393,64 @@ dbTest('seed:demo --reset (electrical): per-trade pricebook, electrical jobs, qu
 });
 
 dbTest('seed:demo and the seed_jobs / seed_pricebook wrappers are idempotent', async () => {
-  const before = { pb: await prisma.priceBookItem.count(), jobs: await prisma.job.count(), cust: await prisma.customer.count(), users: await prisma.user.count() };
+  const before = { pb: await prisma.priceBookItem.count(), jobs: await prisma.job.count(), cust: await prisma.customer.count(), users: await prisma.user.count(), act: await prisma.jobActivity.count() };
   assert.equal(run('scripts/seed-demo.js', [], { BRAND_TRADE_TYPE: 'electrical' }).code, 0);
   const w1 = run('seed_pricebook.js', [], { BRAND_TRADE_TYPE: 'electrical' });
   const w2 = run('seed_jobs.js', [], { BRAND_TRADE_TYPE: 'electrical' });
   assert.equal(w1.code, 0, w1.out);
   assert.equal(w2.code, 0, w2.out);
-  assert.deepEqual({ pb: await prisma.priceBookItem.count(), jobs: await prisma.job.count(), cust: await prisma.customer.count(), users: await prisma.user.count() }, before);
+  assert.deepEqual({ pb: await prisma.priceBookItem.count(), jobs: await prisma.job.count(), cust: await prisma.customer.count(), users: await prisma.user.count(), act: await prisma.jobActivity.count() }, before);
 });
 
 dbTest('demo:check passes on freshly seeded data (DB checks)', async () => {
   const r = run('scripts/demo-check.js', [], { BRAND_TRADE_TYPE: 'electrical' });
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /PASS\s+db\.denylist/);
+  assert.match(r.out, /PASS\s+db\.activity .*every one of 14 jobs/);
   assert.match(r.out, /→ READY/);
+});
+
+dbTest('seed:demo writes an activity trail per job that matches the job (GTM-18)', async () => {
+  const jobs = await prisma.job.findMany({ include: { quote: true, invoice: true } });
+  const users = new Map((await prisma.user.findMany()).map((u) => [u.id, u]));
+  for (const j of jobs) {
+    const a = await prisma.jobActivity.findMany({ where: { jobId: j.id }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
+    assert.equal(a[0].type, 'created', `job#${j.id}`);
+    assert.equal(a[0].jobRef, j.id);
+    assert.equal(a[0].to.title, j.title);
+    assert.ok(a.every((e) => e.createdAt <= new Date() && users.has(e.actorUserId)), `job#${j.id}: dates/actors`);
+    const st = a.filter((e) => e.type === 'status_changed');
+    assert.equal(st.length ? st[st.length - 1].to.status : a[0].to.status, j.status);
+    const as = a.filter((e) => e.type === 'assigned');
+    assert.equal(as.length ? as[as.length - 1].to.technicianId : null, j.technicianId);
+    if (as.length) assert.equal(as[as.length - 1].to.technicianName, `${users.get(j.technicianId).firstName} ${users.get(j.technicianId).lastName}`);
+    if (j.quote) assert.equal(a.find((e) => e.type === 'quote_created').to.quoteId, j.quote.id);
+    if (j.invoice) assert.equal(a.find((e) => e.type === 'invoice_created').to.invoiceId, j.invoice.id);
+    for (const e of st.filter((x) => x.to.status !== 'scheduled')) assert.equal(users.get(e.actorUserId).role, 'technician');
+  }
+});
+
+dbTest('demo:check FAILs on missing or contradicting activity feeds; seed:demo backfills missing ones', async () => {
+  const job = await prisma.job.findFirst({ where: { status: 'scheduled' }, orderBy: { id: 'asc' } });
+  const extra = await prisma.jobActivity.create({ data: { jobId: job.id, jobRef: job.id, type: 'status_changed', from: { status: 'scheduled' }, to: { status: 'cancelled' } } });
+  try {
+    const r = run('scripts/demo-check.js', [], { BRAND_TRADE_TYPE: 'electrical' });
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, new RegExp(`FAIL\\s+db\\.activity .*job#${job.id} feed says "cancelled", job is "scheduled"`));
+  } finally {
+    await prisma.jobActivity.delete({ where: { id: extra.id } });
+  }
+  const total = await prisma.jobActivity.count();
+  const removed = await prisma.jobActivity.deleteMany({ where: { jobId: job.id } });
+  assert.ok(removed.count >= 3);
+  const missing = run('scripts/demo-check.js', [], { BRAND_TRADE_TYPE: 'electrical' });
+  assert.equal(missing.code, 1);
+  assert.match(missing.out, new RegExp(`FAIL\\s+db\\.activity .*job#${job.id} has no activity`));
+  const back = run('scripts/seed-demo.js', [], { BRAND_TRADE_TYPE: 'electrical' });
+  assert.equal(back.code, 0, back.out);
+  assert.match(back.out, new RegExp(`backfilled ${removed.count} activity entries`));
+  assert.equal(await prisma.jobActivity.count(), total);
+  assert.equal(run('scripts/demo-check.js', [], { BRAND_TRADE_TYPE: 'electrical' }).code, 0);
 });
 
 dbTest('demo:check FAILs (exit 1) on deliberately broken records', async () => {
@@ -490,7 +557,7 @@ dbTest('demo:check API pass: /api/brand exposes colors.primaryDark; list endpoin
     assert.equal(brand.colors.primaryDark, bv.darken(bv.TRADE_PALETTES.contracting.primary));
     const r = run('scripts/demo-check.js', ['--port', String(port)], env);
     assert.equal(r.code, 0, r.out);
-    for (const p of ['api.brand ', 'api.login', 'api.jobs', 'api.customers', 'api.quotes', 'api.invoices', 'api.pricebook', 'api.users']) {
+    for (const p of ['api.brand ', 'api.login', 'api.jobs', 'api.customers', 'api.quotes', 'api.invoices', 'api.pricebook', 'api.users', 'api.activity']) {
       assert.match(r.out, new RegExp(`PASS\\s+${p.replace('.', '\\.')}`), p);
     }
   } finally {

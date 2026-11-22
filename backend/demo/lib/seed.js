@@ -5,7 +5,9 @@
  *   resetDemoData(prisma, { keepEmails })     → wipes business data (demo DBs only — callers guard)
  *   seedPricebook(prisma, dataset)            → idempotent per (industry, category, name)
  *   seedInventory(prisma, dataset)            → idempotent per name
- *   seedPeopleAndJobs(prisma, dataset, opts)  → team, customers, jobs, quotes, invoices, parts, comms
+ *   seedPeopleAndJobs(prisma, dataset, opts)  → team, customers, jobs, quotes, invoices, parts, comms,
+ *                                               activity trails (GTM-18)
+ *   writeActivityTrail(prisma, job, spec, ctx)  → JobActivity rows for one seeded job
  *
  * Trade switching (WL-4): the database does not know which trade it was seeded
  * for, so inspectDemoState looks at Job.tradeType. If the DB holds jobs for a
@@ -15,6 +17,46 @@
 'use strict';
 
 const bcrypt = require('bcryptjs');
+const activity = require('../../helpers/activity');
+
+/**
+ * Turn a dataset job's symbolic trail (demo/lib/dataset.js activityTrail) into
+ * JobActivity rows with real ids. `job` is the DB row; quote/invoice the DB
+ * rows (or null); userByEmail maps team emails to users.
+ */
+async function writeActivityTrail(prisma, job, spec, { userByEmail, quote = null, invoice = null }) {
+  const uid = (email) => { const u = email && userByEmail.get(email); return u ? u.id : null; };
+  const uname = (email) => { const u = email && userByEmail.get(email); return u ? `${u.firstName} ${u.lastName}` : null; };
+  const moved = spec.activity.find((e) => e.type === 'rescheduled');
+  let n = 0;
+  for (const e of spec.activity) {
+    const p = {};
+    switch (e.type) {
+      case 'created':
+        p.to = activity.snapshot({ ...job, status: 'pending', technicianId: null, scheduledTime: moved ? moved.fromTime : job.scheduledTime });
+        break;
+      case 'note': p.from = { notes: null }; p.to = { notes: job.notes }; break;
+      case 'quote_created':
+        if (!quote) continue;
+        p.to = { quoteId: quote.id, amount: quote.amount, status: 'draft' };
+        break;
+      case 'assigned':
+        p.from = { technicianId: null, technicianName: null };
+        p.to = { technicianId: uid(e.tech), technicianName: uname(e.tech) };
+        break;
+      case 'status_changed': p.from = { status: e.from }; p.to = { status: e.to }; break;
+      case 'rescheduled': p.from = { scheduledTime: e.fromTime }; p.to = { scheduledTime: job.scheduledTime }; break;
+      case 'invoice_created':
+        if (!invoice) continue;
+        p.to = { invoiceId: invoice.id, amount: invoice.amount, status: 'unpaid' };
+        break;
+      default: break;
+    }
+    await activity.log(prisma, { userId: uid(e.actor) }, job.id, e.type, { ...p, at: new Date(e.at) });
+    n++;
+  }
+  return n;
+}
 
 async function inspectDemoState(prisma, brand, dataset) {
   const jobs = await prisma.job.count();
@@ -38,6 +80,7 @@ async function inspectDemoState(prisma, brand, dataset) {
 async function resetDemoData(prisma, { keepEmails = [] } = {}) {
   const counts = {};
   await prisma.$transaction(async (tx) => {
+    counts.activity = (await tx.jobActivity.deleteMany({})).count;
     counts.photos = (await tx.jobPhoto.deleteMany({})).count;
     counts.parts = (await tx.jobPart.deleteMany({})).count;
     counts.quotes = (await tx.quote.deleteMany({})).count;
@@ -86,7 +129,7 @@ async function seedPeopleAndJobs(prisma, dataset, { password }) {
     throw new Error('DEFAULT_PASSWORD is not set — it is the password for the seeded demo team (e.g. DEFAULT_PASSWORD=demo1234 in .env.sandbox).');
   }
   const hash = await bcrypt.hash(password, 10);
-  const out = { users: 0, customers: 0, jobs: 0, quotes: 0, invoices: 0, parts: 0, communications: 0 };
+  const out = { users: 0, customers: 0, jobs: 0, quotes: 0, invoices: 0, parts: 0, communications: 0, activity: 0 };
 
   const userByEmail = new Map();
   for (const t of dataset.team) {
@@ -106,8 +149,15 @@ async function seedPeopleAndJobs(prisma, dataset, { password }) {
 
   for (const j of dataset.jobs) {
     const customer = custByKey.get(j.customerKey);
-    const exists = await prisma.job.findFirst({ where: { title: j.title, customerId: customer.id }, select: { id: true } });
-    if (exists) continue;
+    const exists = await prisma.job.findFirst({ where: { title: j.title, customerId: customer.id }, include: { quote: true, invoice: true } });
+    if (exists) {
+      // Backfill: a job seeded before the activity log existed gets its trail
+      // once (never on top of real activity).
+      if (!(await prisma.jobActivity.count({ where: { jobId: exists.id } }))) {
+        out.activity += await writeActivityTrail(prisma, exists, j, { userByEmail, quote: exists.quote, invoice: exists.invoice });
+      }
+      continue;
+    }
     const tech = j.techEmail ? userByEmail.get(j.techEmail) : null;
     const job = await prisma.job.create({
       data: {
@@ -128,12 +178,13 @@ async function seedPeopleAndJobs(prisma, dataset, { password }) {
       },
     });
     out.jobs++;
+    let quote = null; let invoice = null;
     if (j.quote) {
-      await prisma.quote.create({ data: { jobId: job.id, amount: j.quote.amount, status: j.quote.status, notes: j.quote.notes, createdAt: new Date(j.quote.createdAt) } });
+      quote = await prisma.quote.create({ data: { jobId: job.id, amount: j.quote.amount, status: j.quote.status, notes: j.quote.notes, createdAt: new Date(j.quote.createdAt) } });
       out.quotes++;
     }
     if (j.invoice) {
-      await prisma.invoice.create({
+      invoice = await prisma.invoice.create({
         data: {
           jobId: job.id, amount: j.invoice.amount, status: j.invoice.status, notes: j.invoice.notes,
           dueDate: new Date(j.invoice.dueDate), paidAt: j.invoice.paidAt ? new Date(j.invoice.paidAt) : null,
@@ -148,6 +199,7 @@ async function seedPeopleAndJobs(prisma, dataset, { password }) {
       await prisma.jobPart.create({ data: { jobId: job.id, inventoryItemId: inv.id, quantity: Math.ceil(p.quantity), unitCost: p.unitCost } });
       out.parts++;
     }
+    out.activity += await writeActivityTrail(prisma, job, j, { userByEmail, quote, invoice });
   }
 
   if (out.customers) {
@@ -160,4 +212,4 @@ async function seedPeopleAndJobs(prisma, dataset, { password }) {
   return out;
 }
 
-module.exports = { inspectDemoState, resetDemoData, seedPricebook, seedInventory, seedPeopleAndJobs };
+module.exports = { inspectDemoState, resetDemoData, seedPricebook, seedInventory, seedPeopleAndJobs, writeActivityTrail };

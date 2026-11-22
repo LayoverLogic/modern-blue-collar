@@ -11,6 +11,12 @@
  * Every job's type comes from the trade fixture and is checked against
  * brand.jobTypes; quote/invoice amounts are the sum of the pricebook lines the
  * job template names, so they are > 0 and match the pricebook on screen.
+ *
+ * Each job also gets an activity trail (job.activity, GTM-18) that tells the
+ * same story as its final state: created by the dispatcher, quote, assigned +
+ * scheduled, sometimes moved, started / finished by the technician, invoiced.
+ * Actors are team emails and times are ISO strings (never after `now`);
+ * demo/lib/seed.js turns them into JobActivity rows with real ids.
  */
 'use strict';
 
@@ -44,6 +50,43 @@ function makeRng(seed) {
       return a;
     },
   };
+}
+
+const MIN = 60000;
+const HOUR = 3600000;
+const DAY = 86400000;
+
+/**
+ * The activity trail of one job, oldest first:
+ * [{ type, actor (team email), at (ISO), ...symbolic payload }].
+ * Payload keys: `from`/`to` for status, `tech` for assigned (an email),
+ * `fromTime` for rescheduled (the time it was first booked for).
+ */
+function activityTrail(job, { office, dispatcher, nowMs, index }) {
+  const t0 = Date.parse(job.createdAt);
+  const ev = [];
+  const add = (ms, e) => ev.push({ ms: Math.max(t0, Math.min(ms, nowMs)), ...e });
+  add(t0, { type: 'created', actor: dispatcher });
+  if (job.notes) add(t0 + 15 * MIN, { type: 'note', actor: dispatcher });
+  if (job.quote) add(Date.parse(job.quote.createdAt), { type: 'quote_created', actor: office });
+  const booked = ['scheduled', 'in-progress', 'completed'].includes(job.status);
+  if (job.techEmail) add(t0 + 2 * HOUR, { type: 'assigned', actor: dispatcher, tech: job.techEmail });
+  if (booked) add(t0 + 2 * HOUR + MIN, { type: 'status_changed', actor: dispatcher, from: 'pending', to: 'scheduled' });
+  const startMs = job.scheduledAt ? Date.parse(job.scheduledAt) : null;
+  // every fourth booked job was moved once — "customer asked for another time"
+  if (booked && job.scheduledTime && index % 4 === 1 && startMs && t0 + DAY < Math.min(startMs, nowMs)) {
+    add(t0 + DAY, { type: 'rescheduled', actor: dispatcher, fromTime: job.scheduledTime === '08:00' ? '13:00' : '08:00' });
+  }
+  if (job.status === 'in-progress' || job.status === 'completed') {
+    add(startMs, { type: 'status_changed', actor: job.techEmail || dispatcher, from: 'scheduled', to: 'in-progress' });
+  }
+  if (job.status === 'completed') {
+    add(Date.parse(job.completedAt), { type: 'status_changed', actor: job.techEmail || dispatcher, from: 'in-progress', to: 'completed' });
+  }
+  if (job.invoice) add(Date.parse(job.invoice.createdAt), { type: 'invoice_created', actor: office });
+  // stable by time (ties keep the story order above)
+  return ev.map((e, i) => ({ e, i })).sort((a, b) => a.e.ms - b.e.ms || a.i - b.i)
+    .map(({ e: { ms, ...rest } }) => ({ ...rest, at: new Date(ms).toISOString() }));
 }
 
 const ascii = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9]/g, '').toLowerCase();
@@ -284,6 +327,11 @@ function buildDataset({ brand, prospect, locale, now = new Date(), seed } = {}) 
     });
   });
 
+  // ── activity trails (GTM-18) ──────────────────────────────────────────────
+  const officeEmail = (team.find((m) => m.role === 'admin') || team[0]).email;
+  const dispatchEmail = (team.find((m) => m.role === 'dispatcher' || m.role === 'office') || team.find((m) => m.role === 'admin') || team[0]).email;
+  jobs.forEach((j, index) => { j.activity = activityTrail(j, { office: officeEmail, dispatcher: dispatchEmail, nowMs, index }); });
+
   // ── communications (a few, so customer pages are not empty) ───────────────
   const office = brand.companyEmail || `office@${prospect.emailDomain}`;
   const custByKey = new Map(customers.map((c) => [c.key, c]));
@@ -314,4 +362,4 @@ function buildDataset({ brand, prospect, locale, now = new Date(), seed } = {}) 
   };
 }
 
-module.exports = { buildDataset, makeRng, hash32, schedulePlan };
+module.exports = { buildDataset, makeRng, hash32, schedulePlan, activityTrail };
