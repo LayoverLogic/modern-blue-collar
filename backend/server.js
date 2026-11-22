@@ -230,8 +230,23 @@ function limiterIdentity(req) {
   req._rlIdentity = id;
   return id;
 }
+// Not counted by apiLimiter (M2, Verifier #1): GET /api/brand (every page,
+// incl. the sign-in page, reads it without a token — an office of 30 people
+// loading pages used to exhaust the anonymous per-IP budget and lock everyone
+// out of sign-in) and the sign-in / reset / invite routes, which have their
+// own stricter limiters below. Paths are relative to the /api mount.
+const API_LIMITER_EXEMPT = [
+  ['GET', /^\/brand\/?$/],
+  ['POST', /^\/auth\/login\/?$/],
+  ['*', /^\/auth\/google\/exchange\/?$/],
+  ['*', /^\/auth\/(forgot|reset)\/?$/],
+  ['GET', /^\/invites\/[^/]+\/?$/],
+  ['POST', /^\/invites\/[^/]+\/accept\/?$/],
+];
+const apiLimiterExempt = (req) => API_LIMITER_EXEMPT.some(([m, re]) => (m === '*' || m === req.method || (m === 'GET' && req.method === 'HEAD')) && re.test(req.path));
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
+  skip: apiLimiterExempt,
   limit: (req) => (limiterIdentity(req) ? USER_MAX : IP_MAX),
   keyGenerator: (req) => limiterIdentity(req) || `ip:${rateLimit.ipKeyGenerator(req.ip || '')}`,
   standardHeaders: true,

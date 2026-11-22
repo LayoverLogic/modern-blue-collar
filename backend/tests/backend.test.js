@@ -1156,3 +1156,37 @@ test('M1 the B4 whitelabel literal is refused in production and a token forged w
   assert.equal((await request(dev.base, 'GET', '/api/users', { token: forged })).status, 401);
   await dev.stop();
 });
+
+test('M2 a busy office IP: 320 page loads (GET /api/brand) + 40 sign-ins never block a correct sign-in', async () => {
+  const ip = '127.77.0.9';
+  for (let i = 0; i < 320; i += 20) {
+    const batch = await Promise.all(Array.from({ length: 20 }, () => api('GET', '/api/brand', { ip })));
+    for (const r of batch) assert.equal(r.status, 200, `GET /api/brand → ${r.status}`);
+  }
+  for (let i = 0; i < 40; i += 1) {
+    const r = await api('POST', '/api/auth/login', { ip, body: { email: U.dispatcher.email, password: PASSWORD } });
+    assert.equal(r.status, 200, `login #${i + 1} → ${r.status} ${r.text}`);
+  }
+  const last = await api('POST', '/api/auth/login', { ip, body: { email: U.admin.email, password: PASSWORD } });
+  assert.equal(last.status, 200, last.text);
+  assert.ok(last.json.token);
+});
+
+test('M2 the anonymous limiter still counts other anonymous /api calls; brand + sign-in stay exempt', async () => {
+  const s = await bootServer({ RATE_LIMIT_IP_MAX: '3' });
+  const ip = '127.77.0.10';
+  // bootServer polled /api/health from other addresses; this IP starts at 0
+  for (let i = 0; i < 3; i += 1) assert.equal((await request(s.base, 'GET', '/api/health', { ip })).status, 200);
+  assert.equal((await request(s.base, 'GET', '/api/health', { ip })).status, 429);
+  assert.equal((await request(s.base, 'GET', '/api/jobs', { ip })).status, 429, 'anonymous API calls are still limited');
+  for (let i = 0; i < 10; i += 1) assert.equal((await request(s.base, 'GET', '/api/brand', { ip })).status, 200);
+  const r = await request(s.base, 'POST', '/api/auth/login', { ip, body: { email: U.tech.email, password: PASSWORD } });
+  assert.equal(r.status, 200, r.text);
+  // failed sign-ins are still capped by their own limiter (LOGIN_MAX_PER_EMAIL, default 10)
+  let limited = false;
+  for (let i = 0; i < 12 && !limited; i += 1) {
+    limited = (await request(s.base, 'POST', '/api/auth/login', { ip, body: { email: U.tech.email, password: 'wrong-password' } })).status === 429;
+  }
+  assert.ok(limited, 'the sign-in limiter still stops guessing');
+  await s.stop();
+});
