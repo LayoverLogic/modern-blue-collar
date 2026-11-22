@@ -321,11 +321,13 @@ test('denylist: real list stays out of git; example file has placeholders only',
 const DENY_FILE = path.join(TMP, 'denylist.txt');
 fs.writeFileSync(DENY_FILE, DENY.join('\n') + '\n');
 
+// random per run (M1): a literal secret in a test file is a published secret
+const WL_SECRET = require('crypto').randomBytes(32).toString('hex');
 function baseEnv(extra = {}) {
   return {
     PATH: process.env.PATH, HOME: process.env.HOME, ENV_FILE: '/dev/null', DATABASE_URL: TEST_DB,
     DEFAULT_PASSWORD: 'demo1234', ADMIN_EMAIL: 'admin@demo.test', ADMIN_PASSWORD: 'demo1234',
-    JWT_SECRET: 'whitelabel_test_secret_0123456789abcdef0123456789', SANDBOX_MODE: 'true',
+    JWT_SECRET: WL_SECRET, SANDBOX_MODE: 'true',
     MAIL_DRIVER: 'none', STORAGE_DRIVER: 'local', LOCAL_STORAGE_DIR: path.join(TMP, 'storage'),
     BRAND_TIMEZONE: 'America/Chicago', DEMO_DENYLIST_FILE: DENY_FILE, NODE_ENV: 'development', ...extra,
   };

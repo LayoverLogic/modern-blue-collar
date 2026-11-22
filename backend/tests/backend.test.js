@@ -1073,3 +1073,86 @@ test('2c seed-demo --print-env: fresh random JWT_SECRET each time; external pros
   assert.match(inside.stderr, /inside the repository/);
   assert.equal(fs.existsSync(path.join(TMP, 'env-d')), false);
 });
+
+// ── B4 (Verifier #1) ─────────────────────────────────────────────────────────
+
+/**
+ * JWT-secret-like literals in a piece of text: env lines (JWT_SECRET=<value>),
+ * quoted object / assignment values (JWT_SECRET: '…'), `|| '…'` fallbacks,
+ * literal jwt.sign keys and `const …SECRET… = '…'`. Shell / JS expressions
+ * ($…, process.env…, identifiers) and regex fragments are not literals.
+ */
+function jwtSecretLiterals(text) {
+  const out = new Set();
+  const take = (v) => {
+    const s = String(v || '').trim().replace(/\.\*\$?$/, '');
+    if (/^[\w.~+-]{4,}$/.test(s) && !/^\d+$/.test(s)) out.add(s);
+  };
+  const quoted = /(['"`])((?:(?!\1)[^\\\n])+)\1/.source;
+  for (const line of String(text).split('\n')) {
+    let m;
+    // env / shell style: JWT_SECRET=<value> (no spaces around =)
+    const env = /(?:^|[\s'"`;(])(?:export\s+)?(?<![A-Za-z0-9_])JWT_SECRET=(?!\$)(["']?)([^\s"'`,;)}#/]+)\1/g;
+    while ((m = env.exec(line))) take(m[2]);
+    const obj = new RegExp(`(?<![A-Za-z0-9_])JWT_SECRET['"]?\\s*[:=]\\s*${quoted}`, 'g');
+    while ((m = obj.exec(line))) take(m[2]);
+    const fallback = new RegExp(`(?<![A-Za-z0-9_])JWT_SECRET\\s*(?:\\|\\||\\?\\?)\\s*${quoted}`, 'g');
+    while ((m = fallback.exec(line))) take(m[2]);
+    const sign = new RegExp(`jwt\\.(?:sign|verify)\\([^,]+,\\s*${quoted}`, 'g');
+    while ((m = sign.exec(line))) take(m[2]);
+    const decl = new RegExp(`(?:const|let|var)\\s+\\w*SECRET\\w*\\s*=\\s*(?:[^;]*\\|\\|\\s*)?${quoted}`, 'g');
+    while ((m = decl.exec(line))) take(m[2]);
+  }
+  return out;
+}
+
+test('M1 every JWT-secret literal in the repo (tree + git history) is rejected as published', (t) => {
+  const { isKnownSecret, PUBLISHED_SECRETS } = require('../helpers/publishedSecrets');
+  const { jwtSecretProblem } = require('../helpers/security');
+  const root = path.join(BACKEND, '..');
+  // the extractor finds what it should and skips expressions
+  const PROBES = ['abc_published_value_0123', 'fallback-value', 'quoted_value_0123456789', 'signing_key_literal'];
+  const probe = jwtSecretLiterals([
+    "JWT_SECRET=abc_published_value_0123", "  JWT_SECRET: 'quoted_value_0123456789',", "const JWT_SECRET = process.env.JWT_SECRET || 'fallback-value';",
+    'JWT_SECRET=$(node -e x)', 'JWT_SECRET=${jwt}', 'JWT_SECRET: SECRET,', "replace(/^JWT_SECRET=.*$/m, '')", "jwt.sign(user, 'signing_key_literal')",
+  ].join('\n'));
+  assert.deepEqual([...probe].sort(), PROBES);
+
+  const found = new Map(); // literal → where
+  const ls = spawnSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' });
+  assert.equal(ls.status, 0, 'git ls-files failed (this check needs the git checkout)');
+  for (const f of ls.stdout.split('\0').filter(Boolean)) {
+    if (/(^|\/)package-lock\.json$|\.(png|jpe?g|gif|ico|pdf|woff2?|zip|gz)$/i.test(f)) continue;
+    let text;
+    try { text = fs.readFileSync(path.join(root, f), 'utf8'); } catch { continue; }
+    if (!text.includes('SECRET') && !text.includes('jwt.')) continue;
+    for (const s of jwtSecretLiterals(text)) if (!found.has(s) && !PROBES.includes(s)) found.set(s, f);
+  }
+  // committed history too: a literal removed from the tree is still public
+  const hist = spawnSync('git', ['log', '--all', '-p', '--no-color', '-G', 'JWT_SECRET|jwt\\.sign|SECRET\\s*='], { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+  if (hist.status === 0) {
+    const changed = hist.stdout.split('\n').filter((l) => /^[+-][^+-]/.test(l)).map((l) => l.slice(1)).join('\n');
+    for (const s of jwtSecretLiterals(changed)) if (!found.has(s) && !PROBES.includes(s)) found.set(s, 'git history');
+  }
+  for (const known of ['change_this_to_a_random_secret_string_min_32_chars', '__GENERATE_ON_FIRST_RUN__', 'test-secret-key', 'whitelabel_test_secret_0123456789abcdef0123456789']) {
+    assert.ok(found.has(known), `scanner did not find "${known}" — the extractor is broken`);
+  }
+  const accepted = [...found].filter(([s]) => !isKnownSecret(s)).map(([s, f]) => `${s} (${f})`);
+  assert.deepEqual(accepted, [], 'JWT secret literals in the repo that production would accept — add them to helpers/publishedSecrets.js');
+  for (const [s] of found) assert.ok(jwtSecretProblem(s), `jwtSecretProblem("${s}") must refuse it`);
+  assert.ok(PUBLISHED_SECRETS.size >= 10);
+  t.diagnostic(`${found.size} JWT secret literals checked: ${[...found.keys()].join(', ')}`);
+});
+
+test('M1 the B4 whitelabel literal is refused in production and a token forged with it is useless', async () => {
+  const lit = 'whitelabel_test_secret_0123456789abcdef0123456789';
+  const prod = await bootServer({ NODE_ENV: 'production', JWT_SECRET: lit, SANDBOX_MODE: null });
+  await sleep(300);
+  assert.equal(prod.alive(), false, 'production must refuse a published secret');
+  assert.match(prod.output(), /published example value/);
+  // outside production with SANDBOX_MODE it is replaced: a forged token is rejected
+  const dev = await bootServer({ JWT_SECRET: lit });
+  const forged = require('jsonwebtoken').sign({ id: U.sa.id, role: 'super-admin', sv: 0 }, lit, { expiresIn: '1h' });
+  assert.equal((await request(dev.base, 'GET', '/api/users', { token: forged })).status, 401);
+  await dev.stop();
+});

@@ -4,11 +4,18 @@
  * production (helpers/security.js) and always replaced by `npm run sandbox`
  * (scripts/sandbox.js). No side effects: safe to require before env loading.
  * Compare lower-cased.
+ *
+ * tests/backend.test.js ("M1 every JWT secret literal in the repo …") scans
+ * every tracked file (tests, docs, env examples, scripts) for JWT-secret-like
+ * literals and fails if one is not rejected here — add any new literal to the
+ * list below (better: generate test secrets with crypto.randomBytes).
  */
 const PUBLISHED_SECRETS = new Set([
   'change_this_to_a_random_secret_string_min_32_chars',
   'sandbox_only_jwt_secret_not_for_production_0123456789abcdef',
   'demo_dev_secret_change_me_to_a_random_32_plus_char_string',
+  // tests/whitelabel.test.js used this literal until B4 (M1) — it is in git history
+  'whitelabel_test_secret_0123456789abcdef0123456789',
   '__generate_on_first_run__',
   'test-secret-key',
   'secret',
