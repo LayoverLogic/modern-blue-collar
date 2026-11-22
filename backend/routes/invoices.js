@@ -24,6 +24,7 @@ const prisma = require('../helpers/prisma');
 const docs = require('../helpers/documents');
 const { getLocale } = require('../helpers/locale');
 const { mountDocumentRoutes, LINES } = require('../helpers/documentRoutes');
+const activity = require('../helpers/activity');
 
 function onStatus(d, current) {
   if (!d.status) return;
@@ -53,7 +54,7 @@ router.post('/from-quote/:quoteId', requireAuth, requireRole(...BILLING), async 
     const locale = getLocale();
     const invoice = await prisma.$transaction(async (tx) => {
       const number = await docs.allocateNumber(tx, 'invoice', locale);
-      return tx.invoice.create({
+      const created = await tx.invoice.create({
         data: {
           jobId: quote.jobId, number, ...d,
           amount: String(quote.amount), subtotal: String(quote.subtotal), taxTotal: String(quote.taxTotal),
@@ -62,6 +63,11 @@ router.post('/from-quote/:quoteId', requireAuth, requireRole(...BILLING), async 
         },
         include: { lines: LINES },
       });
+      // GTM-18: same entry as POST /api/invoices, plus the quote it came from
+      await activity.log(tx, req, created.jobId, 'invoice_created', {
+        to: { invoiceId: created.id, number: created.number, amount: Number(created.amount), currency: created.currency, status: created.status, fromQuoteId: quote.id, fromQuoteNumber: quote.number },
+      });
+      return created;
     }); // the job already has an invoice → P2002 → 409 DUPLICATE
     res.status(201).json({ ...invoice, fromQuote: { id: quote.id, number: quote.number } });
   } catch (e) { next(e); }

@@ -10,7 +10,13 @@
  *   PUT    /api/jobs/:id           — alias for PATCH
  *   DELETE /api/jobs/:id           — delete job + its photo files     (admin+)
  *   GET    /api/jobs/types         — trade-specific job type list
- *   GET/POST/DELETE /api/jobs/:id/photos[...]                         (anyone who can see the job)
+ *   GET    /api/jobs/:id/photos[...]                                  (anyone who can see the job)
+ *   POST   /api/jobs/:id/photos                                       (office; technician: own job)
+ *   DELETE /api/jobs/:id/photos/:photoId                              (office; technician: own job + own upload)
+ *
+ * TECH_VISIBILITY=all (helpers/access.js): technicians READ every job, its
+ * photos and activity (quote / invoice of other people's jobs → null); writes
+ * stay limited to their own jobs.
  *   GET    /api/jobs/:id/activity  — activity log, newest first        (anyone who can see the job; routes/activity.js)
  *
  * Activity log (GTM-18): every create / update / delete / photo change writes
@@ -31,7 +37,7 @@ const crypto  = require('crypto');
 const { requireAuth, requireRole } = require('./auth');
 const { optimisticUpdate } = require('../helpers/optimisticUpdate');
 const { OFFICE, ADMIN, isOffice } = require('../helpers/roles');
-const { jobScope, assertJobAccess } = require('../helpers/access');
+const { jobReadScope, assertJobAccess, assertJobRead, redactJob } = require('../helpers/access');
 const { parseId, badRequest, forbidden, notFound, conflict } = require('../helpers/httpError');
 const { sniffImage, isServableImage } = require('../helpers/imageSniff');
 const v = require('../helpers/validate');
@@ -139,7 +145,7 @@ router.get('/types', requireAuth, (_req, res) => {
 router.get('/', requireAuth, async (req, res, next) => {
   try {
     const q = req.query;
-    const where = { ...jobScope(req.user) };
+    const where = { ...jobReadScope(req.user) }; // TECH_VISIBILITY=all: technicians read every job
     if (typeof q.status === 'string' && q.status) where.status = q.status;
     if (typeof q.technicianId === 'string' && q.technicianId) {
       const tid = parseId(q.technicianId, 'technicianId');
@@ -156,7 +162,7 @@ router.get('/', requireAuth, async (req, res, next) => {
       orderBy: [{ scheduledDate: 'asc' }, { scheduledTime: 'asc' }, { createdAt: 'desc' }],
       ...(take ? { take } : {}),
     });
-    res.json(jobs);
+    res.json(jobs.map((j) => redactJob(req.user, j)));
   } catch (err) { next(err); }
 });
 
@@ -164,7 +170,7 @@ router.get('/', requireAuth, async (req, res, next) => {
 router.get('/:id', requireAuth, async (req, res, next) => {
   try {
     const id = parseId(req.params.id);
-    await assertJobAccess(req.user, id);
+    await assertJobRead(req.user, id);
     const job = await prisma.job.findUnique({
       where: { id },
       include: {
@@ -176,7 +182,7 @@ router.get('/:id', requireAuth, async (req, res, next) => {
       },
     });
     if (!job) throw notFound('Job not found');
-    res.json(job);
+    res.json(redactJob(req.user, job));
   } catch (err) { next(err); }
 });
 
@@ -280,6 +286,7 @@ function photoView(p) {
   return {
     id: p.id, jobId: p.jobId, originalName: p.originalName,
     contentType: p.contentType, size: p.size, createdAt: p.createdAt,
+    uploadedById: p.uploadedById ?? null,
     url: `/api/jobs/${p.jobId}/photos/${p.id}/raw`,
   };
 }
@@ -288,7 +295,7 @@ function photoView(p) {
 router.get('/:id/photos', requireAuth, async (req, res, next) => {
   try {
     const jobId = parseId(req.params.id);
-    await assertJobAccess(req.user, jobId);
+    await assertJobRead(req.user, jobId);
     const photos = await prisma.jobPhoto.findMany({ where: { jobId }, orderBy: { createdAt: 'desc' } });
     res.json(photos.map(photoView));
   } catch (err) { next(err); }
@@ -349,7 +356,7 @@ router.get('/:id/photos/:photoId/raw', requireAuth, async (req, res, next) => {
   try {
     const jobId = parseId(req.params.id);
     const photoId = parseId(req.params.photoId, 'photoId');
-    await assertJobAccess(req.user, jobId);
+    await assertJobRead(req.user, jobId);
     const photo = await prisma.jobPhoto.findUnique({ where: { id: photoId } });
     if (!photo || photo.jobId !== jobId) throw notFound('Photo not found');
     const obj = await storage.getObject(photo.key);
@@ -367,6 +374,8 @@ router.get('/:id/photos/:photoId/raw', requireAuth, async (req, res, next) => {
 });
 
 // DELETE /api/jobs/:id/photos/:photoId — remove a photo (DB row + stored object)
+// Office roles: any photo. Technicians: only photos THEY uploaded, on their
+// own jobs (403 NOT_OWNER otherwise).
 router.delete('/:id/photos/:photoId', requireAuth, async (req, res, next) => {
   try {
     const jobId = parseId(req.params.id);
@@ -374,6 +383,9 @@ router.delete('/:id/photos/:photoId', requireAuth, async (req, res, next) => {
     await assertJobAccess(req.user, jobId);
     const photo = await prisma.jobPhoto.findUnique({ where: { id: photoId } });
     if (!photo || photo.jobId !== jobId) throw notFound('Photo not found');
+    if (!isOffice(req.user) && photo.uploadedById !== req.user.id) {
+      throw forbidden('Technicians can only delete photos they uploaded', { code: 'NOT_OWNER' });
+    }
     await prisma.$transaction(async (tx) => {
       await tx.jobPhoto.delete({ where: { id: photo.id } });
       await activity.log(tx, req, jobId, 'photo_removed', { from: { photoId: photo.id, originalName: photo.originalName } });

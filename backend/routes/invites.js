@@ -1,7 +1,9 @@
 /**
  * routes/invites.js — team invites (mounted at /api/invites only; RT-29).
  *
- *   POST /api/invites/send   { email, role?, firstName?, lastName?, phone? }
+ *   POST /api/invites/send   { email, firstName, lastName, role?, phone? }
+ *                            firstName / lastName required (400 REQUIRED, field);
+ *                            phone normalised to E.164 (400 INVALID_PHONE)
  *   POST /api/invites        (same — alias used by team.html)
  *
  * Admin+ (signed in; not API keys). Inviting PRE-CREATES the user (active,
@@ -23,6 +25,7 @@ const { sendMail } = require('../helpers/mailer');
 const { ROLES, ADMIN, PRIVILEGED, isSuper } = require('../helpers/roles');
 const { badRequest, forbidden } = require('../helpers/httpError');
 const v = require('../helpers/validate');
+const { normalisePhone } = require('../helpers/phone');
 const brand = require('../../brand.config');
 
 const prisma = require('../helpers/prisma');
@@ -36,6 +39,9 @@ async function sendInvite(req, res, next) {
     const role = body.role == null || body.role === '' ? 'technician' : body.role;
     if (!ROLES.includes(role)) throw badRequest(`role must be one of: ${ROLES.join(', ')}`, { code: 'INVALID_ROLE' });
     if (PRIVILEGED.includes(role) && !isSuper(req.user)) throw forbidden('Only a super-admin can invite an admin or super-admin');
+    const firstName = v.str(body.firstName, 'firstName', { required: true, max: 100 });
+    const lastName  = v.str(body.lastName, 'lastName', { required: true, max: 100 });
+    const phone     = normalisePhone(body.phone, 'phone');
 
     let user = await prisma.user.findUnique({ where: { email }, select: { id: true } });
     let created = false;
@@ -44,9 +50,9 @@ async function sendInvite(req, res, next) {
         data: {
           email,
           password:  await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10), // unusable: Google sign-in
-          firstName: v.str(body.firstName, 'firstName', { max: 100 }) || '',
-          lastName:  v.str(body.lastName, 'lastName', { max: 100 }) || '',
-          phone:     v.str(body.phone, 'phone', { max: 40 }),
+          firstName,
+          lastName,
+          phone,
           role,
           active:    true,
         },

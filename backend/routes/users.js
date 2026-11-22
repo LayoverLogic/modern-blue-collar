@@ -21,11 +21,20 @@ const brand   = require('../../brand.config');
 const { ROLES, ADMIN, PRIVILEGED, SUPER_ADMIN, isOffice, isAdmin, isSuper } = require('../helpers/roles');
 const { parseId, badRequest, forbidden, notFound } = require('../helpers/httpError');
 const v = require('../helpers/validate');
+const { normalisePhone } = require('../helpers/phone');
 
 const prisma = require('../helpers/prisma');
 
 const PUBLIC_SELECT = { id: true, email: true, role: true, firstName: true, lastName: true, phone: true, active: true };
 const MIN_PASSWORD = 10;
+
+/** Disconnect the user's live sockets (server.js disconnectUserSockets). */
+function dropSockets(req, userId) {
+  const fn = req.app && req.app.get('disconnectUserSockets');
+  if (typeof fn === 'function') {
+    try { fn(userId); } catch (e) { console.warn('[USERS] could not disconnect sockets:', e.message); }
+  }
+}
 
 function validRole(role) {
   if (!ROLES.includes(role)) throw badRequest(`role must be one of: ${ROLES.join(', ')}`, { code: 'INVALID_ROLE' });
@@ -51,12 +60,14 @@ router.get('/', requireAuth, requireRole(...ADMIN), async (_req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// GET /api/users/technicians — returns active technicians for job assignment dropdown
+// GET /api/users/technicians — active technicians (+ admins) for the job
+// assignment dropdown and the schedule: { technicianLabel, technicians:
+// [{ id, firstName, lastName, email, phone, role }] }. Any signed-in user.
 router.get('/technicians', requireAuth, async (_req, res, next) => {
   try {
     const techs = await prisma.user.findMany({
       where:  { active: true, role: { in: ['technician', 'admin', 'super-admin'] } },
-      select: { id: true, firstName: true, lastName: true, phone: true, role: true },
+      select: { id: true, firstName: true, lastName: true, email: true, phone: true, role: true },
       orderBy: { firstName: 'asc' },
     });
     // Surface the trade-specific label so the UI can say "Electricians" vs "Plumbers" etc.
@@ -92,7 +103,7 @@ router.post('/', requireAuth, requireSession, requireRole(...ADMIN), async (req,
     const password  = validPassword(body.password);
     const firstName = v.str(body.firstName, 'firstName', { required: true, max: 100 });
     const lastName  = v.str(body.lastName, 'lastName', { required: true, max: 100 });
-    const phone     = v.str(body.phone, 'phone', { max: 40 });
+    const phone     = normalisePhone(body.phone, 'phone'); // E.164, brand country (WL-12)
     const role      = body.role == null || body.role === '' ? 'technician' : validRole(body.role);
     if (PRIVILEGED.includes(role) && !isSuper(req.user)) {
       throw forbidden('Only a super-admin can create admin or super-admin accounts');
@@ -114,7 +125,7 @@ router.patch('/:id', requireAuth, requireSession, async (req, res, next) => {
     const body = req.body || {};
     const self = id === req.user.id;
 
-    const target = await prisma.user.findUnique({ where: { id }, select: { id: true, role: true } });
+    const target = await prisma.user.findUnique({ where: { id }, select: { id: true, role: true, active: true } });
     if (!target) {
       if (!isAdmin(req.user)) throw forbidden();
       throw notFound('User not found');
@@ -123,7 +134,7 @@ router.patch('/:id', requireAuth, requireSession, async (req, res, next) => {
     const data = {};
     if (body.firstName !== undefined) data.firstName = v.str(body.firstName, 'firstName', { required: true, max: 100 });
     if (body.lastName  !== undefined) data.lastName  = v.str(body.lastName, 'lastName', { required: true, max: 100 });
-    if (body.phone     !== undefined) data.phone     = v.str(body.phone, 'phone', { max: 40 });
+    if (body.phone     !== undefined) data.phone     = normalisePhone(body.phone, 'phone');
     const wantsEmail  = body.email  !== undefined;
     const wantsRole   = body.role   !== undefined;
     const wantsActive = body.active !== undefined;
@@ -149,6 +160,9 @@ router.patch('/:id', requireAuth, requireSession, async (req, res, next) => {
     if (body.password !== undefined) throw badRequest('password cannot be changed via this route');
 
     const user = await prisma.user.update({ where: { id }, data, select: PUBLIC_SELECT });
+    // Live sockets keep the identity of their handshake: drop them when the
+    // user loses access or changes role, so the next connect re-authenticates.
+    if ((target.active && !user.active) || target.role !== user.role) dropSockets(req, id);
     res.json(user);
   } catch (err) { next(err); }
 });
@@ -159,6 +173,7 @@ router.delete('/:id', requireAuth, requireSession, requireRole(...SUPER_ADMIN), 
     const id = parseId(req.params.id);
     if (id === req.user.id) throw badRequest('You cannot delete your own account');
     await prisma.user.delete({ where: { id } });
+    dropSockets(req, id);
     res.json({ success: true });
   } catch (err) { next(err); }
 });

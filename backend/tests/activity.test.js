@@ -503,3 +503,77 @@ test('actor names survive: a deleted user shows as "Deleted user", the id is kep
   const [e] = await feed(r.json.id);
   assert.deepEqual(e.actor, { kind: 'user', userId: temp.id, apiKeyId: null, name: 'Deleted user' });
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Phase 2c (B2): quotes / invoices write their own entries (helpers/documentRoutes.js)
+// ═════════════════════════════════════════════════════════════════════════════
+test('documents: POST /api/quotes logs quote_created; status changes log "updated"; from-quote logs invoice_created', async () => {
+  const job = await mkJob();
+  const q = await request('POST', '/api/quotes', {
+    token: U.admin.token,
+    body: { jobId: job.id, lines: [{ description: 'Panel upgrade', quantity: 1, unitPrice: 1200 }, { description: 'Permit', quantity: 2, unitPrice: 25.5 }] },
+  });
+  assert.equal(q.status, 201, q.text);
+  const created = await newest(job.id, 'quote_created');
+  assert.ok(created, 'no quote_created entry');
+  assert.deepEqual(created.to, { quoteId: q.json.id, number: q.json.number, amount: 1251, currency: q.json.currency, status: 'draft' });
+  assert.equal(created.actor.name, U.admin.name);
+
+  // a duplicate quote for the job is refused (409) → no second entry
+  const dup = await request('POST', '/api/quotes', { token: U.admin.token, body: { jobId: job.id, amount: 10 } });
+  assert.equal(dup.status, 409);
+  assert.equal((await feed(job.id)).filter((e) => e.type === 'quote_created').length, 1);
+
+  // a PATCH that does not change status logs nothing
+  const before = (await feed(job.id)).length;
+  const n = await request('PATCH', `/api/quotes/${q.json.id}`, { token: U.admin.token, body: { notes: 'call first', version: q.json.version } });
+  assert.equal(n.status, 200, n.text);
+  assert.equal((await feed(job.id)).length, before);
+
+  const sent = await request('PATCH', `/api/quotes/${q.json.id}`, { token: U.admin.token, body: { status: 'sent', version: n.json.version } });
+  assert.equal(sent.status, 200, sent.text);
+  const upd = await newest(job.id, 'updated');
+  assert.deepEqual(upd.from, { quoteId: q.json.id, number: q.json.number, status: 'draft' });
+  assert.deepEqual(upd.to, { quoteId: q.json.id, number: q.json.number, status: 'sent' });
+
+  // a stale version (409) rolls the entry back with the change
+  const stale = await request('PATCH', `/api/quotes/${q.json.id}`, { token: U.admin.token, body: { status: 'approved', version: 1 } });
+  assert.equal(stale.status, 409);
+  assert.equal((await feed(job.id)).filter((e) => e.type === 'updated').length, 1);
+  const ok = await request('PATCH', `/api/quotes/${q.json.id}`, { token: U.admin.token, body: { status: 'approved', version: sent.json.version } });
+  assert.equal(ok.status, 200, ok.text);
+
+  const inv = await request('POST', `/api/invoices/from-quote/${q.json.id}`, { token: U.admin.token, body: { dueDate: '2031-01-31' } });
+  assert.equal(inv.status, 201, inv.text);
+  const ic = await newest(job.id, 'invoice_created');
+  assert.deepEqual(ic.to, {
+    invoiceId: inv.json.id, number: inv.json.number, amount: 1251, currency: inv.json.currency, status: 'unpaid',
+    fromQuoteId: q.json.id, fromQuoteNumber: q.json.number,
+  });
+  const paid = await request('PATCH', `/api/invoices/${inv.json.id}`, { token: U.admin.token, body: { status: 'paid', version: inv.json.version } });
+  assert.equal(paid.status, 200, paid.text);
+  const pu = await newest(job.id, 'updated');
+  assert.deepEqual([pu.from, pu.to], [
+    { invoiceId: inv.json.id, number: inv.json.number, status: 'unpaid' },
+    { invoiceId: inv.json.id, number: inv.json.number, status: 'paid' },
+  ]);
+  assert.deepEqual((await feed(job.id)).map((e) => e.type), ['updated', 'invoice_created', 'updated', 'updated', 'quote_created', 'created']);
+});
+
+test('documents: POST /api/invoices logs invoice_created; a refused create or email logs nothing', async () => {
+  const job = await mkJob();
+  const bad = await request('POST', '/api/invoices', { token: U.admin.token, body: { jobId: job.id, amount: 0 } });
+  assert.equal(bad.status, 400);
+  const tech = await request('POST', '/api/invoices', { token: U.tech.token, body: { jobId: job.id, amount: 50 } });
+  assert.equal(tech.status, 403);
+  assert.deepEqual((await feed(job.id)).map((e) => e.type), ['created']);
+  const inv = await request('POST', '/api/invoices', { token: U.admin.token, body: { jobId: job.id, amount: 99.95, dueDate: '2031-02-01' } });
+  assert.equal(inv.status, 201, inv.text);
+  const e = await newest(job.id, 'invoice_created');
+  assert.deepEqual(e.to, { invoiceId: inv.json.id, number: inv.json.number, amount: 99.95, currency: inv.json.currency, status: 'unpaid' });
+  // MAIL_DRIVER=none → 503 EMAIL_DISABLED and no entry
+  const mail = await request('POST', `/api/invoices/${inv.json.id}/email`, { token: U.admin.token, body: {} });
+  assert.equal(mail.status, 503, mail.text);
+  assert.equal(mail.json.code, 'EMAIL_DISABLED');
+  assert.deepEqual((await feed(job.id)).map((x) => x.type), ['invoice_created', 'created']);
+});

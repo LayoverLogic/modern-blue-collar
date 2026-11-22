@@ -131,6 +131,10 @@ async function seedPeopleAndJobs(prisma, dataset, { password }) {
   const hash = await bcrypt.hash(password, 10);
   const out = { users: 0, customers: 0, jobs: 0, quotes: 0, invoices: 0, parts: 0, communications: 0, activity: 0 };
 
+  // Seeded documents carry the instance currency (BRAND_COUNTRY / BRAND_CURRENCY),
+  // not the column default USD — an Irish demo shows EUR.
+  const currency = require('../../helpers/locale').getLocale().currency;
+
   const userByEmail = new Map();
   for (const t of dataset.team) {
     let u = await prisma.user.findUnique({ where: { email: t.email } });
@@ -180,13 +184,13 @@ async function seedPeopleAndJobs(prisma, dataset, { password }) {
     out.jobs++;
     let quote = null; let invoice = null;
     if (j.quote) {
-      quote = await prisma.quote.create({ data: { jobId: job.id, amount: j.quote.amount, status: j.quote.status, notes: j.quote.notes, createdAt: new Date(j.quote.createdAt) } });
+      quote = await prisma.quote.create({ data: { jobId: job.id, amount: j.quote.amount, currency, status: j.quote.status, notes: j.quote.notes, createdAt: new Date(j.quote.createdAt) } });
       out.quotes++;
     }
     if (j.invoice) {
       invoice = await prisma.invoice.create({
         data: {
-          jobId: job.id, amount: j.invoice.amount, status: j.invoice.status, notes: j.invoice.notes,
+          jobId: job.id, amount: j.invoice.amount, currency, status: j.invoice.status, notes: j.invoice.notes,
           dueDate: new Date(j.invoice.dueDate), paidAt: j.invoice.paidAt ? new Date(j.invoice.paidAt) : null,
           createdAt: new Date(j.invoice.createdAt),
         },

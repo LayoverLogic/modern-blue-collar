@@ -4,7 +4,8 @@
  * helpers/activity.js inside the transaction of the change itself.
  *
  *   GET /api/jobs/:id/activity   anyone who may see the job (technicians: their
- *                                own jobs, else 403 OUT_OF_SCOPE; 404 unknown /
+ *                                own jobs — every job with TECH_VISIBILITY=all —
+ *                                else 403 OUT_OF_SCOPE; 404 unknown /
  *                                deleted job). Mounted from routes/jobs.js.
  *   GET /api/activity            office roles: the feed across all jobs,
  *                                including tombstones of deleted jobs.
@@ -22,7 +23,7 @@
 const express = require('express');
 const { requireAuth, requireRole } = require('./auth');
 const { OFFICE } = require('../helpers/roles');
-const { assertJobAccess } = require('../helpers/access');
+const { assertJobRead } = require('../helpers/access');
 const { parseId } = require('../helpers/httpError');
 const v = require('../helpers/validate');
 const activity = require('../helpers/activity');
@@ -39,7 +40,7 @@ function paging(q) {
 async function jobActivity(req, res, next) {
   try {
     const id = parseId(req.params.id);
-    await assertJobAccess(req.user, id);
+    await assertJobRead(req.user, id); // TECH_VISIBILITY=all: any job
     res.json(await activity.list({ jobId: id }, paging(req.query)));
   } catch (err) { next(err); }
 }

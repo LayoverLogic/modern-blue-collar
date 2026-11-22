@@ -43,6 +43,7 @@ const COUNTRIES = {
     numberLocale: 'en-US',
     dateFormat: 'MM/DD/YYYY',
     phonePrefix: '+1',
+    weekStart: 'sunday',
     taxLabel: 'Sales tax',
     defaultTaxRates: '',
     addressLabels: {
@@ -61,6 +62,7 @@ const COUNTRIES = {
     numberLocale: 'en-IE',
     dateFormat: 'DD/MM/YYYY',
     phonePrefix: '+353',
+    weekStart: 'monday',
     taxLabel: 'VAT',
     defaultTaxRates: 'standard:23,reduced:13.5,zero:0',
     addressLabels: {
@@ -144,6 +146,8 @@ function buildLocale(env = {}, brand = {}) {
     numberLocale: def.numberLocale,
     dateFormat: def.dateFormat,
     phonePrefix: def.phonePrefix,
+    // First day of the calendar week: US / CA → sunday, everywhere else monday.
+    weekStart: def.weekStart || (['US', 'CA'].includes(def.country) ? 'sunday' : 'monday'),
     addressLabels: { ...def.addressLabels },
     requiredAddressFields: def.requiredAddressFields.slice(),
     postcodeLabel: def.postcodeLabel,
@@ -173,6 +177,7 @@ function publicLocale(l) {
     numberLocale: l.numberLocale,
     dateFormat: l.dateFormat,
     phonePrefix: l.phonePrefix,
+    weekStart: l.weekStart,
     addressLabels: l.addressLabels,
     requiredAddressFields: l.requiredAddressFields,
     postcodePattern: l.postcodePattern,

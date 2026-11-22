@@ -99,6 +99,9 @@ function parseJobId(payload) {
 io.on('connection', (socket) => {
   const me = socket.data.user;
   let currentJobId = null;
+  // Per-user room: lets routes/users.js drop every socket of a user who is
+  // deactivated, deleted or has their role changed (disconnectUserSockets).
+  socket.join(`user:${me.id}`);
 
   function leaveCurrent() {
     if (currentJobId && presence[currentJobId]) {
@@ -126,25 +129,42 @@ io.on('connection', (socket) => {
   socket.on('disconnect', safeHandler(() => leaveCurrent()));
 });
 
+/**
+ * Disconnect every live socket of a user (deactivated / demoted / deleted).
+ * Their presence entries are removed by the normal 'disconnect' handler; a
+ * reconnect re-runs the handshake, which re-reads the user row (RT-5).
+ */
+function disconnectUserSockets(userId) {
+  if (!Number.isSafeInteger(userId)) return;
+  io.in(`user:${userId}`).disconnectSockets(true);
+}
+
 // Make io accessible to routes
 app.set('io', io);
+app.set('disconnectUserSockets', disconnectUserSockets);
 app.set('presence', presence);
 
 // ── Security headers (RT-15) ────────────────────────────────────────────────
-// The pages still use inline <script> blocks and inline on* handlers, so
-// script-src keeps 'unsafe-inline' for now (tightening = move scripts to files,
-// then drop it). Everything else is locked down.
+// No page in public/ uses inline <script>, inline on* handlers or style=""
+// attributes any more (Phase 2c), so scripts and styles are 'self' only.
+// tests/backend.test.js ("2c CSP …") loads every page under this policy in headless Chrome and
+// fails on any violation. Pages may still set element.style.* from script
+// (CSSOM) — CSP does not restrict that.
+//   img-src     'self' data: blob: + the https origin of BRAND_LOGO_URL /
+//               BRAND_FAVICON_URL when they point at another host
+//   connect-src 'self' + ws(s):// of the same host (socket.io presence)
+const { cspAssetOrigins, sameOriginSockets } = require('./helpers/csp');
 app.use(helmet({
   contentSecurityPolicy: {
     useDefaults: false,
     directives: {
       defaultSrc:     ["'self'"],
-      scriptSrc:      ["'self'", "'unsafe-inline'"],
-      scriptSrcAttr:  ["'unsafe-inline'"],
-      styleSrc:       ["'self'", "'unsafe-inline'"],
-      imgSrc:         ["'self'", 'data:', 'blob:'],
+      scriptSrc:      ["'self'"],
+      scriptSrcAttr:  ["'none'"],
+      styleSrc:       ["'self'"],
+      imgSrc:         ["'self'", 'data:', 'blob:', ...cspAssetOrigins(brand)],
       fontSrc:        ["'self'", 'data:'],
-      connectSrc:     ["'self'"],
+      connectSrc:     ["'self'", (req) => sameOriginSockets(req)],
       objectSrc:      ["'none'"],
       frameAncestors: ["'none'"],
       baseUri:        ["'self'"],
@@ -155,6 +175,12 @@ app.use(helmet({
 app.disable('x-powered-by');
 
 const PORT = process.env.PORT || 3001;
+
+// TECH_VISIBILITY=own|all (helpers/access.js) — unknown values fall back to own.
+{
+  const tv = String(process.env.TECH_VISIBILITY || '').trim().toLowerCase();
+  if (tv && !['own', 'all'].includes(tv)) console.warn(`[CONFIG] TECH_VISIBILITY="${process.env.TECH_VISIBILITY}" is not own|all — using own.`);
+}
 
 app.use(cors({
   origin: ORIGINS.length ? ORIGINS : false,
@@ -281,8 +307,16 @@ const demoMode = () => process.env.DEMO_MODE === 'true' && !isProduction();
 // timezone — plus demoMode / demoLogin and the `locale` block (Phase 2b).
 const { publicBrand } = require('./helpers/brandValidate');
 const { publicLocale } = require('./helpers/locale');
+const { integrationStatus } = require('./helpers/integrations');
 app.get('/api/brand', (_req, res) => {
   res.json(publicBrand(brand, {
+    // Show "Sign in with Google" only when it can work: Google OAuth configured
+    // (GOOGLE_CLIENT_ID / _SECRET / _CALLBACK_URL) and not disabled by SANDBOX_MODE.
+    googleAuth:      integrationStatus('google').enabled,
+    // Shortcuts for pages (same values as in `locale`).
+    country:         brand.locale.country,
+    currency:        brand.locale.currency,
+    weekStart:       brand.locale.weekStart,
     demoMode:        demoMode(),
     // Demo sign-in hint for the login page — ONLY in demo mode (never in
     // production: the server refuses DEMO_MODE there). null otherwise.

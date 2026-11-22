@@ -7,6 +7,9 @@
  * POST /api/sms/job-confirm/:jobId                 — send job confirmation SMS to customer
  *
  * All sends: office roles only (super-admin, admin, dispatcher, office) — RT-16.
+ * Recipients are sent to Twilio in E.164 (helpers/phone.js, WL-12); `sentTo`
+ * in the response is that E.164 number. A number on record that cannot be
+ * normalised → 400 INVALID_PHONE (sent:false).
  * Arbitrary numbers are refused (400 RECIPIENT_NOT_CUSTOMER, sent:false), so a
  * stolen session cannot be used for toll fraud / phishing to any number.
  *
@@ -23,6 +26,7 @@ const v = require('../helpers/validate');
 const { integrationStatus, disabledMessage } = require('../helpers/integrations');
 const brand            = require('../../brand.config');
 const { getLocale, formatDate, formatTime } = require('../helpers/locale');
+const { toE164, matchVariants } = require('../helpers/phone');
 
 const prisma = require('../helpers/prisma');
 
@@ -78,19 +82,22 @@ function whenText(job) {
   return { date: 'TBD', time: '' };
 }
 
-/** Digits-only forms of a phone number we treat as equal (US +1 optional). */
-function phoneVariants(raw) {
-  const d = String(raw || '').replace(/\D/g, '');
-  if (d.length < 7) return [];
-  const set = new Set([d]);
-  if (d.length === 11 && d.startsWith('1')) set.add(d.slice(1));
-  if (d.length === 10) set.add(`1${d}`);
-  return [...set];
+/**
+ * WL-12: Twilio gets E.164. A customer's number on record is read with the
+ * customer's country (or else the brand country); rows written before
+ * phones were normalised are converted here.
+ */
+function customerE164(customer) {
+  return toE164(customer.phone, String(customer.country || getLocale().country).toUpperCase());
 }
 
-/** Customer whose phone on record matches `to`, or null. */
-async function customerForPhone(to) {
-  const variants = phoneVariants(to);
+function invalidPhone(raw) {
+  return badRequest(`"${String(raw)}" is not a valid phone number`, { code: 'INVALID_PHONE', field: 'phone', sent: false });
+}
+
+/** Customer whose phone on record is the same number as `e164`, or null. */
+async function customerForPhone(e164) {
+  const variants = matchVariants(e164);
   if (!variants.length) return null;
   const rows = await prisma.$queryRaw`
     SELECT id FROM "Customer"
@@ -111,12 +118,13 @@ router.post('/send', requireAuth, requireRole(...SMS), async (req, res, next) =>
     if (!to || !(req.body || {}).body) return res.status(400).json({ error: 'to and body are required', sent: false });
     if (typeof to !== 'string' || to.length > 40) throw badRequest('to must be a phone number', { sent: false });
     const body = smsBody(req.body.body);
-    const customer = await customerForPhone(to);
+    const e164 = toE164(to);
+    const customer = e164 ? await customerForPhone(e164) : null;
     if (!customer) {
       return res.status(400).json({ error: 'SMS can only be sent to a customer phone number on record', code: 'RECIPIENT_NOT_CUSTOMER', sent: false });
     }
-    const msg = await deliverSms(to, body);
-    res.json({ sid: msg.sid, status: msg.status, sent: msg.sent, message: msg.message });
+    const msg = await deliverSms(e164, body);
+    res.json({ sid: msg.sid, status: msg.status, sent: msg.sent, message: msg.message, sentTo: e164 });
   } catch (err) { next(err); }
 });
 
@@ -126,11 +134,13 @@ router.post('/customer/:customerId', requireAuth, requireRole(...SMS), async (re
     const customer = await prisma.customer.findUnique({ where: { id: parseId(req.params.customerId, 'customerId') } });
     if (!customer) throw notFound('Customer not found');
     if (!customer.phone) throw badRequest('Customer has no phone number', { sent: false });
+    const to = customerE164(customer);
+    if (!to) throw invalidPhone(customer.phone);
     const given = (req.body || {}).body;
     const body = given !== undefined && given !== '' ? smsBody(given)
       : `Hi ${customer.firstName}, this is ${brand.companyName}. Questions about your ${serviceLabel()} service? Call us at ${brand.companyPhone || 'our office'}.`;
-    const msg = await deliverSms(customer.phone, body);
-    res.json({ sid: msg.sid, status: msg.status, sent: msg.sent, message: msg.message, sentTo: customer.phone });
+    const msg = await deliverSms(to, body);
+    res.json({ sid: msg.sid, status: msg.status, sent: msg.sent, message: msg.message, sentTo: to });
   } catch (err) { next(err); }
 });
 
@@ -143,14 +153,16 @@ router.post('/job-confirm/:jobId', requireAuth, requireRole(...SMS), async (req,
     });
     if (!job) return res.status(404).json({ error: 'Job not found' });
     if (!job.customer.phone) return res.status(400).json({ error: 'Customer has no phone number' });
+    const to = customerE164(job.customer);
+    if (!to) throw invalidPhone(job.customer.phone);
 
     const { date: dateStr, time: timeStr } = whenText(job);
     const body = `Hi ${job.customer.firstName}, this is ${brand.companyName}. ` +
       `Your ${serviceLabel()} service is confirmed for ${dateStr}${timeStr ? ' at ' + timeStr : ''}. ` +
       `Questions? Call us at ${brand.companyPhone || 'our office'}.`;
 
-    const msg = await deliverSms(job.customer.phone, body);
-    res.json({ sid: msg.sid, status: msg.status, sent: msg.sent, message: msg.message, sentTo: job.customer.phone });
+    const msg = await deliverSms(to, body);
+    res.json({ sid: msg.sid, status: msg.status, sent: msg.sent, message: msg.message, sentTo: to });
   } catch (err) { next(err); }
 });
 

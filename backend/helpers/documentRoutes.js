@@ -15,6 +15,12 @@
  *   version        required on PATCH / PUT (optimistic locking, RT-9)
  * number / currency / sentAt / paidAt are set by the server only.
  * Sent / paid (locked) documents only accept status changes → 409 DOCUMENT_LOCKED.
+ *
+ * Job activity log (GTM-18, helpers/activity.js), in the same transaction:
+ *   create             quote_created / invoice_created
+ *                      to: { quoteId|invoiceId, number, amount, currency, status }
+ *   status change      updated  (PATCH/PUT, or a quote marked sent by /email)
+ *                      from / to: { quoteId|invoiceId, number, status }
  */
 'use strict';
 
@@ -28,6 +34,7 @@ const prisma = require('./prisma');
 const { getLocale } = require('./locale');
 const { sendMail } = require('./mailer');
 const docs = require('./documents');
+const activity = require('./activity');
 
 const LINES = { orderBy: { position: 'asc' } };
 const INCLUDE = { job: { include: { customer: true } }, lines: LINES };
@@ -54,6 +61,17 @@ function mountDocumentRoutes(router, cfg) {
     }
     if (type === 'invoice' && body.dueDate !== undefined) d.dueDate = v.date(body.dueDate, 'dueDate');
     return d;
+  }
+
+  const idKey = `${type}Id`;
+  const createdEntry = (doc) => ({ to: { [idKey]: doc.id, number: doc.number, amount: Number(doc.amount), currency: doc.currency, status: doc.status } });
+  /** 'updated' entry when the status changed (nothing otherwise). */
+  async function logStatus(tx, req, before, after) {
+    if (!before || !after || before.status === after.status) return;
+    await activity.log(tx, req, after.jobId, 'updated', {
+      from: { [idKey]: after.id, number: after.number, status: before.status },
+      to:   { [idKey]: after.id, number: after.number, status: after.status },
+    });
   }
 
   const legacyAmount = (value, required) => v.money(value, 'amount', { required, min: 0, exclusive: type === 'invoice' });
@@ -111,11 +129,13 @@ function mountDocumentRoutes(router, cfg) {
 
       const doc = await prisma.$transaction(async (tx) => {
         const number = await docs.allocateNumber(tx, type, locale);
-        return tx[model].create({
+        const created = await tx[model].create({
           data: { jobId, ...d, number, currency: locale.currency, ...(lines.length ? { lines: { create: lines } } : {}) },
           include: { lines: LINES },
         });
-      }); // duplicate per job → P2002 → 409 (number rolled back with it)
+        await activity.log(tx, req, jobId, `${type}_created`, createdEntry(created));
+        return created;
+      }); // duplicate per job → P2002 → 409 (number and activity entry rolled back with it)
       res.status(201).json(doc);
     } catch (e) { next(e); }
   });
@@ -188,7 +208,9 @@ function mountDocumentRoutes(router, cfg) {
           if (rows.length) await tx[lineModel].createMany({ data: rows.map((r) => ({ ...r, [fk]: id })) });
         }
         // version check last: a 409 rolls the line changes back
-        return optimisticUpdate(model, id, { ...d, version: body.version }, { client: tx, include: { lines: LINES } });
+        const updated = await optimisticUpdate(model, id, { ...d, version: body.version }, { client: tx, include: { lines: LINES } });
+        await logStatus(tx, req, current, updated);
+        return updated;
       });
       res.json(doc);
     } catch (e) { next(e); }
@@ -238,6 +260,7 @@ function mountDocumentRoutes(router, cfg) {
         if (!doc.sentAt) data.sentAt = new Date();
         if (type === 'quote' && doc.status === 'draft') data.status = 'sent';
         const updated = await tx[model].update({ where: { id }, data, include: INCLUDE });
+        await logStatus(tx, req, doc, updated);
         return { comm, updated };
       });
       res.json({
@@ -247,7 +270,7 @@ function mountDocumentRoutes(router, cfg) {
     } catch (e) { next(e); }
   });
 
-  return { INCLUDE, LINES, withPrint };
+  return { INCLUDE, LINES, withPrint, createdEntry };
 }
 
 module.exports = { mountDocumentRoutes, INCLUDE, LINES };

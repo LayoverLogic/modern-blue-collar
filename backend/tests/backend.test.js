@@ -181,10 +181,16 @@ async function cleanup() {
   const users = (await prisma.user.findMany({ where: { email: { contains: RUN } }, select: { id: true } })).map((u) => u.id);
   const custs = (await prisma.customer.findMany({ where: { lastName: { contains: RUN } }, select: { id: true } })).map((c) => c.id);
   const jobs = (await prisma.job.findMany({ where: { OR: [{ customerId: { in: custs } }, { technicianId: { in: users } }, { title: { contains: RUN } }] }, select: { id: true } })).map((j) => j.id);
+  // Activity rows: by jobRef (also covers tombstones of jobs deleted through
+  // the API, whose jobId is NULL) and by actor (entries this run's users wrote).
+  const refs = [...new Set([...jobs, ...(await prisma.jobActivity.findMany({ where: { actorUserId: { in: users } }, select: { jobRef: true } })).map((a) => a.jobRef)])];
+  await safe(prisma.invoiceLine.deleteMany({ where: { invoice: { jobId: { in: jobs } } } }));
+  await safe(prisma.quoteLine.deleteMany({ where: { quote: { jobId: { in: jobs } } } }));
   await safe(prisma.invoice.deleteMany({ where: { jobId: { in: jobs } } }));
   await safe(prisma.quote.deleteMany({ where: { jobId: { in: jobs } } }));
   await safe(prisma.jobPhoto.deleteMany({ where: { jobId: { in: jobs } } }));
   await safe(prisma.job.deleteMany({ where: { id: { in: jobs } } }));
+  await safe(prisma.jobActivity.deleteMany({ where: { OR: [{ jobRef: { in: refs } }, { actorUserId: { in: users } }] } }));
   await safe(prisma.communication.deleteMany({ where: { customerId: { in: custs } } }));
   await safe(prisma.customer.deleteMany({ where: { id: { in: custs } } }));
   await safe(prisma.apiKey.deleteMany({ where: { createdById: { in: users } } }));
@@ -408,9 +414,13 @@ test('RT-14 an authenticated socket joins presence as its token user (payload us
 });
 
 // ── RT-15 / RT-27 / RT-28 / RT-17 ───────────────────────────────────────────
-test('RT-15 CSP allows the inline pages but blocks plugins, framing and base hijack', async () => {
+test('RT-15 CSP: scripts and styles from self only; blocks plugins, framing and base hijack', async () => {
   const csp = (await api('GET', '/index.html')).headers['content-security-policy'];
-  for (const d of ["script-src 'self' 'unsafe-inline'", "object-src 'none'", "frame-ancestors 'none'", "base-uri 'self'"]) assert.ok(csp.includes(d), `${d} missing in ${csp}`);
+  for (const d of ["script-src 'self';", "script-src-attr 'none'", "style-src 'self';", "img-src 'self' data: blob:", "object-src 'none'", "frame-ancestors 'none'", "base-uri 'self'", "form-action 'self'"]) {
+    assert.ok(csp.includes(d), `${d} missing in ${csp}`);
+  }
+  assert.ok(!csp.includes('unsafe-inline') && !csp.includes('unsafe-eval'), csp);
+  assert.match(csp, /connect-src 'self' ws:\/\/127\.0\.0\.1:\d+ wss:\/\/127\.0\.0\.1:\d+/);
 });
 
 test('RT-27 CORS: only APP_URL / CORS_ORIGINS get Access-Control-Allow-Origin', async () => {
@@ -452,7 +462,8 @@ test('RT-16 office roles can SMS a customer number on record (sandbox: not sent)
   assert.equal(r.json.sent, false);
   const byId = await api('POST', `/api/sms/customer/${c.id}`, { token: U.admin.token, body: {} });
   assert.equal(byId.status, 200, byId.text);
-  assert.equal(byId.json.sentTo, '(620) 555-0177');
+  assert.equal(byId.json.sentTo, '+16205550177', 'SMS goes out in E.164 (WL-12), even for a legacy-formatted number on record');
+  assert.equal(r.json.sentTo, '+16205550177');
   assert.equal((await api('POST', `/api/sms/customer/${c.id}`, { token: U.tech.token, body: {} })).status, 403);
 });
 
@@ -527,4 +538,395 @@ test('RT-24 with TRUST_PROXY=1 the limiter keys on the forwarded client IP; with
   const direct = await bootServer({});
   assert.equal(await fire(direct.base, (i) => `203.0.113.${i + 1}`), 429, 'spoofed X-Forwarded-For bypassed the limiter');
   await direct.stop();
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Phase 2c (B2): contract gaps, hardening, configurability
+// ═════════════════════════════════════════════════════════════════════════════
+
+test('2c /api/brand: googleAuth only when Google OAuth is configured and not sandboxed; country, currency, weekStart', async () => {
+  const sandbox = (await api('GET', '/api/brand')).json;
+  assert.equal(sandbox.googleAuth, false, 'sandbox must not offer Google sign-in');
+  assert.equal(sandbox.country, 'US');
+  assert.equal(sandbox.currency, 'USD');
+  assert.equal(sandbox.weekStart, 'sunday');
+  assert.equal(sandbox.locale.weekStart, 'sunday');
+  for (const k of ['companyName', 'tradeType', 'colors', 'jobTypes', 'demoMode', 'demoLogin', 'locale', 'logoUrl', 'faviconUrl', 'timezone']) assert.ok(k in sandbox, `${k} missing`);
+
+  const ie = await bootServer({ ...GOOGLE_ENV, BRAND_COUNTRY: 'IE' });
+  try {
+    const b = (await request(ie.base, 'GET', '/api/brand')).json;
+    assert.equal(b.googleAuth, true, ie.output());
+    assert.equal(b.country, 'IE');
+    assert.equal(b.currency, 'EUR');
+    assert.equal(b.weekStart, 'monday');
+  } finally { await ie.stop(); }
+
+  const placeholder = await bootServer({ ...GOOGLE_ENV, GOOGLE_CLIENT_SECRET: 'your_google_secret' });
+  try {
+    assert.equal((await request(placeholder.base, 'GET', '/api/brand')).json.googleAuth, false, 'placeholder secret counted as configured');
+  } finally { await placeholder.stop(); }
+});
+
+// ── CSP: every page loads without a violation ───────────────────────────────
+const PUBLIC = path.join(BACKEND, 'public');
+const listFiles = (dir, ext) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+  const p = path.join(dir, e.name);
+  return e.isDirectory() ? listFiles(p, ext) : (p.endsWith(ext) ? [p] : []);
+});
+
+test('2c CSP static check: no inline <script>, on* handler, style attribute or <style> in public/', () => {
+  const problems = [];
+  for (const f of listFiles(PUBLIC, '.html')) {
+    const html = fs.readFileSync(f, 'utf8');
+    const rel = path.relative(PUBLIC, f);
+    for (const m of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+      if (!/\bsrc\s*=/.test(m[1]) || m[2].trim()) problems.push(`${rel}: inline <script>`);
+    }
+    for (const m of html.matchAll(/<[a-z][^>]*\s(on[a-z]+)\s*=/gi)) problems.push(`${rel}: inline handler ${m[1]}`);
+    if (/<[a-z][^>]*\sstyle\s*=/i.test(html)) problems.push(`${rel}: style="" attribute`);
+    if (/<style\b/i.test(html)) problems.push(`${rel}: <style> block`);
+    if (/javascript:/i.test(html)) problems.push(`${rel}: javascript: URL`);
+  }
+  for (const f of listFiles(path.join(PUBLIC, 'js'), '.js')) {
+    const js = fs.readFileSync(f, 'utf8');
+    const rel = path.relative(PUBLIC, f);
+    // markup built in JS lands in the DOM too: same rules
+    if (/\sstyle\s*=\s*\\?["']/.test(js)) problems.push(`${rel}: style="" in generated markup`);
+    if (/setAttribute\(\s*['"]style['"]|setAttribute\(\s*['"]on[a-z]+['"]/.test(js)) problems.push(`${rel}: setAttribute(style|on*)`);
+    if (/\son[a-z]+\s*=\s*\\?["']/.test(js)) problems.push(`${rel}: on* handler in generated markup`);
+    if (/<style\b/i.test(js)) problems.push(`${rel}: <style> in generated markup`);
+    if (/\beval\s*\(|new Function\s*\(/.test(js)) problems.push(`${rel}: eval / new Function`);
+  }
+  assert.deepEqual(problems, []);
+});
+
+const CHROME = process.env.CHROME_PATH || '/usr/bin/google-chrome';
+let puppeteer = null;
+try { puppeteer = require('puppeteer-core'); } catch { /* devDependency not installed */ }
+const browserSkip = !puppeteer ? 'puppeteer-core not installed' : (!fs.existsSync(CHROME) ? `no Chrome at ${CHROME} (set CHROME_PATH)` : false);
+
+test('2c CSP in a real browser: every page in public/ loads with zero violations (signed out, admin, technician)', { skip: browserSkip, timeout: 180000 }, async () => {
+  const c = await mkCustomer();
+  const j = await mkJob(c.id, { technicianId: U.tech.id, scheduledDate: '2031-03-03', scheduledTime: '09:00' });
+  const pages = fs.readdirSync(PUBLIC).filter((f) => f.endsWith('.html')).sort();
+  const query = { 'job.html': `?id=${j.id}`, 'customer-detail.html': `?id=${c.id}`, 'quote-invoice.html': `?jobId=${j.id}`, 'communications.html': `?customerId=${c.id}` };
+  const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'] });
+  const violations = [];
+  let visited = 0;
+  try {
+    for (const who of [null, 'admin', 'tech']) {
+      const page = await browser.newPage();
+      await page.evaluateOnNewDocument(() => {
+        window.__csp = [];
+        document.addEventListener('securitypolicyviolation', (e) => {
+          window.__csp.push(`${e.violatedDirective} blocked ${e.blockedURI || '(inline)'} at ${e.sourceFile || ''}:${e.lineNumber || ''}`);
+        });
+      });
+      const consoleCsp = [];
+      page.on('console', (m) => { if (/Content Security Policy/i.test(m.text())) consoleCsp.push(m.text()); });
+      await page.goto(`${srv.base}/api/health`);
+      if (who) await page.evaluate((tk) => localStorage.setItem('token', tk), U[who].token);
+      for (const p of pages) {
+        consoleCsp.length = 0;
+        const url = `${srv.base}/${p}${query[p] || ''}`;
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {});
+        await sleep(300);
+        const found = await page.evaluate(() => window.__csp || []).catch(() => ['(page did not evaluate)']);
+        for (const v of [...found, ...consoleCsp]) violations.push(`${who || 'signed-out'} ${p}: ${v}`);
+        visited += 1;
+      }
+      await page.close();
+    }
+  } finally { await browser.close(); }
+  assert.equal(visited, pages.length * 3);
+  assert.deepEqual(violations, []);
+});
+
+// ── Photos: uploadedById; technicians delete only their own uploads ─────────
+const PNG_1PX = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+function photoUpload(base, jobId, token, name = 'meter.png') {
+  const boundary = `----bt${crypto.randomBytes(6).toString('hex')}`;
+  const raw = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="${name}"\r\nContent-Type: image/png\r\n\r\n`),
+    PNG_1PX, Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+  return request(base, 'POST', `/api/jobs/${jobId}/photos`, { token, raw, headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` } });
+}
+
+test('2c photos: list includes uploadedById; a technician may delete only photos they uploaded', async () => {
+  const c = await mkCustomer();
+  const j = await mkJob(c.id, { technicianId: U.tech.id });
+  const byOffice = await photoUpload(srv.base, j.id, U.dispatcher.token, 'office.png');
+  assert.equal(byOffice.status, 201, byOffice.text);
+  assert.equal(byOffice.json.uploadedById, U.dispatcher.id);
+  const byTech = await photoUpload(srv.base, j.id, U.tech.token, 'tech.png');
+  assert.equal(byTech.status, 201, byTech.text);
+
+  const list = (await api('GET', `/api/jobs/${j.id}/photos`, { token: U.tech.token })).json;
+  assert.deepEqual(Object.fromEntries(list.map((p) => [p.id, p.uploadedById])), { [byOffice.json.id]: U.dispatcher.id, [byTech.json.id]: U.tech.id });
+
+  const denied = await api('DELETE', `/api/jobs/${j.id}/photos/${byOffice.json.id}`, { token: U.tech.token });
+  assert.equal(denied.status, 403);
+  assert.equal(denied.json.code, 'NOT_OWNER');
+  assert.equal((await api('DELETE', `/api/jobs/${j.id}/photos/${byTech.json.id}`, { token: U.tech.token })).status, 200);
+  assert.equal((await api('DELETE', `/api/jobs/${j.id}/photos/${byOffice.json.id}`, { token: U.dispatcher.token })).status, 200, 'office roles delete any photo');
+  assert.equal((await api('GET', `/api/jobs/${j.id}/photos`, { token: U.admin.token })).json.length, 0);
+});
+
+// ── Invites / technicians list ──────────────────────────────────────────────
+test('2c invites require firstName and lastName (400 REQUIRED); /api/users/technicians returns email', async () => {
+  const email = `${RUN}-named@backend.test`;
+  const noFirst = await api('POST', '/api/invites', { token: U.admin.token, body: { email, lastName: 'Only' } });
+  assert.equal(noFirst.status, 400);
+  assert.equal(noFirst.json.code, 'REQUIRED');
+  assert.equal(noFirst.json.field, 'firstName');
+  const noLast = await api('POST', '/api/invites', { token: U.admin.token, body: { email, firstName: 'Only', lastName: '  ' } });
+  assert.equal(noLast.status, 400);
+  assert.equal(noLast.json.field, 'lastName');
+  assert.equal(await prisma.user.findUnique({ where: { email } }), null, 'a rejected invite created a user');
+  const ok = await api('POST', '/api/invites', { token: U.admin.token, body: { email, firstName: 'Saoirse', lastName: 'Nolan', phone: '(620) 555-0123' } });
+  assert.equal(ok.status, 200, ok.text);
+  const row = await prisma.user.findUnique({ where: { email } });
+  assert.equal(`${row.firstName} ${row.lastName}`, 'Saoirse Nolan');
+  assert.equal(row.phone, '+16205550123');
+
+  const t = (await api('GET', '/api/users/technicians', { token: U.tech.token })).json;
+  const me = t.technicians.find((x) => x.id === U.tech.id);
+  assert.equal(me.email, U.tech.email);
+  assert.ok(!('password' in me));
+});
+
+// ── TECH_VISIBILITY ─────────────────────────────────────────────────────────
+let visSeq = 0;
+async function visibilityFixture() {
+  visSeq += 1;
+  const at = `${String(6 + visSeq * 2).padStart(2, '0')}:00`; // no SCHEDULE_CONFLICT between fixtures
+  const mine = await mkCustomer();
+  const theirs = await mkCustomer();
+  const own = await mkJob(mine.id, { technicianId: U.tech.id, scheduledDate: '2031-04-01', scheduledTime: at });
+  const other = await mkJob(theirs.id, { technicianId: U.tech2.id, scheduledDate: '2031-04-01', scheduledTime: at });
+  await prisma.quote.create({ data: { jobId: other.id, amount: 450 } });
+  await prisma.invoice.create({ data: { jobId: other.id, amount: 450 } });
+  await prisma.communication.create({ data: { customerId: theirs.id, type: 'note', subject: `private ${RUN}` } });
+  return { mine, theirs, own, other };
+}
+
+test('2c TECH_VISIBILITY=own (default): technicians cannot read other jobs, their photos, activity or customers', async () => {
+  const f = await visibilityFixture();
+  const t = U.tech.token;
+  assert.ok(!(await api('GET', '/api/jobs', { token: t })).json.some((j) => j.id === f.other.id));
+  for (const p of [`/api/jobs/${f.other.id}`, `/api/jobs/${f.other.id}/photos`, `/api/jobs/${f.other.id}/activity`, `/api/customers/${f.theirs.id}`]) {
+    const r = await api('GET', p, { token: t });
+    assert.equal(r.status, 403, p);
+    assert.equal(r.json.code, 'OUT_OF_SCOPE', p);
+  }
+  // own customer detail: billing of jobs that are not theirs is hidden
+  const mineDetail = (await api('GET', `/api/customers/${f.mine.id}`, { token: t })).json;
+  assert.ok(mineDetail.jobs.every((j) => j.technicianId === U.tech.id || (j.quote === null && j.invoice === null)));
+});
+
+test('2c TECH_VISIBILITY=all: technicians READ every job / customer, still WRITE only their own; billing and comms stay own', async () => {
+  const f = await visibilityFixture();
+  const s = await bootServer({ TECH_VISIBILITY: 'all' });
+  const call = (method, p, opts) => request(s.base, method, p, opts);
+  const t = U.tech.token;
+  try {
+    const jobs = (await call('GET', '/api/jobs', { token: t })).json;
+    const otherInList = jobs.find((j) => j.id === f.other.id);
+    assert.ok(otherInList && jobs.some((j) => j.id === f.own.id), 'whole schedule not visible');
+    assert.equal(otherInList.quote, null, 'quote of another technician\'s job leaked');
+    assert.equal(otherInList.invoice, null);
+    assert.ok((await call('GET', '/api/jobs?date=2031-04-01', { token: t })).json.some((j) => j.id === f.other.id));
+
+    const detail = await call('GET', `/api/jobs/${f.other.id}`, { token: t });
+    assert.equal(detail.status, 200, detail.text);
+    assert.equal(detail.json.quote, null);
+    assert.equal(detail.json.invoice, null);
+    assert.equal((await call('GET', `/api/jobs/${f.other.id}/photos`, { token: t })).status, 200);
+    assert.equal((await call('GET', `/api/jobs/${f.other.id}/activity`, { token: t })).status, 200);
+
+    const custs = (await call('GET', '/api/customers', { token: t })).json;
+    assert.ok(custs.some((c) => c.id === f.theirs.id));
+    const cd = await call('GET', `/api/customers/${f.theirs.id}`, { token: t });
+    assert.equal(cd.status, 200);
+    assert.deepEqual(cd.json.communications, [], 'communications of a customer not on my jobs leaked');
+    assert.ok(cd.json.jobs.every((j) => j.quote === null && j.invoice === null));
+
+    // writes: unchanged
+    assert.equal((await call('PATCH', `/api/jobs/${f.other.id}`, { token: t, body: { notes: 'mine now', version: 1 } })).status, 403);
+    assert.equal((await call('PATCH', `/api/jobs/${f.other.id}`, { token: t, body: { status: 'in-progress', version: 1 } })).status, 403);
+    assert.equal((await photoUpload(s.base, f.other.id, t)).status, 403);
+    assert.equal((await call('POST', '/api/communications', { token: t, body: { customerId: f.theirs.id, type: 'note', subject: 'x' } })).status, 403);
+    const ownPatch = await call('PATCH', `/api/jobs/${f.own.id}`, { token: t, body: { status: 'in-progress', version: f.own.version } });
+    assert.equal(ownPatch.status, 200, ownPatch.text);
+
+    // billing + comms reads stay own-work
+    assert.ok(!(await call('GET', '/api/invoices', { token: t })).json.some((i) => i.jobId === f.other.id));
+    assert.ok(!(await call('GET', '/api/quotes', { token: t })).json.some((q) => q.jobId === f.other.id));
+    assert.equal((await call('GET', `/api/communications?customerId=${f.theirs.id}`, { token: t })).status, 403);
+    // office roles unaffected
+    const office = await call('GET', `/api/jobs/${f.other.id}`, { token: U.dispatcher.token });
+    assert.ok(office.json.quote && office.json.invoice);
+  } finally { await s.stop(); }
+
+  const typo = await bootServer({ TECH_VISIBILITY: 'everyone' });
+  try {
+    assert.equal((await request(typo.base, 'GET', `/api/jobs/${f.other.id}`, { token: t })).status, 403, 'unknown TECH_VISIBILITY must fail closed');
+    assert.match(typo.output(), /TECH_VISIBILITY="everyone" is not own\|all/);
+  } finally { await typo.stop(); }
+});
+
+// ── WL-12 phone numbers ─────────────────────────────────────────────────────
+test('2c WL-12 helpers/phone: US and IE numbers to E.164', () => {
+  const { toE164, normalisePhone, matchVariants } = require('../helpers/phone');
+  const us = {
+    '(620) 555-0142': '+16205550142', '620.555.0142': '+16205550142', '620 555 0142': '+16205550142',
+    '1-620-555-0142': '+16205550142', '+1 620 555 0142': '+16205550142', '011 353 87 123 4567': '+353871234567',
+    '+353 (0)87 123 4567': '+353871234567',
+  };
+  for (const [raw, want] of Object.entries(us)) assert.equal(toE164(raw, 'US'), want, raw);
+  const ie = {
+    '087 123 4567': '+353871234567', '(01) 234 5678': '+35312345678', '020 910 0142': '+353209100142',
+    '089 011 0101': '+353890110101', '045 897 123': '+35345897123', '00353 87 123 4567': '+353871234567',
+    '+353 87 123 4567': '+353871234567', '+1 (620) 555-0142': '+16205550142', '0044 20 7946 0958': '+442079460958',
+  };
+  for (const [raw, want] of Object.entries(ie)) assert.equal(toE164(raw, 'IE'), want, raw);
+  for (const bad of ['555-0142', '123-555-0142', '620-055-0142', 'call me', '620-555-0142 x12', '+1 =cmd|/c calc!A0', '', '87 123 4567', '+353 12', '+0123456789']) {
+    assert.equal(toE164(bad, bad === '87 123 4567' ? 'IE' : 'US'), null, bad);
+  }
+  assert.equal(normalisePhone('', 'phone'), null);
+  assert.throws(() => normalisePhone('', 'phone', { required: true }), (e) => e.status === 400 && e.extra.code === 'REQUIRED');
+  assert.throws(() => normalisePhone('nope', 'phone', { country: 'IE' }), (e) => e.status === 400 && e.extra.code === 'INVALID_PHONE' && e.extra.field === 'phone');
+  assert.deepEqual(matchVariants('+16205550142').sort(), ['16205550142', '6205550142']);
+  assert.ok(matchVariants('+353871234567').includes('0871234567'));
+});
+
+test('2c WL-12 customers and users store E.164; search matches typed digits; SMS goes to E.164', async () => {
+  const mk = (body) => api('POST', '/api/customers', { token: U.dispatcher.token, body: { firstName: 'Cara', lastName: `Phone-${RUN}`, address: '9 Test Rd', ...body } });
+  const us = await mk({ phone: '(620) 555-0161' });
+  assert.equal(us.status, 201, us.text);
+  assert.equal(us.json.phone, '+16205550161');
+  // an Irish customer on a US-brand instance: read with the customer's country
+  const ie = await mk({ phone: '087 123 4567', country: 'IE', city: 'Naas', state: 'Co. Kildare' });
+  assert.equal(ie.status, 201, ie.text);
+  assert.equal(ie.json.phone, '+353871234567');
+  const bad = await mk({ phone: '555-0161' });
+  assert.equal(bad.status, 400);
+  assert.equal(bad.json.code, 'INVALID_PHONE');
+  assert.equal(bad.json.field, 'phone');
+
+  const patched = await api('PATCH', `/api/customers/${us.json.id}`, { token: U.dispatcher.token, body: { phone: '620.555.0162', version: us.json.version } });
+  assert.equal(patched.status, 200, patched.text);
+  assert.equal(patched.json.phone, '+16205550162');
+  const ieEdit = await api('PATCH', `/api/customers/${ie.json.id}`, { token: U.dispatcher.token, body: { phone: '(01) 234 5678', version: ie.json.version } });
+  assert.equal(ieEdit.json.phone, '+35312345678', 'PATCH keeps reading with the customer\'s country');
+
+  const found = (await api('GET', '/api/customers?search=620-555-0162', { token: U.dispatcher.token })).json;
+  assert.ok(found.some((c) => c.id === us.json.id), 'digits search did not match the E.164 number');
+  assert.ok((await api('GET', '/api/customers?search=01%20234', { token: U.dispatcher.token })).json.some((c) => c.id === ie.json.id));
+
+  const sms = await api('POST', `/api/sms/customer/${ie.json.id}`, { token: U.admin.token, body: {} });
+  assert.equal(sms.status, 200, sms.text);
+  assert.equal(sms.json.sentTo, '+35312345678');
+  const byNumber = await api('POST', '/api/sms/send', { token: U.admin.token, body: { to: '01 234 5678', body: 'x' } });
+  assert.equal(byNumber.status, 400, 'a national IE number on a US brand is read as US → not on record');
+  const intl = await api('POST', '/api/sms/send', { token: U.admin.token, body: { to: '+353 1 234 5678', body: 'x' } });
+  assert.equal(intl.status, 200, intl.text);
+  assert.equal(intl.json.sentTo, '+35312345678');
+  // a legacy row that cannot be normalised is refused, not sent raw
+  const legacy = await mkCustomer({ phone: '555-0100' });
+  const ref = await api('POST', `/api/sms/customer/${legacy.id}`, { token: U.admin.token, body: {} });
+  assert.equal(ref.status, 400);
+  assert.equal(ref.json.code, 'INVALID_PHONE');
+  assert.equal(ref.json.sent, false);
+
+  const u = await mkUser('technician', 'phone');
+  const up = await api('PATCH', `/api/users/${u.id}`, { token: U.admin.token, body: { phone: '620 555 0177' } });
+  assert.equal(up.json.phone, '+16205550177');
+  assert.equal((await api('PATCH', `/api/users/${u.id}`, { token: U.admin.token, body: { phone: 'ring me' } })).json.code, 'INVALID_PHONE');
+  const created = await api('POST', '/api/users', { token: U.admin.token, body: { email: `${RUN}-phone2@backend.test`, password: 'Long-enough-1', firstName: 'P', lastName: 'Two', phone: '+1 620 555 0178' } });
+  assert.equal(created.status, 201, created.text);
+  assert.equal((await prisma.user.findUnique({ where: { id: created.json.id } })).phone, '+16205550178');
+});
+
+test('2c WL-12 on an IE brand: national Irish numbers, Irish SMS', async () => {
+  const s = await bootServer({ BRAND_COUNTRY: 'IE' });
+  try {
+    const r = await request(s.base, 'POST', '/api/customers', {
+      token: U.dispatcher.token,
+      body: { firstName: 'Aoife', lastName: `IE-${RUN}`, phone: '089 011 0101', address: '1 Main St', city: 'Naas', state: 'Co. Kildare', zip: 'w91x2y4' },
+    });
+    assert.equal(r.status, 201, r.text);
+    assert.equal(r.json.phone, '+353890110101');
+    const sms = await request(s.base, 'POST', '/api/sms/send', { token: U.admin.token, body: { to: '089 011 0101', body: 'On my way' } });
+    assert.equal(sms.status, 200, sms.text);
+    assert.equal(sms.json.sentTo, '+353890110101');
+    assert.equal((await request(s.base, 'POST', '/api/customers', { token: U.dispatcher.token, body: { firstName: 'A', lastName: `IE-${RUN}`, phone: '(620) 555-0142', address: '1 Main St', city: 'Naas', state: 'Co. Kildare' } })).json.code, 'INVALID_PHONE', 'a US national number on an IE brand');
+  } finally { await s.stop(); }
+});
+
+// ── Sockets of deactivated / demoted / deleted users are dropped ────────────
+function liveSocket(base, token) {
+  const frames = [];
+  let closed = false;
+  const ws = new WebSocket(`${base.replace(/^http/, 'ws')}/socket.io/?EIO=4&transport=websocket`);
+  const ready = new Promise((resolve) => {
+    ws.onmessage = (m) => {
+      const d = String(m.data);
+      frames.push(d);
+      if (d.startsWith('0{')) ws.send(`40${JSON.stringify({ token })}`);
+      else if (d.startsWith('40')) { ws.send('42["viewing-job",{"jobId":7777}]'); resolve(true); }
+      else if (d === '2') ws.send('3'); // engine.io ping → pong
+      else if (d.startsWith('44')) resolve(false);
+    };
+    ws.onerror = () => resolve(false);
+    setTimeout(() => resolve(false), 3000);
+  });
+  ws.onclose = () => { closed = true; };
+  const dropped = async (ms = 3000) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      if (closed || frames.includes('41')) return true;
+      await sleep(50);
+    }
+    return false;
+  };
+  return { ready, dropped, frames, close: () => { try { ws.close(); } catch { /* ignore */ } } };
+}
+
+test('2c sockets: deactivating, demoting or deleting a user disconnects their live sockets', async () => {
+  const run = async (role, change) => {
+    const u = await mkUser(role, `sock-${crypto.randomBytes(3).toString('hex')}`);
+    const token = await login(u.email);
+    const bystander = liveSocket(srv.base, U.dispatcher.token);
+    const sock = liveSocket(srv.base, token);
+    assert.equal(await sock.ready, true, `socket did not connect: ${sock.frames}`);
+    assert.equal(await bystander.ready, true);
+    const presence = (await api('GET', '/api/presence/7777', { token: U.admin.token })).json.viewers;
+    assert.ok(Object.values(presence).some((v) => v.userId === u.id), 'not in presence');
+    const r = await change(u);
+    assert.equal(r.status, 200, r.text);
+    assert.equal(await sock.dropped(), true, `socket of ${role} survived the change`);
+    await sleep(100);
+    const after = (await api('GET', '/api/presence/7777', { token: U.admin.token })).json.viewers;
+    assert.ok(!Object.values(after).some((v) => v.userId === u.id), 'presence entry left behind');
+    assert.equal(await bystander.dropped(300), false, 'other users were disconnected too');
+    bystander.close(); sock.close();
+    // and the old token cannot reconnect
+    const again = liveSocket(srv.base, token);
+    const ok = await again.ready;
+    again.close();
+    return ok;
+  };
+  assert.equal(await run('technician', (u) => api('PATCH', `/api/users/${u.id}`, { token: U.admin.token, body: { active: false } })), false, 'deactivated user reconnected');
+  assert.equal(await run('dispatcher', (u) => api('PATCH', `/api/users/${u.id}`, { token: U.admin.token, body: { role: 'technician' } })), true, 'demoted user may reconnect with the new role');
+  assert.equal(await run('technician', (u) => api('DELETE', `/api/users/${u.id}`, { token: U.sa.token })), false, 'deleted user reconnected');
+  // a profile edit does not drop the socket
+  const u = await mkUser('technician', 'sock-keep');
+  const sock = liveSocket(srv.base, await login(u.email));
+  assert.equal(await sock.ready, true);
+  await api('PATCH', `/api/users/${u.id}`, { token: U.admin.token, body: { firstName: 'Renamed' } });
+  assert.equal(await sock.dropped(500), false, 'a name change dropped the socket');
+  sock.close();
 });

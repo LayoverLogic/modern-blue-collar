@@ -188,6 +188,7 @@ async function cleanup() {
   const users = (await prisma.user.findMany({ where: { email: { contains: RUN } }, select: { id: true } })).map((u) => u.id);
   const custs = (await prisma.customer.findMany({ where: { lastName: { contains: RUN } }, select: { id: true } })).map((c) => c.id);
   const jobs = (await prisma.job.findMany({ where: { OR: [{ customerId: { in: custs } }, { title: { contains: RUN } }] }, select: { id: true } })).map((j) => j.id);
+  await safe(prisma.jobActivity.deleteMany({ where: { OR: [{ jobRef: { in: jobs } }, { actorUserId: { in: users } }] } }));
   await safe(prisma.invoice.deleteMany({ where: { jobId: { in: jobs } } }));
   await safe(prisma.quote.deleteMany({ where: { jobId: { in: jobs } } }));
   await safe(prisma.job.deleteMany({ where: { id: { in: jobs } } }));
@@ -555,6 +556,11 @@ test('email: HTML + text document lands in the outbox, logs a communication, mar
   assert.equal(r.json.document.status, 'sent');
   assert.ok(r.json.document.sentAt);
   assert.equal(r.json.document.locked, true);
+  // 2c: the draft → sent flip is in the job activity log, with the creation
+  const acts = await prisma.jobActivity.findMany({ where: { jobId: job.id }, orderBy: { id: 'asc' } });
+  assert.deepEqual(acts.map((a) => a.type), ['quote_created', 'updated']);
+  assert.deepEqual([acts[1].from.status, acts[1].to.status, acts[1].to.quoteId], ['draft', 'sent', q.id]);
+  assert.equal(acts[0].to.currency, 'EUR');
 
   // invoices too
   const inv = (await IE.api('POST', `/api/invoices/from-quote/${q.id}`, { token: U.admin.token })).json;
@@ -575,6 +581,7 @@ test('email: HTML + text document lands in the outbox, logs a communication, mar
   assert.equal(r3.status, 503);
   assert.equal(r3.json.code, 'EMAIL_DISABLED');
   assert.equal((await prisma.quote.findUnique({ where: { id: q3.id } })).status, 'draft');
+  assert.equal(await prisma.jobActivity.count({ where: { jobId: q3.jobId, type: 'updated' } }), 0, 'a failed email logged a status change');
   await off.stop();
 });
 
@@ -592,6 +599,7 @@ test('addresses: IE requires line 1 / town / county and validates Eircodes; US k
   r = await ie({ address: '1 Main St', city: 'Naas', state: 'Co. Kildare', zip: 'w91x2y4', company: 'Murphy Builders', taxNumber: 'IE9876543W', addressLine2: 'Unit 4' });
   assert.equal(r.status, 201, r.text);
   assert.deepEqual([r.json.zip, r.json.country, r.json.company, r.json.taxNumber, r.json.addressLine2], ['W91 X2Y4', 'IE', 'Murphy Builders', 'IE9876543W', 'Unit 4']);
+  assert.equal(r.json.phone, '+353890110101');
   r = await ie({ address: '1 Main St', city: 'Naas', state: 'Co. Kildare' }); // Eircode optional
   assert.equal(r.status, 201, r.text);
   const clear = await IE.api('PATCH', `/api/customers/${r.json.id}`, { token: U.admin.token, body: { version: r.json.version, city: '' } });
@@ -601,7 +609,8 @@ test('addresses: IE requires line 1 / town / county and validates Eircodes; US k
   assert.equal(notes.status, 200, notes.text);
 
   // US: today's behaviour — city / zip optional, blank → null, default state KS
-  const us = (body) => US.api('POST', '/api/customers', { token: U.admin.token, body: { ...base, ...body } });
+  // (2c / WL-12: phones are normalised to E.164 by the customer's country — a US number here)
+  const us = (body) => US.api('POST', '/api/customers', { token: U.admin.token, body: { ...base, phone: '(620) 555-0142', ...body } });
   r = await us({});
   assert.equal(r.status, 201, r.text);
   assert.deepEqual([r.json.city, r.json.zip, r.json.state, r.json.country, r.json.address], [null, null, 'KS', 'US', '']);
@@ -615,9 +624,14 @@ test('addresses: IE requires line 1 / town / county and validates Eircodes; US k
   r = await us({ country: 'USA' });
   assert.equal(r.status, 400);
   // a customer in another country is not held to the brand country's rules
-  r = await us({ country: 'gb', zip: 'SW1A 1AA' });
+  r = await us({ country: 'gb', zip: 'SW1A 1AA', phone: '020 7946 0958' });
+  assert.equal(r.status, 400, 'no national rules for GB: international format needed');
+  assert.equal(r.json.code, 'INVALID_PHONE');
+  assert.match(r.json.error, /international format/);
+  r = await us({ country: 'gb', zip: 'SW1A 1AA', phone: '+44 20 7946 0958' });
   assert.equal(r.status, 201, r.text);
   assert.equal(r.json.country, 'GB');
+  assert.equal(r.json.phone, '+442079460958');
   // address lines in the print view follow the customer's country
   const { addressLines } = require('../helpers/documents');
   assert.deepEqual(addressLines({ address: '1 Main', city: 'Hutchinson', state: 'KS', zip: '67501', country: 'US' }, require('../helpers/locale').buildLocale({})), ['1 Main', 'Hutchinson, KS 67501']);

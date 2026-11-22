@@ -239,11 +239,17 @@ async function cleanup() {
     select: { id: true },
   });
   const jobIds = [...new Set([...created.jobs, ...jobRows.map((j) => j.id)])];
+  // Activity rows: by jobRef (covers tombstones of jobs deleted through the
+  // API, whose jobId is NULL) and by actor (entries this run's users wrote).
+  const refs = [...new Set([...jobIds, ...(await prisma.jobActivity.findMany({ where: { actorUserId: { in: userIds } }, select: { jobRef: true } })).map((a) => a.jobRef)])];
+  await safe(prisma.invoiceLine.deleteMany({ where: { invoice: { OR: [{ id: { in: created.invoices } }, { jobId: { in: jobIds } }] } } }));
+  await safe(prisma.quoteLine.deleteMany({ where: { quote: { OR: [{ id: { in: created.quotes } }, { jobId: { in: jobIds } }] } } }));
   await safe(prisma.invoice.deleteMany({ where: { OR: [{ id: { in: created.invoices } }, { jobId: { in: jobIds } }] } }));
   await safe(prisma.quote.deleteMany({ where: { OR: [{ id: { in: created.quotes } }, { jobId: { in: jobIds } }] } }));
   await safe(prisma.jobPart.deleteMany({ where: { jobId: { in: jobIds } } }));
   await safe(prisma.jobPhoto.deleteMany({ where: { jobId: { in: jobIds } } }));
   await safe(prisma.job.deleteMany({ where: { id: { in: jobIds } } }));
+  await safe(prisma.jobActivity.deleteMany({ where: { OR: [{ jobRef: { in: refs } }, { actorUserId: { in: userIds } }] } }));
   await safe(prisma.communication.deleteMany({ where: { OR: [{ id: { in: created.comms } }, { customerId: { in: custIds } }] } }));
   await safe(prisma.customer.deleteMany({ where: { id: { in: custIds } } }));
   await safe(prisma.apiKey.deleteMany({ where: { OR: [{ id: { in: created.apiKeys } }, { createdById: { in: userIds } }] } }));
