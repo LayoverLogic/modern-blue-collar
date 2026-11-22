@@ -343,3 +343,26 @@ model JobActivity {
   @@index([jobRef])
   @@index([createdAt])
 }
+
+// ─── IntegrationLink ──────────────────────────────────────────────────────────
+// Maps an MBC row to a row in another system. Migration 20261121163000_integration_links.
+//   provider "quickbooks": entity customer | invoice (localId = MBC id, remoteId = QBO Id,
+//            syncToken = QBO SyncToken), payment (remoteId = QBO Payment Id, localId = the
+//            MBC invoice it paid), cursor (remoteId "payments", data.since)
+//   provider "import:<sourceSystem>": entity customer — a source row merged into an existing
+//            customer (helpers/importer.js), so re-runs stay idempotent.
+// localId has no FK (the link outlives a deleted row). One (provider, entity, remoteId).
+model IntegrationLink {
+  id        Int      @id @default(autoincrement())
+  provider  String
+  entity    String
+  localId   Int?
+  remoteId  String
+  syncToken String?
+  data      Json?
+  syncedAt  DateTime @default(now())
+  createdAt DateTime @default(now())
+
+  @@unique([provider, entity, remoteId])
+  @@index([provider, entity, localId])
+}

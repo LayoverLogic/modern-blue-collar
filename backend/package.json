@@ -32,7 +32,8 @@
         "test:activity": "node --test --test-concurrency=1 tests/activity.test.js",
         "test:documents": "node --test --test-concurrency=1 tests/documents.test.js",
         "backup:run": "node scripts/backup-run.js",
-        "restore": "node scripts/restore.mjs"
+        "restore": "node scripts/restore.mjs",
+        "test:integrations": "node --test --test-concurrency=1 tests/integrations.test.js"
     },
     "dependencies": {
         "@aws-sdk/client-s3": "^3.1024.0",
@@ -46,8 +47,8 @@
         "express": "^4.18.2",
         "express-rate-limit": "^8.3.1",
         "express-validator": "^7.0.1",
+        "fflate": "^0.8.3",
         "helmet": "^7.1.0",
-        "intuit-oauth": "^4.0.0",
         "jsonwebtoken": "^9.0.0",
         "multer": "^2.5.0",
         "node-cron": "^4.6.0",

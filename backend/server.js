@@ -294,6 +294,7 @@ app.use('/api/sms',             require('./routes/sms'));
 app.use('/api/backup',          require('./routes/backup'));
 app.use('/api/pricebook',       require('./routes/pricebook'));
 app.use('/api/exports',         require('./routes/exports'));
+app.use('/api/imports',         require('./routes/imports'));
 app.use('/api/invites',         require('./routes/invites'));
 app.use('/api/communications',  require('./routes/communications'));
 app.use('/api/api-keys',        require('./routes/apiKeys'));

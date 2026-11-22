@@ -1,21 +1,26 @@
 /**
- * routes/quickbooks.js  — QuickBooks Online OAuth2 integration
- * Requires: QB_CLIENT_ID, QB_CLIENT_SECRET, QB_REDIRECT_URI, QB_ENVIRONMENT
+ * routes/quickbooks.js  — QuickBooks Online integration (helpers/qbo.js; plain fetch, no SDK)
+ * Requires: QB_CLIENT_ID, QB_CLIENT_SECRET, QB_REDIRECT_URI, QB_ENVIRONMENT (sandbox | production)
+ * Disabled (503, no network call) when SANDBOX_MODE=true, DEMO_MODE=true or a credential is a
+ * placeholder (helpers/integrations.js).
  *
- * GET  /api/quickbooks/status            — connection status (signed in)
- * POST /api/quickbooks/connect           — admin: start OAuth → { authUrl } (front-end navigates to it)
- * GET  /api/quickbooks/connect           — admin: same, but answers with a 302 to Intuit
- * GET  /api/quickbooks/callback          — Intuit redirects here; validates state, stores tokens
- * POST /api/quickbooks/disconnect        — admin: forget stored tokens
- * POST /api/quickbooks/sync-invoice/:id  — push invoice to QBO (stub)
+ * GET  /api/quickbooks/status               — connection status (signed in; never returns tokens)
+ * POST /api/quickbooks/connect              — admin session: start OAuth → { authUrl }
+ * GET  /api/quickbooks/connect              — admin session: same, answered with a 302 to Intuit
+ * GET  /api/quickbooks/callback             — Intuit redirects here; validates state, exchanges the code
+ * POST /api/quickbooks/disconnect           — admin session: forget stored tokens
+ * POST /api/quickbooks/sync-invoice/:id     — admin: create / update the QBO Customer + Invoice (with lines, tax per line)
+ * GET  /api/quickbooks/invoice/:id          — admin: link status of an invoice (local only, no network)
+ * POST /api/quickbooks/sync-payments        — admin: payment sync-back → marks fully paid invoices paid
  *
- * PLAT-4:
- *  - `state` is 32 random bytes, single-use, valid 10 minutes, bound to the
- *    admin who started the flow (server-side record) AND to their browser (an
- *    HttpOnly SameSite=Lax cookie that must match on the callback).
- *  - tokens are persisted in IntegrationToken (provider "quickbooks"),
- *    encrypted at rest (helpers/secretBox.js) — they survive restarts.
+ * PLAT-4 (kept):
+ *  - `state` is 32 random bytes, single-use, valid 10 minutes, bound to the admin who started the
+ *    flow (server-side record) AND to their browser (HttpOnly SameSite=Lax cookie that must match).
+ *  - tokens are persisted in IntegrationToken (provider "quickbooks"), encrypted at rest
+ *    (helpers/secretBox.js) — they survive restarts; refresh tokens rotate and are re-stored.
  *  - status requires a signed-in user and never returns tokens.
+ * Optional job: QBO_PAYMENT_SYNC_CRON (node-cron expression) runs the payment sync-back while the
+ * integration is enabled.
  */
 const express = require('express');
 const crypto  = require('crypto');
@@ -26,11 +31,10 @@ const { ADMIN } = require('../helpers/roles');
 const { integrationStatus, sendDisabled } = require('../helpers/integrations');
 const { getCookie, setCookie, clearCookie } = require('../helpers/cookies');
 const { isProduction } = require('../helpers/security');
-const { seal, open } = require('../helpers/secretBox');
 const { parseId } = require('../helpers/httpError');
+const qbo = require('../helpers/qbo');
 const prisma = require('../helpers/prisma');
 
-const PROVIDER     = 'quickbooks';
 const STATE_COOKIE = 'mbc_qbo_state';
 const STATE_TTL_MS = 10 * 60 * 1000;
 
@@ -61,36 +65,16 @@ function consumeState(queryState, cookieState) {
   return { userId: rec.userId };
 }
 
-function getOAuthClient() {
-  const OAuthClient = require('intuit-oauth');
-  return new OAuthClient({
-    clientId:     process.env.QB_CLIENT_ID,
-    clientSecret: process.env.QB_CLIENT_SECRET,
-    environment:  process.env.QB_ENVIRONMENT || 'sandbox',
-    redirectUri:  process.env.QB_REDIRECT_URI,
-  });
+/** 503 when disabled; returns true when the route may go on. */
+function enabled(res) {
+  const qb = integrationStatus('quickbooks');
+  if (!qb.enabled) { sendDisabled(res, 'quickbooks', qb); return false; }
+  return true;
 }
 
-/** Persist a token response from intuit-oauth (getJson() shape). */
-async function saveTokens(json, { realmId, userId }) {
-  const now = Date.now();
-  const data = {
-    realmId:          realmId ? String(realmId).slice(0, 64) : null,
-    accessToken:      seal(json.access_token),
-    refreshToken:     seal(json.refresh_token),
-    tokenType:        json.token_type || null,
-    expiresAt:        json.expires_in ? new Date(now + Number(json.expires_in) * 1000) : null,
-    refreshExpiresAt: json.x_refresh_token_expires_in ? new Date(now + Number(json.x_refresh_token_expires_in) * 1000) : null,
-    connectedById:    userId || null,
-  };
-  return prisma.integrationToken.upsert({ where: { provider: PROVIDER }, create: { provider: PROVIDER, ...data }, update: data });
-}
-
-/** Stored tokens (decrypted) or null. */
-async function loadTokens() {
-  const row = await prisma.integrationToken.findUnique({ where: { provider: PROVIDER } });
-  if (!row) return null;
-  return { ...row, accessToken: open(row.accessToken), refreshToken: open(row.refreshToken) };
+function sendQboError(res, next, err) {
+  if (err instanceof qbo.QboError) return res.status(err.status).json({ error: err.message, ...err.extra });
+  return next(err);
 }
 
 // GET /api/quickbooks/status
@@ -98,9 +82,19 @@ router.get('/status', requireAuth, async (_req, res, next) => {
   try {
     const qb = integrationStatus('quickbooks');
     const row = await prisma.integrationToken.findUnique({
-      where: { provider: PROVIDER },
+      where: { provider: qbo.PROVIDER },
       select: { realmId: true, expiresAt: true, refreshExpiresAt: true, updatedAt: true },
     });
+    let sync = null;
+    if (row && row.realmId) {
+      const provider = qbo.providerFor(row.realmId);
+      const [invoices, customers, cursor] = await Promise.all([
+        prisma.integrationLink.count({ where: { provider, entity: 'invoice' } }),
+        prisma.integrationLink.count({ where: { provider, entity: 'customer' } }),
+        prisma.integrationLink.findUnique({ where: { provider_entity_remoteId: { provider, entity: 'cursor', remoteId: 'payments' } } }),
+      ]);
+      sync = { linkedInvoices: invoices, linkedCustomers: customers, lastPaymentSyncAt: cursor && cursor.data ? cursor.data.lastRunAt || null : null };
+    }
     res.json({
       enabled:        qb.enabled,
       disabledReason: qb.reason,
@@ -110,6 +104,7 @@ router.get('/status', requireAuth, async (_req, res, next) => {
       realmId:        row ? row.realmId : null,
       connectedAt:    row ? row.updatedAt : null,
       refreshExpiresAt: row ? row.refreshExpiresAt : null,
+      sync,
     });
   } catch (err) { next(err); }
 });
@@ -124,66 +119,108 @@ function startConnect(req, res) {
   if (!qb.enabled) { sendDisabled(res, 'quickbooks', qb); return null; }
   const state = newState(req.user.id);
   setCookie(res, STATE_COOKIE, state, { maxAge: STATE_TTL_MS / 1000, path: '/api/quickbooks', secure: isProduction() });
-  const authUrl = getOAuthClient().authorizeUri({ scope: [require('intuit-oauth').scopes.Accounting], state });
-  return authUrl;
+  return qbo.authorizeUrl(state);
 }
 
 // POST /api/quickbooks/connect — { authUrl }
-router.post('/connect', requireAuth, requireSession, requireRole(...ADMIN), (req, res) => {
-  const authUrl = startConnect(req, res);
-  if (authUrl) res.json({ authUrl });
+router.post('/connect', requireAuth, requireSession, requireRole(...ADMIN), (req, res, next) => {
+  try {
+    const authUrl = startConnect(req, res);
+    if (authUrl) res.json({ authUrl });
+  } catch (err) { sendQboError(res, next, err); }
 });
 
 // GET /api/quickbooks/connect — 302 to Intuit (needs the bearer header, so
 // it is for API clients; the UI should use POST and navigate to authUrl)
-router.get('/connect', requireAuth, requireSession, requireRole(...ADMIN), (req, res) => {
-  const authUrl = startConnect(req, res);
-  if (authUrl) res.redirect(authUrl);
+router.get('/connect', requireAuth, requireSession, requireRole(...ADMIN), (req, res, next) => {
+  try {
+    const authUrl = startConnect(req, res);
+    if (authUrl) res.redirect(authUrl);
+  } catch (err) { sendQboError(res, next, err); }
 });
 
-// GET /api/quickbooks/callback
-router.get('/callback', async (req, res, next) => {
+// GET /api/quickbooks/callback?code=&state=&realmId=
+router.get('/callback', async (req, res) => {
   try {
     // Never exchange an auth code with Intuit unless the integration is live.
-    const qb = integrationStatus('quickbooks');
-    if (!qb.enabled) return sendDisabled(res, 'quickbooks', qb);
-
+    if (!enabled(res)) return undefined;
     const cookieState = getCookie(req, STATE_COOKIE);
     clearCookie(res, STATE_COOKIE, { path: '/api/quickbooks' });
     const bound = consumeState(req.query.state, cookieState);
     if (!bound) return res.redirect('/?qbo=error&reason=state');
+    if (typeof req.query.error === 'string') return res.redirect('/?qbo=error&reason=denied');
     const user = await loadActiveUser(bound.userId);
     if (!user || !ADMIN.includes(user.role)) return res.redirect('/?qbo=error&reason=forbidden');
-
-    const authResponse = await getOAuthClient().createToken(req.originalUrl);
-    await saveTokens(authResponse.getJson(), { realmId: req.query.realmId, userId: user.id });
-    res.redirect('/?qbo=connected');
+    const { code, realmId } = req.query;
+    if (typeof code !== 'string' || !/^[A-Za-z0-9._~-]{1,512}$/.test(code)) return res.redirect('/?qbo=error&reason=code');
+    if (typeof realmId !== 'string' || !/^\d{1,32}$/.test(realmId)) return res.redirect('/?qbo=error&reason=realm');
+    await qbo.exchangeCode(code, { realmId, userId: user.id });
+    return res.redirect('/?qbo=connected');
   } catch (err) {
     console.error('[QBO] callback failed:', err.message);
-    res.redirect('/?qbo=error&reason=exchange');
+    return res.redirect('/?qbo=error&reason=exchange');
   }
 });
 
-// POST /api/quickbooks/disconnect
+// POST /api/quickbooks/disconnect — links (QBO ids) are kept per company (realmId), so a
+// reconnect to the same company stays idempotent.
 router.post('/disconnect', requireAuth, requireSession, requireRole(...ADMIN), async (_req, res, next) => {
   try {
-    await prisma.integrationToken.deleteMany({ where: { provider: PROVIDER } });
+    await prisma.integrationToken.deleteMany({ where: { provider: qbo.PROVIDER } });
     res.json({ success: true, connected: false });
   } catch (err) { next(err); }
 });
 
-// POST /api/quickbooks/sync-invoice/:id — stub; implement full QBO API call as needed
+// POST /api/quickbooks/sync-invoice/:id
 router.post('/sync-invoice/:id', requireAuth, requireRole(...ADMIN), async (req, res, next) => {
   try {
-    parseId(req.params.id);
-    const qb = integrationStatus('quickbooks');
-    if (!qb.enabled) return sendDisabled(res, 'quickbooks', qb);
-    const tokens = await loadTokens();
-    if (!tokens) return res.status(400).json({ error: 'Not connected to QuickBooks. Connect it from Settings first.', code: 'QBO_NOT_CONNECTED' });
-    // TODO: implement full invoice push to QBO using tokens (refresh when expiresAt has passed)
-    res.json({ success: true, message: 'Invoice sync to QuickBooks — implement full QBO API call here.' });
+    const id = parseId(req.params.id);
+    if (!enabled(res)) return;
+    const out = await qbo.pushInvoice(id, { brandTz: brand.timezone });
+    res.json({ success: true, ...out });
+  } catch (err) { sendQboError(res, next, err); }
+});
+
+// GET /api/quickbooks/invoice/:id — { linked, qboId, syncToken, syncedAt, totalAmt, balance, warnings }
+router.get('/invoice/:id', requireAuth, requireRole(...ADMIN), async (req, res, next) => {
+  try {
+    const id = parseId(req.params.id);
+    const link = await qbo.linkStatus('invoice', id);
+    res.json(link ? { linked: true, invoiceId: id, ...link } : { linked: false, invoiceId: id });
   } catch (err) { next(err); }
 });
 
+// POST /api/quickbooks/sync-payments { since? ISO date } — payment sync-back
+router.post('/sync-payments', requireAuth, requireRole(...ADMIN), async (req, res, next) => {
+  try {
+    if (!enabled(res)) return;
+    const since = req.body && req.body.since;
+    if (since !== undefined && (typeof since !== 'string' || Number.isNaN(new Date(since).getTime()))) {
+      return res.status(400).json({ error: 'since must be an ISO date', code: 'INVALID_INPUT', field: 'since' });
+    }
+    const out = await qbo.syncPayments({ since });
+    res.json({ success: true, ...out });
+  } catch (err) { sendQboError(res, next, err); }
+});
+
+// Optional scheduled payment sync-back
+let cronTask = null;
+if (process.env.QBO_PAYMENT_SYNC_CRON) {
+  try {
+    const cron = require('node-cron');
+    if (cron.validate(process.env.QBO_PAYMENT_SYNC_CRON)) {
+      cronTask = cron.schedule(process.env.QBO_PAYMENT_SYNC_CRON, async () => {
+        if (!integrationStatus('quickbooks').enabled) return;
+        try {
+          const out = await qbo.syncPayments();
+          if (out.markedPaid.length) console.log(`[QBO] payment sync: ${out.markedPaid.length} invoice(s) marked paid`);
+        } catch (e) { console.error('[QBO] payment sync failed:', e.message); }
+      }, { timezone: brand.timezone || 'UTC' });
+    } else {
+      console.error(`[QBO] QBO_PAYMENT_SYNC_CRON="${process.env.QBO_PAYMENT_SYNC_CRON}" is not a valid cron expression — payment sync job not scheduled`);
+    }
+  } catch (e) { console.error('[QBO] could not schedule payment sync:', e.message); }
+}
+
 module.exports = router;
-module.exports._test = { newState, consumeState, saveTokens, loadTokens, pendingStates };
+module.exports._test = { newState, consumeState, saveTokens: qbo.saveTokens, loadTokens: qbo.loadTokens, pendingStates, cronTask: () => cronTask };
