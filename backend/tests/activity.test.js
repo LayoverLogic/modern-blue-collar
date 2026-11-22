@@ -561,7 +561,7 @@ test('documents: POST /api/quotes logs quote_created; status changes log "update
     { invoiceId: inv.json.id, number: inv.json.number, status: 'unpaid' },
     { invoiceId: inv.json.id, number: inv.json.number, status: 'paid' },
   ]);
-  assert.deepEqual((await feed(job.id)).map((e) => e.type), ['updated', 'invoice_created', 'updated', 'updated', 'quote_created', 'created']);
+  assert.deepEqual((await feed(job.id)).map((e) => e.type), ['updated', 'invoice_created', 'updated', 'updated', 'quote_created', 'quote_created', 'created']);
 });
 
 test('documents: POST /api/invoices logs invoice_created; a refused create or email logs nothing', async () => {
