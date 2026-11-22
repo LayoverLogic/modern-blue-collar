@@ -19,10 +19,8 @@ The one-page honest matrix (what works, what is built but not tried live, what i
 This is the **sandbox revival** branch (`mbc/sandbox-revival`). It runs locally with no paid services and no
 cloud accounts. It is **not deployed anywhere**:
 
-- Every test suite passes (counts below, [Tests](#tests)). The UI walk has one step (6g, reverse charge on a US
-  sales-tax demo) that now expects something the server refuses on purpose; it passes with
-  `BRAND_REVERSE_CHARGE=true` until the walk is updated ([SECURITY_AUDIT §1.1](backend/SECURITY_AUDIT.md#11-ui-walk)).
-  Security status, with what is enforced, partial and open: [backend/SECURITY_AUDIT.md](backend/SECURITY_AUDIT.md). The findings of the first
+- Every test suite passes, the UI walk included (counts below, [Tests](#tests)). Security status, with what is
+  enforced, partial and open: [backend/SECURITY_AUDIT.md](backend/SECURITY_AUDIT.md). The findings of the first
   independent verification (rate limit on sign-in, demo data per country with tax, technician data scope,
   published test secret, restore / sandbox safety) were fixed in fix round B4.
 - **Account and data screens are in the app** (Frontend F3): the password-reset and accept-invite pages

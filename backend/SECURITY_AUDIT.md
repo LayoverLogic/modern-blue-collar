@@ -1,7 +1,7 @@
 # Security status: Modern Blue Collar
 
 **Date:** 2026-11-21
-**Code:** `mbc/sandbox-revival` at `0cc0953` plus backend fix round B4 (branch `mbc/backend5`: the findings of
+**Code:** `mbc/sandbox-revival` at `a5e00da` (Frontend F4) plus backend fix round B4 (branch `mbc/backend5`: the findings of
 Independent Verifier #1 — M1–M5, L1–L4, L6–L9, L11, L12, the export-scope item and GAP-16 server side). Later
 merges can change this page; re-run the suites in §5 before relying on it.
 **Written by:** the MBC revival team (Compliance & Docs), from reading the code and running every suite.
@@ -33,7 +33,7 @@ Run on 2026-11-21 (B4) against throwaway databases (`TEST_DATABASE_URL=.../mbc_b
 | Accounts (passwords, leavers, invites) | `npm run test:accounts` | 25 / 25 pass |
 | White-label | `npm run test:whitelabel` | 48 / 48 pass |
 | Platform drivers, backup and restore | `npm run test:platform` | 23 / 23 pass |
-| UI walk (headless Chrome) | `npm run test:ui` | **exits 1**: 102 / 102 page captures clean (no console, page or HTTP errors, no placeholder text), XSS segment all pass, main flow 53 / 54 (see §1.1) |
+| UI walk (headless Chrome) | `npm run test:ui` | **exit 0**: 102 / 102 page captures clean (no console, page or HTTP errors, no placeholder text), XSS segment all pass, main flow 60 steps, 0 failures (see §1.1) |
 
 `npm audit --omit=dev`: **0 vulnerabilities** (the `intuit-oauth` chain behind PLAT-7 was removed; QuickBooks now
 uses `fetch`). `npm audit` including dev dependencies: **0** as well — nodemon 3.1.14 (the latest) still asks for
@@ -42,11 +42,10 @@ uses `fetch`). `npm audit` including dev dependencies: **0** as well — nodemon
 
 ### 1.1 UI walk
 
-`UI_PORT=3146 npm run test:ui` against a fresh sandbox database (B4). The one failing flow step is **6g.
-Reverse charge**: the walk runs the US demo with sales tax and creates a reverse-charge invoice, which the server
-now refuses on purpose (GAP-16: reverse charge exists for VAT, not US sales tax). With `BRAND_REVERSE_CHARGE=true`
-the flow is 54 / 54. Fix belongs in the walk (gate the step on `locale.reverseChargeAvailable`). On `6d63a31` the
-failing step was 7 (invite link), fixed by Frontend F3.
+`UI_PORT=3146 npm run test:ui` against a fresh US sandbox database, on `a5e00da` (Frontend F4) + B4: exit 0. Step
+**6g. Reverse charge** is skipped on this brand: the walk gives the US demo sales tax, and reverse charge exists for
+VAT only, so `locale.reverseChargeAvailable` is false and the server refuses `reverseCharge: true` (GAP-16). On
+`6d63a31` the failing step was 7 (invite link), fixed by Frontend F3.
 
 ---
 

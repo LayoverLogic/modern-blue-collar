@@ -155,9 +155,8 @@ DATABASE_URL=postgresql://mbc:mbc_sandbox@localhost:5432/mbc_ui_sandbox?schema=p
   UI_OUT_DIR=~/mbc-ui UI_FINAL_DIR=~/mbc-ui/final npm run test:ui
 ```
 
-After B4 it ends with `FAILED` on one step, "6g. Reverse charge": the walk gives the US demo sales tax and makes a
-reverse-charge invoice, which the server now refuses (reverse charge is for VAT only). Add `BRAND_REVERSE_CHARGE=true`
-to the walk's command to see the flow pass in full until the walk is updated. The PNGs in `~/mbc-ui/final` are good screenshots for a deck.
+After B4 (with Frontend F4) it ends with exit 0; step "6g. Reverse charge" says `skip` on the US demo, because
+reverse charge exists for VAT only. The PNGs in `~/mbc-ui/final` are good screenshots for a deck.
 
 ---
 

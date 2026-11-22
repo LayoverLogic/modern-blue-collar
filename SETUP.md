@@ -6,7 +6,7 @@ white-labelling, prospect demos and import / export work. For a Mac, the short p
 
 Current state of the code: [README.md → Status](README.md#status-2026-11-21),
 [docs/FEATURES.md](docs/FEATURES.md) and [backend/SECURITY_AUDIT.md](backend/SECURITY_AUDIT.md).
-Written against `mbc/sandbox-revival` at `0cc0953` plus backend fix round B4 (Verifier #1 findings).
+Written against `mbc/sandbox-revival` at `a5e00da` (Frontend F4) plus backend fix round B4 (Verifier #1 findings).
 
 ---
 
@@ -169,7 +169,7 @@ For `test:ui`: `DATABASE_URL=<sandbox db> PORT=3121 npm run sandbox:setup`, then
 `DATABASE_URL=<same> UI_PORT=3121 UI_OUT_DIR=/tmp/mbc-ui npm run test:ui`. It starts and restarts its own server.
 The header of `backend/tests/ui/walk.js` lists all options.
 
-Results on 2026-11-21 (`0cc0953` + fix round B4): every suite above passes in full (counts in the table). `test:ui` (US sandbox, the walk's default `UI_TAX_RATES` sales tax): 102 / 102 page captures clean, XSS all pass, main flow 53 / 54 — step **6g** (reverse-charge print view) fails because it creates a reverse-charge invoice on a US sales-tax brand, which the server now refuses by design (GAP-16, 400 `REVERSE_CHARGE_UNAVAILABLE`). With `BRAND_REVERSE_CHARGE=true` the flow is 54 / 54. The walk (Frontend-owned) needs to gate 6g on `locale.reverseChargeAvailable`.
+Results on 2026-11-21 (`0cc0953` + fix round B4): every suite above passes in full (counts in the table). `test:ui` (US sandbox, the walk's default `UI_TAX_RATES` sales tax, after Frontend F4): 102 / 102 page captures clean, XSS all pass, main flow 60 steps, 0 failures (step 6g, reverse charge, is skipped on a US sales-tax brand: `locale.reverseChargeAvailable` is false); exit 0.
 
 ---
 
