@@ -23,6 +23,7 @@
  * `8.1.0-1.` for 7.10.x). The script refuses to run on a mismatch.
  *
  * Options: --quiet  only print the summary line
+ *          --migrations-dir <dir>  read migrations from <dir> (tests only)
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -67,14 +68,33 @@ if (instance.exports.__wbindgen_start) instance.exports.__wbindgen_start();
 const { PrismaPg } = require('@prisma/adapter-pg');
 const { bindMigrationAwareSqlAdapterFactory } = require('@prisma/driver-adapter-utils');
 const { connectionString, schema: dbSchema } = parseDatabaseUrl(process.env.DATABASE_URL);
-const adapter = bindMigrationAwareSqlAdapterFactory(
-  new PrismaPg({ connectionString }, dbSchema !== 'public' ? { schema: dbSchema } : undefined),
-);
+// PLAT-15: adapter-pg's executeScript() splits migrations on every ';' (breaks
+// function bodies, ';' in strings or comments). Replace it with a splitter that
+// understands quotes, dollar-quoting and comments (scripts/sql-split.cjs).
+// Each statement still runs on its own, exactly as before.
+const { splitSqlStatements } = require(path.join(backendDir, 'scripts', 'sql-split.cjs'));
+const pgFactory = new PrismaPg({ connectionString }, dbSchema !== 'public' ? { schema: dbSchema } : undefined);
+const originalConnect = pgFactory.connect.bind(pgFactory);
+pgFactory.connect = async () => {
+  const conn = await originalConnect();
+  if (typeof conn.onError !== 'function' || !conn.client) {
+    throw new Error('@prisma/adapter-pg internals changed (client/onError) — update the executeScript override in scripts/migrate-deploy.mjs');
+  }
+  conn.executeScript = async (script) => {
+    for (const stmt of splitSqlStatements(script)) {
+      try { await conn.client.query(stmt); } catch (error) { conn.onError(error); }
+    }
+  };
+  return conn;
+};
+const adapter = bindMigrationAwareSqlAdapterFactory(pgFactory);
 
 // ── Read schema + migrations from disk ────────────────────────────────────────
 const schemaPath = path.join(backendDir, 'prisma', 'schema.prisma');
 const schemaText = fs.readFileSync(schemaPath, 'utf8');
-const baseDir    = path.join(backendDir, 'prisma', 'migrations');
+// --migrations-dir <dir>: apply migrations from another directory (tests only).
+const mdIdx      = process.argv.indexOf('--migrations-dir');
+const baseDir    = mdIdx > -1 ? path.resolve(process.argv[mdIdx + 1]) : path.join(backendDir, 'prisma', 'migrations');
 const lockPath   = path.join(baseDir, 'migration_lock.toml');
 const migrationDirectories = fs.readdirSync(baseDir, { withFileTypes: true })
   .filter((d) => d.isDirectory())
