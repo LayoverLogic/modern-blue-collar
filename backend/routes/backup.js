@@ -3,8 +3,10 @@
  * POST /api/backup/run   — trigger backup now (admin+)
  * GET  /api/backup/list  — list existing local backup files (admin+)
  *
- * Target is chosen by BACKUP_DRIVER (local | s3) — see backup.js.
- * There is no download/restore endpoint (restore = `gunzip -c file | psql`).
+ * Target is chosen by BACKUP_DRIVER (local | s3) — see backup.js. A run also
+ * archives the upload directory when STORAGE_DRIVER=local, and encrypts when
+ * BACKUP_ENCRYPTION_KEY is set. There is deliberately no download/restore
+ * endpoint: restore from a shell with `npm run restore` (scripts/restore.mjs).
  */
 const express = require('express');
 const router  = express.Router();
@@ -36,7 +38,12 @@ router.post('/run', requireAuth, requireSession, requireRole(...ADMIN), async (_
       driver: result.driver,
       filename: result.filename,
       size: result.size,
-      wasabi: result.wasabi,
+      encrypted: result.encrypted,
+      uploads: result.uploads,            // { filename, size, files } | null
+      manifest: result.manifest,          // manifest filename | null
+      heartbeat: result.heartbeat,        // ok | failed | skipped
+      remote: result.remote,              // { bucket, key, keys, endpoint } | null
+      wasabi: result.remote,              // legacy alias of `remote`
     });
   } catch (err) {
     console.error('[BACKUP] manual run failed:', err.message);
@@ -49,7 +56,9 @@ router.get('/list', requireAuth, requireRole(...ADMIN), (_req, res, next) => {
     res.json({
       driver: backup.getBackupDriver(),
       backups: backup.listBackups(),
-      wasabiConfigured: backup.wasabiConfigured(),
+      s3Configured: backup.s3Configured(),
+      encryption: Boolean(backup.getEncryptionKey()),
+      wasabiConfigured: backup.s3Configured(), // legacy alias
     });
   } catch (err) { next(err); }
 });
