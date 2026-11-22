@@ -20,7 +20,7 @@ Modern Blue Collar is a production-ready, self-hosted web platform for small fie
 - Nightly database backups
 - CSV data exports
 
-The entire platform is **white-labeled via a single config file** (`brand.config.js`). Swapping it to a new trade or client requires changing only environment variables — no source code edits.
+The entire platform is **white-labeled via `BRAND_*` environment variables** (read by `brand.config.js`). Swapping it to a new trade or client requires changing only environment variables — no source code edits. Invalid brand settings stop the server at boot.
 
 ---
 
@@ -113,9 +113,12 @@ and `npm run test:platform` (sandbox drivers, no server needed).
 | Electrical | `electrical` |
 | Plumbing | `plumbing` |
 | HVAC | `hvac` |
+| Plumbing & HVAC | `plumbing-hvac` |
 | General Contracting | `contracting` |
 
-Each trade gets trade-specific job type lists, a technician label, and a pre-seeded pricebook.
+Each trade gets trade-specific job type lists, a technician label, a colour palette and a
+trade-correct starter pricebook (`npm run seed:prices`). The value is case-insensitive
+(`HVAC`, `Plumbing & HVAC` work); anything else stops the server at boot.
 
 ---
 
@@ -147,11 +150,30 @@ Edit `.env`:
 ```ini
 BRAND_COMPANY_NAME=Apex Plumbing LLC
 BRAND_TRADE_TYPE=plumbing
-BRAND_COLOR_PRIMARY=#1565c0
+BRAND_COLOR_PRIMARY="#1565c0"
+BRAND_LOGO_URL=https://cdn.example.com/apex-logo.svg
 BRAND_DEFAULT_STATE=TX
+BRAND_TIMEZONE=America/Chicago
 ```
 
-That's it. No other files need to change.
+That's it. No other files need to change. Full variable list: SETUP.md → **White-label**.
+
+### Sales demos per prospect
+
+```bash
+cd backend
+node scripts/seed-demo.js --prospect ks-plumbing-example --print-env   # writes .env.demo.<slug>
+ENV_FILE=.env.demo.ks-plumbing-example npm run sandbox
+ENV_FILE=.env.demo.ks-plumbing-example npm run demo:check -- --port 3101 --headless
+```
+
+Prospect files live in `backend/demo/prospects/` (generic US `default`, a fictional Kansas
+plumber, a fictional Irish heating firm). Demo data is trade-correct, dated relative to today,
+and uses only fictional names, reserved email domains and fictional phone ranges.
+`demo:check` exits non-zero if a prospect would see client names, "undefined", $0 amounts,
+wrong-trade jobs or a stale calendar. See SETUP.md → **Demo per prospect**.
+
+Tests for this: `npm run test:whitelabel`.
 
 ---
 

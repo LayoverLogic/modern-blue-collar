@@ -25,7 +25,10 @@
         "test:platform": "node --test tests/platform.test.js",
         "test:redteam": "node --test --test-concurrency=1 tests/redteam.test.js",
         "test:ui": "node tests/ui/walk.js",
-        "test:backend": "node --test --test-concurrency=1 tests/backend.test.js"
+        "test:backend": "node --test --test-concurrency=1 tests/backend.test.js",
+        "seed:demo": "node scripts/seed-demo.js",
+        "demo:check": "node scripts/demo-check.js",
+        "test:whitelabel": "node --test --test-concurrency=1 tests/whitelabel.test.js"
     },
     "dependencies": {
         "@aws-sdk/client-s3": "^3.1024.0",
