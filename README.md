@@ -19,17 +19,14 @@ The one-page honest matrix (what works, what is built but not tried live, what i
 This is the **sandbox revival** branch (`mbc/sandbox-revival`). It runs locally with no paid services and no
 cloud accounts. It is **not deployed anywhere**:
 
-- Every test suite passes; the UI walk has one stale step (invites, [SECURITY_AUDIT §1.1](backend/SECURITY_AUDIT.md#11-ui-walk)). Security status, with what is enforced,
+- Every test suite passes, the UI walk included. Security status, with what is enforced,
   partial and open: [backend/SECURITY_AUDIT.md](backend/SECURITY_AUDIT.md).
-- **Several features are API-only on this commit** (the screens are being built by Frontend): the
-  password-reset and accept-invite pages (`reset-password.html`, `accept-invite.html`, linked from the emails,
-  answer 404 today), "Forgot password", change password and the forced "choose a new password" screen, Team-page
-  deactivate / role / reset buttons, customer import, export everything, Xero export, QuickBooks connect and
-  push, price book import. Until those land, **a team member added on the Team page cannot get in**: "+ Invite
-  Member" emails a link to the missing accept-invite page, and "+ Add with password" creates a temporary password that the
-  server makes them change (every call answers 403 `PASSWORD_CHANGE_REQUIRED`) with no screen to do it. Use the
-  seeded logins, or create users through the API with `"mustChangePassword": false`
-  ([SETUP.md §3](SETUP.md#3-running-without-the-sandbox-script)).
+- **Account and data screens are in the app** (Frontend F3): the password-reset and accept-invite pages
+  (`reset-password.html`, `accept-invite.html`, linked from the emails), "Forgot password?" on the sign-in page,
+  Change password (menu under your name) and the forced "choose a new password" screen (`change-password.html`),
+  Team-page deactivate / role / reset buttons, Settings → Data (customer import, export everything, Xero export,
+  list exports), Settings → QuickBooks (connect, sync payments) with "Push to QuickBooks" on each invoice, and
+  Pricebook → Import CSV. A team member added with "+ Invite Member" or "+ Add with password" can now get in.
 - QuickBooks, Xero, Twilio, Google sign-in and real SMTP have **not been used against the real services**.
 - The Docker / VPS hosting path has **not been run on a real server** yet ([DEPLOYMENT.md §10](DEPLOYMENT.md)).
 

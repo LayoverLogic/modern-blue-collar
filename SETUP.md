@@ -4,7 +4,7 @@ How to run Modern Blue Collar locally, what every environment variable does, how
 white-labelling, prospect demos and import / export work. For a Mac, the short path is
 [docs/RUN-ON-MAC.md](docs/RUN-ON-MAC.md). For a client server see [DEPLOYMENT.md](DEPLOYMENT.md).
 
-Current state of the code, including what has no screen yet: [README.md → Status](README.md#status-2026-11-21-6d63a31),
+Current state of the code: [README.md → Status](README.md#status-2026-11-21-6d63a31),
 [docs/FEATURES.md](docs/FEATURES.md) and [backend/SECURITY_AUDIT.md](backend/SECURITY_AUDIT.md).
 Written against `mbc/sandbox-revival` at `6d63a31`.
 
@@ -101,7 +101,7 @@ With `ADMIN_PASSWORD` unset, `seed:admin` generates a password, prints it once a
 `PATCH /api/users/me/password` and logout answers 403 `PASSWORD_CHANGE_REQUIRED`. An explicit `ADMIN_PASSWORD` is
 not temporary unless `ADMIN_FORCE_PASSWORD_CHANGE=true`.
 
-**No screen for changing a password exists on this commit**, so change it with the API:
+Sign in and the app sends you to the "Choose a new password" screen (`change-password.html`). Or change it with the API:
 
 ```bash
 TOKEN=$(curl -s -X POST localhost:3001/api/auth/login -H 'Content-Type: application/json' \
@@ -166,8 +166,8 @@ For `test:ui`: `DATABASE_URL=<sandbox db> PORT=3121 npm run sandbox:setup`, then
 The header of `backend/tests/ui/walk.js` lists all options.
 
 Results on 2026-11-21 (`6d63a31`): every suite above passes in full. `test:ui`: 78/78 page captures clean, XSS all
-pass, main flow 25/26 — step 7 (invite) fails because the walk still expects a Google sign-in link while invites
-now link to the not-yet-built `accept-invite.html` (Frontend).
+pass, main flow 25/26 — step 7 (invite) failed because the walk expected a Google sign-in link. Since Frontend F3 the
+walk expects the `accept-invite.html` link and passes.
 
 ---
 
@@ -560,11 +560,11 @@ known secret exported in your shell. `unset JWT_SECRET`; the sandbox writes one 
 engine (`migrate dev`, `migrate diff`, `studio`) cannot download it. `npm run migrate:deploy` still works offline.
 
 **403 `PASSWORD_CHANGE_REQUIRED` on every call** — the account has a temporary password. Change it with
-`PATCH /api/users/me/password` (§3); there is no screen for it yet.
+`PATCH /api/users/me/password` (§3), or sign in: the app shows the "Choose a new password" screen.
 
-**A reset or invite link opens a 404** — `reset-password.html` and `accept-invite.html` are not on this commit
-(Frontend). Until they land: admin "temporary password" reset plus the API change (§3), or create the user with
-`"mustChangePassword": false`.
+**A reset or invite link says it has expired** — links work once (reset: `RESET_TOKEN_TTL_MINUTES`, invite:
+`INVITE_TTL_HOURS`) and a newer invite replaces the old link. Ask for a new one ("Forgot password?" or Team →
+Reset password / + Invite Member).
 
 **429 "Too many login attempts"** — 10 failed sign-ins for that email from your address (or 50 from your address)
 in 15 minutes. The correct password is refused too until the window passes. Restart the server to clear it in

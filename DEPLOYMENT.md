@@ -129,8 +129,8 @@ Photo buckets use the same endpoint style with the `S3_*` variables (`S3_ENDPOIN
    docker compose exec app node seed_superadmin.js
    ```
    Send the password by a separate channel. The server makes the owner change it at first sign-in (every other
-   call answers 403 `PASSWORD_CHANGE_REQUIRED`). On `6d63a31` there is no change-password screen yet, so do it
-   with the API as in `SETUP.md` §3 until the Frontend screen lands.
+   call answers 403 `PASSWORD_CHANGE_REQUIRED`): signing in opens the "Choose a new password" screen (or use the
+   API as in `SETUP.md` §3).
 8. Then work through the go-live checklist in §9.
 
 After you edit `deploy/clients/<slug>.env`, re-run `sudo deploy/provision.sh deploy/clients/<slug>.env`

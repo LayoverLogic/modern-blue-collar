@@ -6,10 +6,9 @@ Section 2 is the migration drift check (do it once on the Mac, the team cannot),
 for a prospect, section 5 switches brand, trade or country, section 6 points at the first real-server test,
 section 7 is troubleshooting.
 
-> **Before you show anyone:** every page loads and `demo:check --headless` says `READY` on `6d63a31`. Some features
-> are API-only for now (no screen yet): forgot / reset password, accept-invite, change password, Team-page
-> deactivate / role / reset, customer import, export everything, Xero, QuickBooks. A new team member added on the
-> Team page **cannot sign in yet** (see 1.4). Demo with the seeded logins.
+> **Before you show anyone:** every page loads and `demo:check --headless` says `READY` on `6d63a31`. Since Frontend
+> F3 the account screens (forgot / reset password, accept-invite, change password, Team-page deactivate / role /
+> reset) and Settings (customer import, export everything, Xero, QuickBooks) are in the app (see 1.4).
 
 Commands are for the macOS Terminal (zsh). Lines starting with `#` are comments.
 
@@ -101,12 +100,11 @@ As `admin@demo.test`:
 As `tech1@demo.test` (best on a phone, 1.5): **Today** shows the day's jobs with Navigate / Call / Text / On My Way;
 open a job, change its status, add a note, upload a photo.
 
-Not possible from the screens on this commit (API only, Frontend is building them): forgot password and the
-reset page, accepting an invite, changing your password, deactivating someone, import, export everything, Xero,
-QuickBooks. **Team → + Invite Member** writes an email with a link to `accept-invite.html`, which does not exist
-yet; **Team → + Add with password** creates an account with a temporary password that the server forces the person to
-change, and there is no screen to change it. To try a new login anyway, change the password with the API
-(`SETUP.md` §3 has the two `curl` lines).
+Also on the screens: "Forgot password?" on the sign-in page and the reset page, accepting an invite, changing your
+password (menu under your name), deactivating someone or changing a role (Team), Settings → Data (import, export
+everything, Xero) and Settings → QuickBooks. **Team → + Invite Member** writes an email (sandbox: `backend/outbox/`)
+with a link to `accept-invite.html`, also shown with a Copy button; **Team → + Add with password** creates an account
+with a temporary password, and the person chooses their own at first sign-in.
 
 ### 1.5 Try it on your phone
 
@@ -153,9 +151,8 @@ DATABASE_URL=postgresql://mbc:mbc_sandbox@localhost:5432/mbc_ui_sandbox?schema=p
   UI_OUT_DIR=~/mbc-ui UI_FINAL_DIR=~/mbc-ui/final npm run test:ui
 ```
 
-On `6d63a31` it ends with `FAILED`: 78/78 pages clean, all XSS checks pass, 25 of 26 flow steps pass. The failing
-step is "7. Invite a team member" (the walk expects the old Google invite link; Frontend is updating it with the
-accept-invite page). The PNGs in `~/mbc-ui/final` are good screenshots for a deck.
+On `6d63a31` it ended with `FAILED` on step "7. Invite a team member" (the walk expected the old Google invite
+link); since Frontend F3 the walk expects the accept-invite link and ends with exit 0. The PNGs in `~/mbc-ui/final` are good screenshots for a deck.
 
 ---
 
@@ -392,8 +389,8 @@ to the team.
 | Phone can't open the page | Started without `HOST=0.0.0.0`; or the Mac and phone are not on the same hotspot; or macOS blocked `node` (System Settings → Network → Firewall → Options) |
 | "Too many login attempts" (429) | 10 wrong passwords for that login in 15 min. Wait, or restart the server |
 | Every request returns 429 | More than 1000 requests in 15 min for one login. Restart the server |
-| 403 "You must change your temporary password" | A temporary password; change it with the API (`SETUP.md` §3) |
-| Email link to `reset-password.html` or `accept-invite.html` shows "Cannot GET" | Those pages are not built yet (1.4) |
+| 403 "You must change your temporary password" | A temporary password; sign in again and the app shows "Choose a new password" (or the API, `SETUP.md` §3) |
+| Email link to `reset-password.html` or `accept-invite.html` says it expired | Links work once and expire; ask for a new one (1.4) |
 | `Failed to fetch sha256 checksum … binaries.prisma.sh` | Only happens without internet (or behind a strict proxy). `npm run migrate:deploy` still works offline |
 | Backup fails: `pg_dump: error: aborting because of server version mismatch` | `pg_dump --version` must be 16; check the PATH line, or set `PG_DUMP_PATH=/opt/homebrew/opt/postgresql@16/bin/pg_dump` |
 | `seed:demo` says REFUSED … trade | The database holds another trade's jobs: add `--reset`, or use a separate database (section 5) |

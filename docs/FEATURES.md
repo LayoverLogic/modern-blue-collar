@@ -9,8 +9,8 @@ Plain list for sales and marketing. Checked against the code and by running it o
   to the real service or run on a real server. Do not promise it to a client before it has.
 - **Not built.**
 
-"**No screen yet**" in the notes means the feature works through the API only on this commit (the Frontend team is
-building the screens). Do not demo or sell those as finished.
+Every feature below has a screen in the app (Frontend F3 added the account, team, import / export and QuickBooks
+screens).
 
 | Feature | Status | Notes |
 |---|---|---|
@@ -30,7 +30,7 @@ building the screens). Do not demo or sell those as finished.
 | Offline mode | Not built | Needs a connection |
 | **Quotes, invoices, money** | | |
 | Price book per trade, with starter prices | Working in sandbox | Starter prices are 2026 US ballparks; client edits them |
-| Price book import from CSV | Working in sandbox | **No screen yet.** Dry run first, then import |
+| Price book import from CSV | Working in sandbox | Pricebook → Import CSV. Dry run first, then import |
 | Quotes and invoices with line items, discounts and tax | Working in sandbox | US sales tax or Irish VAT rates (incl. 13.5 % / 23 %), reverse charge; exact decimal money; numbered Q-0001 / INV-0001 |
 | Several quotes and invoices per job; invoice from a quote | Working in sandbox | One live invoice per quote |
 | Sent quotes and invoices are locked | Working in sandbox | Only the status can change after sending |
@@ -39,19 +39,19 @@ building the screens). Do not demo or sell those as finished.
 | Online card payments, customer portal, online quote approval | Not built | |
 | **Accounting and data** | | |
 | CSV exports (customers, jobs, quotes, invoices) | Working in sandbox | Buttons on Customers, Dispatch, Quotes & Invoices; quote export and per-line view via API |
-| "Export everything" (all data + photos in one zip) | Working in sandbox | **No screen yet.** The client's exit / data-ownership guarantee |
-| Customer import from Housecall Pro, Jobber or a spreadsheet | Working in sandbox | **No screen yet** (also a command-line tool). Dry run with a full report, duplicate review, undo. Jobs import not built |
-| Xero invoice export (Xero's import file) | Working in sandbox | **No screen yet.** File generated; not yet imported into a real Xero company. Tax-rate names must be set per client |
-| QuickBooks Online: connect, push invoices, pull payments | Built, not yet tested live | **No screen yet.** Tested against a stand-in only; needs a run in an Intuit test company first |
+| "Export everything" (all data + photos in one zip) | Working in sandbox | Settings → Data. The client's exit / data-ownership guarantee |
+| Customer import from Housecall Pro, Jobber or a spreadsheet | Working in sandbox | Settings → Data (also a command-line tool). Dry run with a full report, duplicate review, undo. Jobs import not built |
+| Xero invoice export (Xero's import file) | Working in sandbox | Settings → Data. File generated; not yet imported into a real Xero company. Tax-rate names must be set per client |
+| QuickBooks Online: connect, push invoices, pull payments | Built, not yet tested live | Settings → QuickBooks; "Push to QuickBooks" on each invoice. Tested against a stand-in only; needs a run in an Intuit test company first |
 | Gmail sync of customer emails | Not built | Placeholder only |
 | **Team and sign-in** | | |
 | Roles: owner, admin, dispatcher, office, technician | Working in sandbox | Technicians see only their own jobs, or (client's choice) read the whole schedule but change only their own |
 | Email + password sign-in, lockout after repeated failures | Working in sandbox | |
-| Add a team member with a temporary password | Working in sandbox | Server forces a password change at first sign-in, but **no screen yet** to change it, so the new person cannot get in through the app today |
-| Invite a team member by email | Working in sandbox | **No screen yet** for the invitation page the email links to |
-| Forgot / reset password by email | Working in sandbox | **No screen yet** for the reset page or the "Forgot password" link |
-| Change own password; signs out everywhere | Working in sandbox | **No screen yet** |
-| Deactivate a leaver, change a role, admin password reset | Working in sandbox | **No screen yet.** Deactivation cuts access immediately |
+| Add a team member with a temporary password | Working in sandbox | They choose their own password at first sign-in ("Choose a new password" screen) |
+| Invite a team member by email | Working in sandbox | The email links to the accept-invite page, where they set a password; the link can also be copied from the Team page |
+| Forgot / reset password by email | Working in sandbox | "Forgot password?" on the sign-in page; the email links to the reset page |
+| Change own password; signs out everywhere | Working in sandbox | Menu under your name → Change password |
+| Deactivate a leaver, change a role, admin password reset | Working in sandbox | Team page. Deactivation cuts access immediately |
 | Sign in with Google | Built, not yet tested live | Invited people or the client's own domain only; hidden in the sandbox |
 | Two-factor sign-in (MFA) | Not built | Only through Google accounts that enforce it |
 | API keys for integrations | Working in sandbox | Read or read/write; stop working when their creator leaves |

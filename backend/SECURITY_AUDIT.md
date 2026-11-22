@@ -40,10 +40,9 @@ used only by `npm run dev`).
 
 ### 1.1 UI walk
 
-`UI_PORT=3179 npm run test:ui` against a fresh sandbox database. The one failing flow step is
-**7. Invite a team member**: since B3 the invite link is `<APP_URL>/accept-invite.html#token=…`, but the walk still
-expects a Google sign-in link, the Team page still labels it "starts Sign in with Google", and
-`accept-invite.html` does not exist yet (§3, first row). Frontend owns the page and the walk.
+`UI_PORT=3179 npm run test:ui` against a fresh sandbox database. On `6d63a31` the one failing flow step was
+**7. Invite a team member** (the walk expected a Google sign-in link). Since Frontend F3 the walk expects the
+`<APP_URL>/accept-invite.html#token=…` link, the Team page labels it as the accept-invite link, and the walk exits 0.
 
 ---
 
@@ -169,7 +168,7 @@ Roles are `super-admin`, `admin`, `dispatcher`, `office`, `technician` (`helpers
 
 | Area | What is done | What is not | IDs |
 |---|---|---|---|
-| **Password reset and invites, end to end** | API complete and tested (§2.2): reset and invite mails carry links to `reset-password.html` and `accept-invite.html` | **Those two pages are not in `backend/public/` on this commit** (both answer 404 on a running sandbox). The login page has no "Forgot password" link, and there is no "choose a new password" screen for `PASSWORD_CHANGE_REQUIRED`, no change-password form and no Team-page buttons for deactivate / role / reset. A user who is sent a reset or invite link cannot finish in the browser until the Frontend work lands; an admin-created user with a temporary password is stuck at 403 | GAP-1, GAP-2, GAP-4 |
+| **Password reset and invites, end to end** | API complete and tested (§2.2): reset and invite mails carry links to `reset-password.html` and `accept-invite.html`; since Frontend F3 both pages exist (token read from the URL fragment and stripped at once), with "Forgot password?" on the sign-in page, the forced "choose a new password" screen (`change-password.html`), Change password in the profile menu and Team-page deactivate / role / reset buttons; the UI walk covers each | Nothing missing in the browser for these flows | GAP-1, GAP-2, GAP-4 |
 | **Audit logging** | Jobs and documents (§2.7) | Not logged: edits to a draft document's lines / amount / notes, deletes of draft documents, customer changes, price book, users, roles, password resets, API keys, sign-ins and failed sign-ins, imports, exports, SMS sends, backups. The communications log is ordinary data (admins can delete entries), not an audit trail. There is no request log: the app logs errors to the console only | GTM-18 |
 | **Optimistic locking** | Jobs, customers, quotes, invoices | Price book items and users have no `version`: last write wins | RT-9, DOC-7 |
 | **Sessions** | Short JWT, re-checked against the user row and `sessionVersion` on every request; revoked by password change / reset / deactivation | Token is a bearer token in `localStorage` (readable by any script on the page; the strict CSP makes injecting one much harder). **Logout only discards it in the browser**: it stays valid until it expires (`JWT_EXPIRES`, 8 h) unless one of the revoking events happens. No MFA | RT-5 (part) |
