@@ -184,13 +184,15 @@ async function seedPeopleAndJobs(prisma, dataset, { password }) {
     out.jobs++;
     let quote = null; let invoice = null;
     if (j.quote) {
-      quote = await prisma.quote.create({ data: { jobId: job.id, amount: j.quote.amount, currency, status: j.quote.status, notes: j.quote.notes, createdAt: new Date(j.quote.createdAt) } });
+      // amount-only document: subtotal = amount, taxTotal = 0 (contract 2b §2)
+      quote = await prisma.quote.create({ data: { jobId: job.id, amount: j.quote.amount, subtotal: j.quote.amount, taxTotal: 0, currency, status: j.quote.status, notes: j.quote.notes, createdAt: new Date(j.quote.createdAt), issuedAt: new Date(j.quote.createdAt) } });
       out.quotes++;
     }
     if (j.invoice) {
       invoice = await prisma.invoice.create({
         data: {
-          jobId: job.id, amount: j.invoice.amount, currency, status: j.invoice.status, notes: j.invoice.notes,
+          jobId: job.id, amount: j.invoice.amount, subtotal: j.invoice.amount, taxTotal: 0, currency, status: j.invoice.status, notes: j.invoice.notes,
+          issuedAt: new Date(j.invoice.createdAt),
           dueDate: new Date(j.invoice.dueDate), paidAt: j.invoice.paidAt ? new Date(j.invoice.paidAt) : null,
           createdAt: new Date(j.invoice.createdAt),
         },

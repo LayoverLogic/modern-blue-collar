@@ -17,6 +17,8 @@
  *   --repair-onclick-quotes     passed to brand-shot (temporary aid while WL-1/RT-25 is open)
  *   --shots <dir>               save a PNG per page during --headless
  *   --email / --password        login for API/headless (default ADMIN_EMAIL / ADMIN_PASSWORD)
+ *   --tech-email <addr>         technician for the headless today.html / job.html pass (default: the
+ *                               technician of the newest scheduled job; same --password)
  *   --denylist <file>           client-name denylist (default $DEMO_DENYLIST_FILE or
  *                               demo/denylist.local.txt — gitignored, see denylist.example.txt)
  *   --strict                    WARN also fails
@@ -55,6 +57,15 @@ const checks = require('../demo/lib/checks');
   }
 
   const prisma = require('../helpers/prisma');
+  // For the headless technician pages: a technician with a job, and a job to open
+  let techEmail = arg('tech-email', null); let jobId = null; let techJobId = null;
+  try {
+    const tj = await prisma.job.findFirst({ where: { technician: { role: 'technician', active: true }, ...(typeof techEmail === 'string' ? { technician: { email: techEmail } } : {}) }, include: { technician: true }, orderBy: [{ scheduledDate: 'desc' }, { id: 'asc' }] });
+    if (tj) { techEmail = typeof techEmail === 'string' ? techEmail : tj.technician.email; techJobId = tj.id; }
+    const any = await prisma.job.findFirst({ where: { status: 'completed' }, orderBy: { id: 'asc' } }) || await prisma.job.findFirst({ orderBy: { id: 'asc' } });
+    if (any) jobId = any.id;
+  } catch { /* reported by the DB checks */ }
+  if (typeof techEmail !== 'string') techEmail = null;
   try {
     all.push(...await checks.runDbChecks({ prisma, brand, denylist: dl.terms }));
   } catch (e) {
@@ -70,6 +81,7 @@ const checks = require('../demo/lib/checks');
       const p = new URL(b).port || '80';
       all.push(...await checks.runHeadlessChecks({
         port: p, denylist: dl.terms, email, password, repair: flag('repair-onclick-quotes'),
+        brand, techEmail, jobId, techJobId,
         shotsDir: arg('shots', null) === true ? null : arg('shots', null),
       }));
     }

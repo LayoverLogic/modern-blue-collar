@@ -510,14 +510,22 @@ dbTest('WL-4: switching trade on an existing DB is refused without --reset, safe
 });
 
 dbTest('seed:demo with a prospect: Irish heating firm on a plumbing-hvac instance', async () => {
-  const env = { BRAND_TRADE_TYPE: 'plumbing-hvac', BRAND_TIMEZONE: 'Europe/Dublin', BRAND_COMPANY_NAME: 'Brightwater Heating & Plumbing Ltd' };
+  // as in the env file --print-env writes for this prospect (BRAND_COUNTRY / currency included)
+  const env = { BRAND_TRADE_TYPE: 'plumbing-hvac', BRAND_TIMEZONE: 'Europe/Dublin', BRAND_COMPANY_NAME: 'Brightwater Heating & Plumbing Ltd', BRAND_COUNTRY: 'IE', BRAND_CURRENCY: 'EUR' };
   const r = run('scripts/seed-demo.js', ['--prospect', 'ie-heating-example', '--reset'], env);
   assert.equal(r.code, 0, r.out);
   const custs = await prisma.customer.findMany();
   assert.ok(custs.every((c) => c.state === 'Co. Kildare' && /^0(20|89) /.test(c.phone)));
   assert.ok((await prisma.priceBookItem.findMany()).some((p) => p.name === 'Annual Boiler Service'));
+  // B3 item 10: stored job types are the Irish ones the brand offers
+  const ieTypes = bv.buildBrand(env).jobTypes;
+  const jobs = await prisma.job.findMany();
+  assert.ok(jobs.every((j) => ieTypes.includes(j.type)), jobs.map((j) => j.type).join(', '));
+  assert.ok(!jobs.some((j) => /Furnace|AC (Install|Repair)|Tune-Up|Water Heater/.test(j.type)));
   const chk = run('scripts/demo-check.js', [], env);
   assert.equal(chk.code, 0, chk.out);
+  assert.match(chk.out, /PASS\s+db\.wording .*IE wording/);
+  assert.match(chk.out, /PASS\s+db\.currency .*EUR/);
   const wrong = run('scripts/seed-demo.js', ['--prospect', 'ks-plumbing-example'], env);
   assert.equal(wrong.code, 2);
   assert.match(wrong.out, /plumbing business but this instance runs BRAND_TRADE_TYPE=plumbing-hvac/);
@@ -563,4 +571,155 @@ dbTest('demo:check API pass: /api/brand exposes colors.primaryDark; list endpoin
   } finally {
     srv.kill();
   }
+});
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// B3 items 10–12, 14, 16: country job types, demo wording, enough templates,
+// canonical due dates, consistent totals, new demo:check checks
+// ═════════════════════════════════════════════════════════════════════════════
+const { wordingProblems } = require('../demo/lib/wording');
+const demoChecks = require('../demo/lib/checks');
+
+test('B3 job types: BRAND_COUNTRY=IE gives Irish wording per trade; US stays as before', () => {
+  for (const t of bv.TRADES) {
+    assert.deepEqual(bv.buildBrand({ BRAND_TRADE_TYPE: t }).jobTypes, bv.JOB_TYPES[t]);
+    assert.deepEqual(bv.buildBrand({ BRAND_TRADE_TYPE: t, BRAND_COUNTRY: 'US' }).jobTypes, bv.JOB_TYPES[t]);
+    const ie = bv.buildBrand({ BRAND_TRADE_TYPE: t, BRAND_COUNTRY: 'ie' }).jobTypes;
+    assert.deepEqual(ie, bv.JOB_TYPES_IE[t]);
+    assert.ok(ie.includes('Other'));
+    for (const typ of ie) assert.deepEqual(wordingProblems(typ, 'IE'), [], `${t}: ${typ}`);
+  }
+  const el = bv.buildBrand({ BRAND_TRADE_TYPE: 'electrical', BRAND_COUNTRY: 'IE' }).jobTypes;
+  for (const want of ['Consumer Unit Upgrade', 'Socket / Light Install', 'Rewire', 'Fault Finding']) assert.ok(el.includes(want), want);
+  const heat = bv.buildBrand({ BRAND_TRADE_TYPE: 'hvac', BRAND_COUNTRY: 'IE' }).jobTypes;
+  for (const want of ['Boiler Service', 'Boiler Repair', 'Heat Pump Install']) assert.ok(heat.includes(want), want);
+  assert.ok(!heat.some((x) => /Furnace|AC /.test(x)));
+});
+
+test('B3 job types: BRAND_JOB_TYPES overrides the list and is validated (boot refuses a bad list)', () => {
+  assert.deepEqual(bv.buildBrand({ BRAND_JOB_TYPES: ' Boiler Service , Leak Repair,Other ' }).jobTypes, ['Boiler Service', 'Leak Repair', 'Other']);
+  assert.deepEqual(bv.buildBrand({ BRAND_JOB_TYPES: '' }).jobTypes, bv.JOB_TYPES.electrical, 'blank = default list');
+  for (const [bad, re] of [['A,a', /twice/], [',,', /no job types/], ['Ok,<b>x</b>', /not allowed/], [Array.from({ length: 41 }, (_, i) => `T${i}`).join(','), /at most 40/], ['x'.repeat(61), /longer than 60/]]) {
+    assert.throws(() => bv.buildBrand({ BRAND_JOB_TYPES: bad }), re, bad);
+  }
+  const r = spawnSync(process.execPath, ['server.js'], {
+    cwd: BACKEND, encoding: 'utf8', timeout: 20000,
+    env: { PATH: process.env.PATH, ENV_FILE: '/dev/null', BRAND_JOB_TYPES: 'Boiler,boiler', JWT_SECRET: 'x'.repeat(40), DATABASE_URL: TEST_DB, PORT: '0' },
+  });
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.match(r.stderr, /\[brand\] BRAND_JOB_TYPES=.*twice/);
+});
+
+test('B3 job types: resolveJobType maps US ↔ Irish wording onto a brand list', () => {
+  const ie = bv.JOB_TYPES_IE;
+  assert.equal(bv.resolveJobType('Furnace Repair', ie.hvac, { tradeType: 'hvac', country: 'IE' }), 'Boiler Repair');
+  assert.equal(bv.resolveJobType('Panel Upgrade', ie.electrical, { tradeType: 'electrical', country: 'IE' }), 'Consumer Unit Upgrade');
+  assert.equal(bv.resolveJobType('Inspection', ie.electrical, { tradeType: 'electrical', country: 'IE' }), 'Inspection & Cert');
+  assert.equal(bv.resolveJobType('Boiler Repair', bv.JOB_TYPES.hvac, { tradeType: 'hvac', country: 'US' }), 'Furnace Repair');
+  assert.equal(bv.resolveJobType('Rewire', bv.JOB_TYPES.electrical, { tradeType: 'electrical', country: 'US' }), 'Other');
+  assert.equal(bv.resolveJobType('Leak Repair', ['Boiler Service', 'Callout'], {}), 'Boiler Service', 'no Other → first');
+});
+
+test('B3 fixtures: every trade × country fills 30 jobs with distinct titles, brand job types and country wording', () => {
+  for (const cc of ['US', 'IE']) {
+    for (const t of bv.TRADES) {
+      const brand = bv.buildBrand({ BRAND_TRADE_TYPE: t, BRAND_COUNTRY: cc, BRAND_TIMEZONE: cc === 'IE' ? 'Europe/Dublin' : 'America/Chicago' });
+      const prospect = { ...loadProspect(cc === 'IE' ? 'ie-heating-example' : 'default'), counts: { jobs: 30, customers: 12 } };
+      const ds = buildDataset({ brand, prospect, locale: loadLocale(cc), now: NOW });
+      const tag = `${cc}/${t}`;
+      assert.equal(ds.jobs.length, 30, tag);
+      assert.equal(new Set(ds.jobs.map((j) => j.title)).size, 30, `${tag}: titles repeat`);
+      for (const j of ds.jobs) {
+        assert.ok(brand.jobTypes.includes(j.type), `${tag}: ${j.title} type ${j.type}`);
+        assert.deepEqual([...wordingProblems(j.title, cc), ...wordingProblems(j.notes, cc)], [], `${tag}: ${j.title}`);
+        if (j.invoice) assert.match(j.invoice.dueDate, /T00:00:00\.000Z$/, `${tag}: due date ${j.invoice.dueDate} is not a calendar date`);
+      }
+      const created = ds.jobs.map((j) => j.createdAt);
+      assert.equal(new Set(created).size, created.length, `${tag}: jobs share a createdAt (Recent Jobs order is ambiguous)`);
+      const trade = loadTrade(t, loadLocale(cc));
+      assert.ok(trade.jobs.length >= 30, `${tag}: only ${trade.jobs.length} templates`);
+    }
+  }
+  // with a custom list, stored types still come from it
+  const brand = bv.buildBrand({ BRAND_TRADE_TYPE: 'plumbing', BRAND_JOB_TYPES: 'Leak Repair,Callout,Other' });
+  const ds = buildDataset({ brand, prospect: loadProspect('default'), locale: loadLocale('US'), now: NOW });
+  assert.ok(ds.jobs.every((j) => ['Leak Repair', 'Callout', 'Other'].includes(j.type)));
+});
+
+function fakePrisma(rows) {
+  const t = (k) => ({ findMany: async () => rows[k] || [] });
+  return {
+    user: t('user'), customer: t('customer'), job: t('job'), quote: t('quote'), invoice: t('invoice'),
+    priceBookItem: t('pricebook'), inventoryItem: t('inventory'), communication: t('comms'), jobActivity: t('acts'),
+  };
+}
+
+test('B3 demo:check DB: totals, currency, wording, due dates (unit, fake rows)', async () => {
+  const brand = bv.buildBrand({ BRAND_TRADE_TYPE: 'electrical', BRAND_COUNTRY: 'IE' });
+  brand.locale = require('../helpers/locale').buildLocale({ BRAND_COUNTRY: 'IE' }, brand);
+  const job = { id: 1, title: 'Half the Living Room Outlets Dead', notes: 'Smart dimmers on the main floor', type: 'Fault Finding', status: 'pending', tradeType: 'electrical', createdAt: NOW, scheduledDate: '2099-01-01' };
+  const rows = {
+    job: [job],
+    quote: [{ id: 1, jobId: 1, amount: 120, subtotal: 0, taxTotal: 0, currency: 'EUR', lines: [] }],
+    invoice: [
+      { id: 1, jobId: 1, amount: 123, subtotal: 100, taxTotal: 23, currency: 'USD', status: 'unpaid', dueDate: new Date('2026-12-05T17:00:00Z'), lines: [{ lineTotal: 90 }] },
+    ],
+  };
+  const res = await demoChecks.runDbChecks({ prisma: fakePrisma(rows), brand, now: NOW });
+  const by = (id) => res.find((r) => r.id === id) || {};
+  assert.equal(by('db.totals').level, 'FAIL');
+  assert.match(by('db.totals').msg, /quote#1 total 120 ≠ subtotal 0/);
+  assert.match(by('db.totals').msg, /invoice#1 subtotal 100 ≠ lines 90\.00/);
+  assert.equal(by('db.currency').level, 'FAIL');
+  assert.match(by('db.currency').msg, /invoice#1 USD/);
+  assert.equal(by('db.wording').level, 'FAIL');
+  assert.match(by('db.wording').msg, /outlet.*US wording/);
+  assert.equal(by('db.due-dates').level, 'WARN');
+  // the same rows, fixed, pass
+  const ok = {
+    job: [{ ...job, title: 'Half the Living Room Sockets Dead', notes: 'Smart dimmers on the ground floor' }],
+    quote: [{ ...rows.quote[0], subtotal: 120 }],
+    invoice: [{ ...rows.invoice[0], currency: 'EUR', dueDate: new Date('2026-12-05T00:00:00Z'), lines: [{ lineTotal: 60 }, { lineTotal: 40 }] }],
+  };
+  const res2 = await demoChecks.runDbChecks({ prisma: fakePrisma(ok), brand, now: NOW });
+  for (const id of ['db.totals', 'db.currency', 'db.wording']) assert.equal(res2.find((r) => r.id === id).level, 'PASS', id);
+  assert.ok(!res2.some((r) => r.id === 'db.due-dates'));
+});
+
+test('B3 demo:check helpers: currency symbols and Recent Jobs order', () => {
+  assert.equal(demoChecks.currencySymbol('EUR', 'en-IE'), '€');
+  assert.equal(demoChecks.currencySymbol('USD', 'en-US'), '$');
+  const text = 'Dashboard\nRecent Jobs\nNew boiler\nOld leak\nOlder drain';
+  assert.deepEqual(demoChecks.orderProblems(text, 'Recent Jobs', [
+    { title: 'New boiler', createdAt: '2026-11-20' }, { title: 'Old leak', createdAt: '2026-11-19' }, { title: 'Older drain', createdAt: '2026-11-18' },
+  ]), []);
+  assert.equal(demoChecks.orderProblems(text, 'Recent Jobs', [
+    { title: 'New boiler', createdAt: '2026-11-18' }, { title: 'Old leak', createdAt: '2026-11-19' },
+  ]).length, 1);
+  assert.deepEqual(demoChecks.orderProblems('x', 'Recent Jobs', []), ['no "Recent Jobs" section']);
+});
+
+dbTest('B3 seed:demo: amount-only documents have subtotal = amount, due dates are calendar dates; demo:check totals pass', async () => {
+  const r = run('scripts/seed-demo.js', ['--reset'], { BRAND_TRADE_TYPE: 'electrical' });
+  assert.equal(r.code, 0, r.out);
+  const docs = [...await prisma.quote.findMany({ include: { lines: true } }), ...await prisma.invoice.findMany({ include: { lines: true } })];
+  assert.ok(docs.length);
+  for (const d of docs) {
+    assert.equal(Number(d.subtotal), Number(d.amount), `#${d.id} subtotal ${d.subtotal} amount ${d.amount}`);
+    assert.equal(Number(d.taxTotal), 0);
+  }
+  for (const i of await prisma.invoice.findMany()) assert.equal(i.dueDate.toISOString().slice(10), 'T00:00:00.000Z');
+  const chk = run('scripts/demo-check.js', [], { BRAND_TRADE_TYPE: 'electrical' });
+  assert.match(chk.out, /PASS\s+db\.totals/);
+  assert.match(chk.out, /PASS\s+db\.currency .*USD/);
+  assert.match(chk.out, /PASS\s+db\.wording .*US wording/);
+  // a broken total is caught
+  const q = await prisma.quote.findFirst();
+  await prisma.quote.update({ where: { id: q.id }, data: { subtotal: 0 } });
+  try {
+    const bad = run('scripts/demo-check.js', [], { BRAND_TRADE_TYPE: 'electrical' });
+    assert.equal(bad.code, 1);
+    assert.match(bad.out, /FAIL\s+db\.totals .*quote#/);
+  } finally { await prisma.quote.update({ where: { id: q.id }, data: { subtotal: q.subtotal } }); }
 });

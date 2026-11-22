@@ -10,6 +10,8 @@
 --    index allows one non-void invoice per quote. Backfilled from the activity log
 --    (invoice_created entries carry fromQuoteId).
 -- 4. PriceBookItem.sku: optional stable key for CSV imports (unique when set).
+-- 5. Amount-only documents written with subtotal 0 (old seed:demo) get
+--    subtotal = amount, taxTotal = 0, as the API contract says.
 
 -- AlterTable
 ALTER TABLE "User" ADD COLUMN "sessionVersion" INTEGER NOT NULL DEFAULT 0;
@@ -64,3 +66,11 @@ CREATE UNIQUE INDEX "Invoice_quoteId_live_key" ON "Invoice"("quoteId") WHERE "qu
 -- Pricebook stable key for CSV import
 ALTER TABLE "PriceBookItem" ADD COLUMN "sku" TEXT;
 CREATE UNIQUE INDEX "PriceBookItem_sku_key" ON "PriceBookItem"("sku");
+
+-- Amount-only documents: subtotal = amount (rows without lines whose subtotal was left at 0)
+UPDATE "Quote" q SET "subtotal" = q."amount", "taxTotal" = 0
+ WHERE q."subtotal" = 0 AND q."taxTotal" = 0 AND q."amount" <> 0
+   AND NOT EXISTS (SELECT 1 FROM "QuoteLine" l WHERE l."quoteId" = q."id");
+UPDATE "Invoice" i SET "subtotal" = i."amount", "taxTotal" = 0
+ WHERE i."subtotal" = 0 AND i."taxTotal" = 0 AND i."amount" <> 0
+   AND NOT EXISTS (SELECT 1 FROM "InvoiceLine" l WHERE l."invoiceId" = i."id");

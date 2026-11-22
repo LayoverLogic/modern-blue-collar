@@ -12,6 +12,10 @@
  *   normaliseTrade(raw)         'HVAC ' → 'hvac', 'Plumbing & HVAC' → 'plumbing-hvac'; throws on unknown
  *   buildBrand(env)             the full brand object (plain values, safe to JSON.stringify)
  *   publicBrand(brand, extra)   the fields the front end may see (what /api/brand should return)
+ *   resolveJobType(type, list)  map a US / Irish job type onto a brand's job-type list
+ *
+ * Job types (B3): BRAND_JOB_TYPES (comma list, validated) or the trade's default
+ * list in the wording of BRAND_COUNTRY (IE → JOB_TYPES_IE, else JOB_TYPES).
  *   darken(hex, amount), contrastText(hex), normaliseColor(name, value)
  */
 'use strict';
@@ -44,6 +48,74 @@ const JOB_TYPES = {
   'plumbing-hvac': ['Leak Repair', 'Drain Cleaning', 'Water Heater', 'Fixture Install', 'Sewer Line', 'AC Install', 'Furnace Install', 'AC Repair', 'Furnace Repair', 'Duct Work', 'Tune-Up', 'Inspection', 'Troubleshooting', 'Other'],
   contracting:     ['Framing', 'Drywall', 'Flooring', 'Roofing', 'Painting', 'Demo', 'General Repair', 'Other'],
 };
+
+// Irish wording (BRAND_COUNTRY=IE). Same order / meaning as JOB_TYPES where a
+// US type has an Irish equivalent (JOB_TYPE_EQUIV), plus Irish-only types.
+const JOB_TYPES_IE = {
+  electrical:      ['Consumer Unit Upgrade', 'Socket / Light Install', 'Lighting', 'EV Charger', 'Rewire', 'Generator', 'Inspection & Cert', 'Fault Finding', 'Other'],
+  plumbing:        ['Leak Repair', 'Drain Unblocking', 'Hot Water Cylinder', 'Sanitaryware Install', 'Mains / Sewer Pipe', 'Inspection', 'Fault Finding', 'Other'],
+  hvac:            ['Heat Pump Install', 'Boiler Install', 'Heat Pump Repair', 'Boiler Repair', 'Radiators / Pipework', 'Boiler Service', 'Inspection', 'Other'],
+  'plumbing-hvac': ['Leak Repair', 'Drain Unblocking', 'Hot Water Cylinder', 'Sanitaryware Install', 'Mains / Sewer Pipe', 'Heat Pump Install', 'Boiler Install', 'Heat Pump Repair', 'Boiler Repair', 'Radiators / Pipework', 'Boiler Service', 'Inspection', 'Fault Finding', 'Other'],
+  contracting:     ['Carpentry / Stud Walls', 'Plastering / Slabbing', 'Flooring', 'Roofing', 'Painting & Decorating', 'Strip-Out', 'General Repair', 'Other'],
+};
+const JOB_TYPES_BY_COUNTRY = { US: JOB_TYPES, IE: JOB_TYPES_IE };
+
+// US job type → Irish job type (types not listed keep their name).
+const JOB_TYPE_EQUIV = {
+  IE: {
+    'Panel Upgrade': 'Consumer Unit Upgrade', 'Outlet / Switch': 'Socket / Light Install', Inspection: 'Inspection',
+    Troubleshooting: 'Fault Finding', 'Drain Cleaning': 'Drain Unblocking', 'Water Heater': 'Hot Water Cylinder',
+    'Fixture Install': 'Sanitaryware Install', 'Sewer Line': 'Mains / Sewer Pipe',
+    'AC Install': 'Heat Pump Install', 'Furnace Install': 'Boiler Install', 'AC Repair': 'Heat Pump Repair',
+    'Furnace Repair': 'Boiler Repair', 'Duct Work': 'Radiators / Pipework', 'Tune-Up': 'Boiler Service',
+    Framing: 'Carpentry / Stud Walls', Drywall: 'Plastering / Slabbing', Painting: 'Painting & Decorating', Demo: 'Strip-Out',
+  },
+};
+// electrical IE says "Inspection & Cert" for the US "Inspection"
+const JOB_TYPE_EQUIV_TRADE = { IE: { electrical: { Inspection: 'Inspection & Cert' } } };
+
+/**
+ * The job type to use for `type` (a fixture's / an older row's US wording) on a
+ * brand whose list is `jobTypes`: the type itself if offered, else its
+ * country equivalent, else the reverse (Irish → US), else "Other" if offered,
+ * else the first type. Used by seed:demo so stored types always match the brand.
+ */
+function resolveJobType(type, jobTypes, { tradeType, country } = {}) {
+  if (jobTypes.includes(type)) return type;
+  const cc = String(country || '').toUpperCase();
+  const tradeEq = (JOB_TYPE_EQUIV_TRADE[cc] || {})[tradeType] || {};
+  const cands = [tradeEq[type], (JOB_TYPE_EQUIV[cc] || {})[type]];
+  for (const [, map] of Object.entries(JOB_TYPE_EQUIV)) {
+    for (const [us, local] of Object.entries(map)) if (local === type) cands.push(us);
+  }
+  for (const c of cands) if (c && jobTypes.includes(c)) return c;
+  const lower = jobTypes.find((t) => t.toLowerCase() === String(type).toLowerCase());
+  if (lower) return lower;
+  return jobTypes.includes('Other') ? 'Other' : jobTypes[0];
+}
+
+/**
+ * BRAND_JOB_TYPES="Boiler Service, Leak Repair, Other" — the client's own list
+ * (comma-separated; 1–40 entries, each 1–60 characters, no duplicates,
+ * letters / digits / space and & / ( ) . , ' - + only). Invalid → BrandConfigError.
+ */
+function parseJobTypes(raw) {
+  const v = clean(raw);
+  if (!v) return null;
+  const list = v.split(',').map((x) => x.trim()).filter(Boolean);
+  const bad = (m) => { throw new BrandConfigError(`BRAND_JOB_TYPES="${v.slice(0, 80)}" ${m}. Use a comma-separated list, e.g. BRAND_JOB_TYPES=Boiler Service,Leak Repair,Other`); };
+  if (!list.length) bad('has no job types');
+  if (list.length > 40) bad(`has ${list.length} job types (at most 40)`);
+  const seen = new Set();
+  for (const t of list) {
+    if (t.length > 60) bad(`has a job type longer than 60 characters ("${t.slice(0, 30)}…")`);
+    if (!/^[\p{L}\p{N} &/().'+-]+$/u.test(t)) bad(`has a job type with characters that are not allowed ("${t}")`);
+    const k = t.toLowerCase();
+    if (seen.has(k)) bad(`lists "${t}" twice`);
+    seen.add(k);
+  }
+  return list;
+}
 
 const TECH_LABELS = {
   electrical: 'Electrician',
@@ -148,6 +220,11 @@ function normaliseTimezone(value) {
   return v;
 }
 
+/** Which wording the default job types use: 'IE' for BRAND_COUNTRY=IE, else 'US'. */
+function jobTypesCountry(env) {
+  return clean(env.BRAND_COUNTRY).toUpperCase() === 'IE' ? 'IE' : 'US';
+}
+
 /**
  * Build the brand object from an env-like map. Pure (no process.env access),
  * so tests and seeds can build any trade without touching the real env.
@@ -190,7 +267,11 @@ function buildBrand(env = {}) {
     faviconUrl:     faviconUrl || logoUrl,
     defaultState:   clean(env.BRAND_DEFAULT_STATE) || 'KS',
     industryLabel:  clean(env.BRAND_INDUSTRY_LABEL) || INDUSTRY_LABELS[tradeType],
-    jobTypes:       JOB_TYPES[tradeType].slice(),
+    // BRAND_JOB_TYPES overrides; otherwise the trade's list in the brand
+    // country's wording (BRAND_COUNTRY=IE → Irish names, anything else → US).
+    jobTypes:       parseJobTypes(env.BRAND_JOB_TYPES) || (JOB_TYPES_BY_COUNTRY[jobTypesCountry(env)] || JOB_TYPES)[tradeType].slice(),
+    jobTypesCountry: jobTypesCountry(env),
+    jobTypesCustom: !!parseJobTypes(env.BRAND_JOB_TYPES),
     technicianLabel: clean(env.BRAND_TECH_LABEL) || TECH_LABELS[tradeType],
     timezone:       normaliseTimezone(env.BRAND_TIMEZONE),
   };
@@ -214,7 +295,8 @@ function publicBrand(brand, extra = {}) {
 }
 
 module.exports = {
-  TRADES, INDUSTRY_LABELS, JOB_TYPES, TECH_LABELS, TRADE_PALETTES,
+  TRADES, INDUSTRY_LABELS, JOB_TYPES, JOB_TYPES_IE, JOB_TYPES_BY_COUNTRY, JOB_TYPE_EQUIV, TECH_LABELS, TRADE_PALETTES,
+  resolveJobType, parseJobTypes, jobTypesCountry,
   BrandConfigError, normaliseTrade, normaliseColor, normaliseAssetUrl, normaliseTimezone,
   buildBrand, publicBrand, darken, contrastText,
 };

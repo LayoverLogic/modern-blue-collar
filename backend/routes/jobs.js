@@ -3,7 +3,7 @@
  * CRUD for Jobs. Trade type is derived from brand.config.js.
  *
  * Endpoints:
- *   GET    /api/jobs               — list jobs (with customer & technician); ?status ?technicianId ?date ?limit
+ *   GET    /api/jobs               — list jobs (with customer & technician); ?status ?technicianId ?date ?limit ?sort=schedule|recent; each job has quotes[] / invoices[] + quote / invoice (latest)
  *   GET    /api/jobs/:id           — single job detail
  *   POST   /api/jobs               — create job                       (office roles)
  *   PATCH  /api/jobs/:id           — update job (version required)    (office roles; technician: own job, status/notes only)
@@ -156,10 +156,15 @@ router.get('/', requireAuth, async (req, res, next) => {
     let take;
     if (typeof q.limit === 'string' && q.limit) take = Math.min(parseId(q.limit, 'limit'), 1000);
 
+    // ?sort=schedule (default: date / time ascending) | recent (newest first — dashboard "Recent Jobs")
+    const sort = typeof q.sort === 'string' && q.sort ? q.sort : 'schedule';
+    if (!['schedule', 'recent'].includes(sort)) throw badRequest('sort must be schedule or recent', { code: 'INVALID_ENUM', field: 'sort', allowed: ['schedule', 'recent'] });
     const jobs = await prisma.job.findMany({
       where,
       include: LIST_INCLUDE,
-      orderBy: [{ scheduledDate: 'asc' }, { scheduledTime: 'asc' }, { createdAt: 'desc' }],
+      orderBy: sort === 'recent'
+        ? [{ createdAt: 'desc' }, { id: 'desc' }]
+        : [{ scheduledDate: 'asc' }, { scheduledTime: 'asc' }, { createdAt: 'desc' }],
       ...(take ? { take } : {}),
     });
     res.json(jobs.map((j) => redactJob(req.user, withDocs(j))));

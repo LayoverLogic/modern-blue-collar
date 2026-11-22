@@ -50,7 +50,7 @@ router.post('/from-quote/:quoteId', requireAuth, requireRole(...BILLING), async 
     const existing = await prisma.invoice.findFirst({ where: { quoteId: quote.id, status: { not: 'void' } }, select: { id: true, number: true } });
     if (existing) throw conflict(`Quote ${quote.number} was already invoiced as ${existing.number}`, { code: 'DUPLICATE', invoiceId: existing.id });
     const d = { status: 'unpaid' };
-    if (body.dueDate !== undefined) d.dueDate = v.date(body.dueDate, 'dueDate');
+    if (body.dueDate !== undefined) d.dueDate = require('../helpers/calendarDate').calendarDate(body.dueDate, 'dueDate', require('../../brand.config').timezone);
     d.notes = body.notes !== undefined ? v.str(body.notes, 'notes', { max: 5000 }) : quote.notes;
     const lines = quote.lines.map((l) => ({
       position: l.position, description: l.description, quantity: String(l.quantity), unitPrice: String(l.unitPrice),

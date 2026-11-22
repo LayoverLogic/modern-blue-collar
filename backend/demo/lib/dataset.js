@@ -22,6 +22,7 @@
 
 const { localDate, addDays, zonedToUtc } = require('./dates');
 const { loadTrade } = require('./fixtures');
+const { JOB_TYPES_BY_COUNTRY, resolveJobType } = require('../../helpers/brandValidate');
 
 // ── deterministic RNG ───────────────────────────────────────────────────────
 function hash32(str) {
@@ -242,14 +243,20 @@ function buildDataset({ brand, prospect, locale, now = new Date(), seed } = {}) 
   // ── jobs ──────────────────────────────────────────────────────────────────
   const nJobs = Math.min(30, Math.max(6, (prospect.counts && prospect.counts.jobs) || 14));
   const plan = extendPlan(schedulePlan(termsDays), nJobs);
+  // every trade fixture has >= 30 templates (the most a prospect may ask for), so
+  // titles never repeat; tests/whitelabel.test.js checks that for each trade × country
   const templates = rng.shuffle(trade.jobs);
   const jobs = [];
   let resI = 0; let comI = 0; let techI = 0;
   plan.forEach((slot, i) => {
     const t = templates[i % templates.length];
-    if (!brand.jobTypes.includes(t.type)) {
-      throw new Error(`Trade fixture ${brand.tradeType}: job "${t.title}" has type "${t.type}", not one of brand.jobTypes`);
+    // The fixture's type (US wording, or loc.<CC>.type) mapped onto the brand's list
+    // (country wording or BRAND_JOB_TYPES) — stored job types always match /api/brand.
+    const known = [...(JOB_TYPES_BY_COUNTRY.US[brand.tradeType] || []), ...(JOB_TYPES_BY_COUNTRY.IE[brand.tradeType] || [])];
+    if (!known.includes(t.type)) {
+      throw new Error(`Trade fixture ${brand.tradeType}: job "${t.title}" has type "${t.type}", not a ${brand.tradeType} job type`);
     }
+    const jobType = resolveJobType(t.type, brand.jobTypes, { tradeType: brand.tradeType, country: brand.jobTypesCountry || locale.code });
     const lines = (t.items || []).map(([ref, qty]) => {
       const p = priceByBase.get(ref);
       if (!p) throw new Error(`Trade fixture ${brand.tradeType}: job "${t.baseName}" refers to unknown pricebook item "${ref}"`);
@@ -271,8 +278,8 @@ function buildDataset({ brand, prospect, locale, now = new Date(), seed } = {}) 
     const durationH = t.durationH || 2;
     const completedAt = slot.status === 'completed' ? new Date(scheduledAt.getTime() + Math.min(durationH, 10) * 3600000) : null;
     const created = scheduledAt && scheduledAt.getTime() <= nowMs
-      ? scheduledAt.getTime() - rng.int(2, 9) * 86400000
-      : nowMs - rng.int(1, 4) * 86400000;
+      ? scheduledAt.getTime() - rng.int(2, 9) * 86400000 - i * 7 * 60000
+      : nowMs - rng.int(1, 4) * 86400000 - i * 7 * 60000; // distinct times: "Recent Jobs" has one true order
 
     let quote = null;
     if (slot.quote || amount >= 750) {
@@ -283,7 +290,8 @@ function buildDataset({ brand, prospect, locale, now = new Date(), seed } = {}) 
     let invoice = null;
     if (slot.status === 'completed' && slot.invoice) {
       const completedYmd = localDate(completedAt, tz);
-      const due = zonedToUtc(addDays(completedYmd, termsDays), '17:00', tz);
+      // calendar date, canonical UTC midnight (helpers/calendarDate.js)
+      const due = new Date(`${addDays(completedYmd, termsDays)}T00:00:00.000Z`);
       const paid = slot.invoice === 'paid' ? new Date(completedAt.getTime() + 4 * 86400000) : null;
       invoice = {
         amount,
@@ -307,7 +315,7 @@ function buildDataset({ brand, prospect, locale, now = new Date(), seed } = {}) 
     jobs.push({
       key: `j${i + 1}`,
       title: t.title,
-      type: t.type,
+      type: jobType,
       status: slot.status,
       priority: t.priority || (urgent && slot.status !== 'completed' ? 'high' : slot.status === 'pending' ? 'low' : 'normal'),
       tradeType: brand.tradeType,

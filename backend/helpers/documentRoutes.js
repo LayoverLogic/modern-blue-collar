@@ -36,6 +36,7 @@ const prisma = require('./prisma');
 const { getLocale } = require('./locale');
 const { sendMail, describeMailError, mailFailedError } = require('./mailer');
 const docs = require('./documents');
+const cal = require('./calendarDate');
 const activity = require('./activity');
 
 const LINES = { orderBy: { position: 'asc' } };
@@ -58,10 +59,14 @@ function mountDocumentRoutes(router, cfg) {
     if (body.notes !== undefined) d.notes = v.str(body.notes, 'notes', { max: 5000 });
     if (body.reverseCharge !== undefined) d.reverseCharge = v.bool(body.reverseCharge, 'reverseCharge');
     if (body.issuedAt !== undefined) {
-      const at = v.date(body.issuedAt, 'issuedAt');
+      // a bare 'YYYY-MM-DD' is that day in the brand time zone (noon), not UTC midnight
+      const at = typeof body.issuedAt === 'string' && cal.YMD.test(body.issuedAt.trim())
+        ? (cal.validYmd(body.issuedAt.trim()) ? cal.zonedNoon(body.issuedAt.trim(), brand.timezone) : v.date('x', 'issuedAt'))
+        : v.date(body.issuedAt, 'issuedAt');
       if (at) d.issuedAt = at; else if (!create) throw badRequest('issuedAt cannot be cleared', { code: 'INVALID_INPUT', field: 'issuedAt' });
     }
-    if (type === 'invoice' && body.dueDate !== undefined) d.dueDate = v.date(body.dueDate, 'dueDate');
+    // dueDate is a calendar date: stored at UTC midnight (helpers/calendarDate.js)
+    if (type === 'invoice' && body.dueDate !== undefined) d.dueDate = cal.calendarDate(body.dueDate, 'dueDate', brand.timezone);
     return d;
   }
 

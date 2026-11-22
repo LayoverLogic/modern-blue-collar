@@ -250,6 +250,8 @@ const apiLimiter = rateLimit({
 // Counters are in memory (one process): a restart clears them.
 const LOGIN_WINDOW = 15 * 60 * 1000;
 const LOGIN_MSG = { error: 'Too many login attempts, please try again later.', code: 'RATE_LIMITED' };
+// a 2xx/3xx is a success; a 429 from the other limiter is not charged as a failure either
+const notAFailure = (_req, res) => res.statusCode < 400 || res.statusCode === 429;
 const ipKey = (req) => rateLimit.ipKeyGenerator(req.ip || '');
 const loginEmail = (req) => {
   const e = req.body && typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase().slice(0, 254) : '';
@@ -259,6 +261,7 @@ const loginPerEmailLimiter = rateLimit({
   windowMs: LOGIN_WINDOW,
   limit: envInt('LOGIN_MAX_PER_EMAIL', 10),
   skipSuccessfulRequests: true,
+  requestWasSuccessful: notAFailure,
   keyGenerator: (req) => `${ipKey(req)}|${loginEmail(req)}`,
   standardHeaders: true, legacyHeaders: false,
   message: LOGIN_MSG,
@@ -267,6 +270,7 @@ const loginPerIpLimiter = rateLimit({
   windowMs: LOGIN_WINDOW,
   limit: envInt('LOGIN_MAX_PER_IP', 50),
   skipSuccessfulRequests: true,
+  requestWasSuccessful: notAFailure,
   keyGenerator: ipKey,
   standardHeaders: true, legacyHeaders: false,
   message: LOGIN_MSG,
@@ -417,6 +421,12 @@ try {
 // prefix stored in "DocumentCounter": keep it in step with BRAND_*_PREFIX.
 require('./helpers/prisma').$executeRaw`UPDATE "DocumentCounter" SET "prefix" = CASE "type" WHEN 'quote' THEN ${brand.locale.quotePrefix} ELSE ${brand.locale.invoicePrefix} END`
   .catch((e) => console.warn('[BOOT] could not sync document number prefixes:', e.message));
+// Invoice due dates are calendar dates stored at UTC midnight (helpers/calendarDate.js).
+// Rows written earlier as an instant (e.g. seed:demo's 17:00 local → 23:00Z) are
+// rewritten once to their calendar date in the brand time zone. Idempotent.
+require('./helpers/prisma').$executeRawUnsafe(require('./helpers/calendarDate').normaliseDueDatesSql(), brand.timezone)
+  .then((n) => { if (n) console.log(`[BOOT] normalised ${n} invoice due date(s) to calendar dates`); })
+  .catch((e) => console.warn('[BOOT] could not normalise invoice due dates:', e.message));
 
 // HOST: interface to listen on. Unset = all interfaces (Docker / production
 // behind a proxy). `npm run sandbox` defaults it to 127.0.0.1.

@@ -24,6 +24,7 @@ const { Prisma } = require('@prisma/client');
 const { badRequest, HttpError } = require('./httpError');
 const v = require('./validate');
 const { getLocale, formatMoney, formatDate } = require('./locale');
+const { ymdOf } = require('./calendarDate');
 
 const D = Prisma.Decimal;
 const HALF_UP = D.ROUND_HALF_UP;
@@ -211,7 +212,8 @@ function printView(type, doc, brand, locale = getLocale()) {
     status: doc.status,
     currency,
     issuedAt: doc.issuedAt,
-    dueDate: doc.dueDate || null,
+    // calendar date 'YYYY-MM-DD' (stored at UTC midnight; never shifted by a time zone)
+    dueDate: doc.dueDate ? ymdOf(doc.dueDate) : null,
     seller: {
       companyName: brand.companyName, address: brand.companyAddress || '', phone: brand.companyPhone || '',
       email: brand.companyEmail || '', logoUrl: brand.logoUrl || '', taxNumber: locale.taxNumber, taxLabel: locale.taxLabel,
@@ -234,7 +236,7 @@ function printView(type, doc, brand, locale = getLocale()) {
     notes: doc.notes || '',
     formatted: {
       subtotal: money(doc.subtotal), taxTotal: money(doc.taxTotal), total: money(doc.amount),
-      issuedAt: short(doc.issuedAt), dueDate: short(doc.dueDate),
+      issuedAt: short(doc.issuedAt), dueDate: doc.dueDate ? short(ymdOf(doc.dueDate)) : '',
       taxBreakdown: breakdown.map((g) => ({ label: `${locale.taxLabel} ${g.rate}%`, net: money(g.net), tax: money(g.tax) })),
     },
   };
@@ -265,7 +267,10 @@ function renderEmail(view, { message = '' } = {}) {
     if (!view.formatted.taxBreakdown.length) t.push(`${view.taxLabel}: ${view.formatted.taxTotal}`);
   }
   t.push(`Total: ${view.formatted.total}`);
-  if (view.reverseChargeNote) t.push('', view.reverseChargeNote);
+  // The default wording is an accountant-to-confirm PLACEHOLDER: never send it to a customer
+  // (same rule as the print view).
+  const rcNote = view.reverseChargeNote && !view.reverseChargeNoteIsPlaceholder ? view.reverseChargeNote : '';
+  if (rcNote) t.push('', rcNote);
   if (view.notes) t.push('', view.notes);
   t.push('', view.seller.companyName);
   for (const x of [view.seller.address, view.seller.phone, view.seller.email]) if (x) t.push(x);
@@ -290,7 +295,7 @@ ${view.lines.length ? `<table style="border-collapse:collapse;margin-top:12px" b
 <th style="padding:4px 8px;text-align:right">Unit price</th>${showTax ? `<th style="padding:4px 8px;text-align:right">${esc(view.taxLabel)}</th>` : ''}
 <th style="padding:4px 8px;text-align:right">Amount</th></tr></thead><tbody>${rows}</tbody></table>` : ''}
 <table style="margin-top:12px">${taxRows}<tr><td><strong>Total</strong></td><td style="text-align:right"><strong>${esc(view.formatted.total)}</strong></td></tr></table>
-${view.reverseChargeNote ? `<p><em>${esc(view.reverseChargeNote)}</em></p>` : ''}
+${rcNote ? `<p><em>${esc(rcNote)}</em></p>` : ''}
 ${view.notes ? `<p>${esc(view.notes).replace(/\n/g, '<br>')}</p>` : ''}
 <p style="margin-top:24px">${esc(view.seller.companyName)}${[view.seller.address, view.seller.phone, view.seller.email].filter(Boolean).map((x) => `<br>${esc(x)}`).join('')}
 ${view.seller.taxNumber ? `<br>${esc(view.seller.taxLabel)} no.: ${esc(view.seller.taxNumber)}` : ''}</p>

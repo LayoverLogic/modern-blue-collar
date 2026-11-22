@@ -360,3 +360,4 @@ router.delete('/:id', requireAuth, requireSession, requireRole(...SUPER_ADMIN), 
 });
 
 module.exports = router;
+module.exports.assertNotLastSuperAdmin = assertNotLastSuperAdmin;

@@ -163,7 +163,18 @@ router.post('/logout', (_req, res) => {
 
 // ── Forgot / reset password (GAP-1) ──────────────────────────────────────────
 const FORGOT_MESSAGE = 'If an account exists for that email address, a password reset link has been sent to it.';
-const MAX_RESETS_PER_WINDOW = 3; // per account per 15 min (silently ignored beyond)
+const MAX_RESETS_PER_WINDOW = 3; // per account per 15 min (silently ignored beyond; in memory)
+const RESET_WINDOW_MS = 15 * 60 * 1000;
+const resetsByUser = new Map(); // userId → timestamps of reset mails sent
+function resetAllowed(userId) {
+  const now = Date.now();
+  const recent = (resetsByUser.get(userId) || []).filter((t) => t > now - RESET_WINDOW_MS);
+  if (recent.length >= MAX_RESETS_PER_WINDOW) { resetsByUser.set(userId, recent); return false; }
+  recent.push(now);
+  resetsByUser.set(userId, recent);
+  if (resetsByUser.size > 10000) resetsByUser.clear(); // bounded
+  return true;
+}
 
 async function sendResetEmail(req, user, link, expiresAt) {
   const brand = require('../../brand.config');
@@ -191,10 +202,7 @@ router.post('/forgot', async (req, res, next) => {
 
     const user = await prisma.user.findUnique({ where: { email: raw } });
     if (user && user.active) {
-      const recent = await prisma.authToken.count({
-        where: { userId: user.id, kind: 'reset', createdAt: { gt: new Date(Date.now() - 15 * 60 * 1000) } },
-      });
-      if (recent < MAX_RESETS_PER_WINDOW) {
+      if (resetAllowed(user.id)) {
         const { token, expiresAt } = await tokens.issueToken(prisma, { userId: user.id, kind: 'reset' });
         const link = tokens.resetLink(req, token);
         // Not awaited: the answer must not reveal (by timing) that the account exists.
