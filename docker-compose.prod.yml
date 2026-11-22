@@ -1,0 +1,107 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Modern Blue Collar — PRODUCTION stack: one client per VPS.
+#
+#   app       Node app (migrations on start, nightly backup cron inside)
+#   postgres  PostgreSQL 16, data in the `pgdata` volume, NOT published
+#   caddy     the ONLY published service: 80/443, automatic Let's Encrypt TLS
+#
+# Created and configured by deploy/provision.sh, which writes ./.env (chmod 600)
+# from deploy/clients/<slug>.env. That .env sets COMPOSE_FILE to this file, so
+# in the repo directory a plain `docker compose ps|logs|exec` uses it.
+# Updates: deploy/update.sh. Full guide: DEPLOYMENT.md.
+#
+# Why nothing but Caddy has `ports:` — Docker-published ports bypass ufw, so a
+# published 5432 or 3001 would be reachable from the internet whatever the
+# firewall says. The app is reached only over the compose network.
+#
+# Host directories (MBC_DATA_DIR, default /opt/mbc/data; owned by uid 1000):
+#   uploads/  job photos when STORAGE_DRIVER=local   → /data/uploads
+#   backups/  local copies of each nightly backup set → /data/backups
+# ─────────────────────────────────────────────────────────────────────────────
+name: ${COMPOSE_PROJECT_NAME:-mbc}
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PG_CLIENT_MAJOR: "16"
+    image: mbc-app:current
+    restart: unless-stopped
+    env_file:
+      - .env
+    # These win over anything in .env: production can never boot in demo or
+    # sandbox mode by an .env edit, and paths/ports match the mounts below.
+    environment:
+      NODE_ENV: production
+      DEMO_MODE: "false"
+      SANDBOX_MODE: "false"
+      PORT: "3001"
+      TRUST_PROXY: "1"
+      BACKUP_DIR: /data/backups
+      LOCAL_STORAGE_DIR: /data/uploads
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mbc}:${POSTGRES_PASSWORD:?run deploy/provision.sh first}@postgres:5432/${POSTGRES_DB:-mbc}?schema=public
+    volumes:
+      - ${MBC_DATA_DIR:-/opt/mbc/data}/uploads:/data/uploads
+      - ${MBC_DATA_DIR:-/opt/mbc/data}/backups:/data/backups
+    expose:
+      - "3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    logging: *logging
+
+  postgres:
+    # pg_dump in the app image is v16 (Dockerfile PG_CLIENT_MAJOR); keep them
+    # in step. A major upgrade needs dump + restore, not just a new tag.
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mbc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run deploy/provision.sh first}
+      POSTGRES_DB: ${POSTGRES_DB:-mbc}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # No `ports:` on purpose.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mbc} -d ${POSTGRES_DB:-mbc}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    logging: *logging
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN in deploy/clients/<slug>.env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in deploy/clients/<slug>.env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data        # certificates — keep this volume
+      - caddy_config:/config
+    depends_on:
+      - app
+    logging: *logging
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

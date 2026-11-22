@@ -11,11 +11,24 @@
 # Node 22 LTS (Prisma 7 needs ^20.19 || ^22.12 || >=24).
 FROM node:22-bookworm-slim
 
-# postgresql-client: provides pg_dump for the nightly DB backup job
-# (bookworm ships v15, matching the postgres:15 compose service).
+# PostgreSQL client tools (pg_dump for the nightly backup, psql for
+# scripts/restore.mjs) from the PostgreSQL project's apt repo, so the client
+# major version is chosen here instead of whatever Debian ships (bookworm = 15).
+# pg_dump must be >= the server's major version: 16 serves the production
+# compose file (postgres:16) and the demo compose file (postgres:15) alike.
+# Override with --build-arg PG_CLIENT_MAJOR=17 if the server is ever upgraded.
+ARG PG_CLIENT_MAJOR=16
 RUN apt-get update \
- && apt-get install -y --no-install-recommends postgresql-client \
- && rm -rf /var/lib/apt/lists/*
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && install -d /usr/share/postgresql-common/pgdg \
+ && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+ && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends "postgresql-client-${PG_CLIENT_MAJOR}" \
+ && apt-get purge -y curl && apt-get autoremove -y \
+ && rm -rf /var/lib/apt/lists/* \
+ && pg_dump --version | grep -q " ${PG_CLIENT_MAJOR}\." \
+ && psql --version
 
 WORKDIR /app/backend
 
@@ -39,8 +52,13 @@ COPY backend ./backend
 WORKDIR /app/backend
 RUN npm run generate
 
+# Runtime dirs (backups, local uploads) exist in the image and belong to
+# `node`, so a fresh named volume mounted there is writable. Production mounts
+# host dirs at /data/* instead (deploy/provision.sh chowns them to uid 1000).
+RUN mkdir -p /app/backend/backups /app/backend/storage /data/backups /data/uploads \
+ && chown -R node:node /app /data
+
 # Drop privileges.
-RUN chown -R node:node /app
 USER node
 
 ENV NODE_ENV=production
