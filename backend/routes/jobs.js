@@ -11,6 +11,12 @@
  *   DELETE /api/jobs/:id           — delete job + its photo files     (admin+)
  *   GET    /api/jobs/types         — trade-specific job type list
  *   GET/POST/DELETE /api/jobs/:id/photos[...]                         (anyone who can see the job)
+ *   GET    /api/jobs/:id/activity  — activity log, newest first        (anyone who can see the job; routes/activity.js)
+ *
+ * Activity log (GTM-18): every create / update / delete / photo change writes
+ * JobActivity entries (helpers/activity.js) in the same transaction as the
+ * change — created, status_changed, assigned, rescheduled, note, updated,
+ * photo_added, photo_removed, deleted (a tombstone that survives the job).
  *
  * Rules: status ∈ pending|scheduled|in-progress|completed|cancelled (RT-12);
  * completedAt is set on → completed and cleared when a job leaves completed;
@@ -31,6 +37,8 @@ const { sniffImage, isServableImage } = require('../helpers/imageSniff');
 const v = require('../helpers/validate');
 const storage = require('../helpers/storage');
 const brand   = require('../../brand.config');
+const activity = require('../helpers/activity');
+const { jobActivity } = require('./activity');
 
 const prisma = require('../helpers/prisma');
 
@@ -189,7 +197,9 @@ router.post('/', requireAuth, requireRole(...OFFICE), async (req, res, next) => 
     const job = await prisma.$transaction(async (tx) => {
       await assertReferences(tx, data);
       await assertNoOverlap(tx, data);
-      return tx.job.create({ data, include: WRITE_INCLUDE });
+      const created = await tx.job.create({ data, include: WRITE_INCLUDE });
+      await activity.log(tx, req, created.id, 'created', { to: activity.snapshot(created) });
+      return created;
     });
     res.status(201).json(job);
   } catch (err) { next(err); }
@@ -224,7 +234,10 @@ async function updateJob(req, res, next) {
       const scheduleTouched = ['technicianId', 'scheduledDate', 'scheduledTime', 'duration', 'status'].some((k) => k in d);
       if (scheduleTouched) await assertNoOverlap(tx, merged);
 
-      return optimisticUpdate('job', id, { ...d, version: body.version }, { include: WRITE_INCLUDE, client: tx });
+      const updated = await optimisticUpdate('job', id, { ...d, version: body.version }, { include: WRITE_INCLUDE, client: tx });
+      const names = await activity.userNames([full.technicianId, updated.technicianId], tx);
+      await activity.logMany(tx, req, id, activity.diffEvents(full, updated, names));
+      return updated;
     });
     res.json(job);
   } catch (err) { next(err); }
@@ -238,8 +251,16 @@ router.delete('/:id', requireAuth, requireRole(...ADMIN), async (req, res, next)
     const id = parseId(req.params.id);
     const photos = await prisma.jobPhoto.findMany({ where: { jobId: id }, select: { key: true } });
     // Deleting the row first: if it is still referenced (invoice, quote, parts)
-    // this throws P2003 → 409 and the photos stay intact.
-    await prisma.job.delete({ where: { id } }); // JobPhoto rows cascade
+    // this throws P2003 → 409, the transaction (and its tombstone) rolls back
+    // and the photos stay intact.
+    await prisma.$transaction(async (tx) => {
+      const job = await tx.job.findUnique({ where: { id } });
+      if (!job) throw notFound('Job not found');
+      // Tombstone first (jobId still valid); the FK then detaches every entry
+      // of this job (jobId → NULL, jobRef keeps the id).
+      await activity.log(tx, req, id, 'deleted', { from: { ...activity.snapshot(job), photos: photos.length } });
+      await tx.job.delete({ where: { id } }); // JobPhoto rows cascade
+    });
     const failed = [];
     for (const p of photos) {
       // eslint-disable-next-line no-await-in-loop
@@ -291,16 +312,28 @@ router.post('/:id/photos', requireAuth, upload.single('photo'), async (req, res,
 
     await storage.putObject(key, req.file.buffer, sniffed.mime);
 
-    const photo = await prisma.jobPhoto.create({
-      data: {
-        jobId,
-        key,
-        originalName: String(req.file.originalname || '').slice(0, 200),
-        contentType:  sniffed.mime,
-        size:         req.file.size,
-        uploadedById: req.user.id,
-      },
-    });
+    let photo;
+    try {
+      photo = await prisma.$transaction(async (tx) => {
+        const p = await tx.jobPhoto.create({
+          data: {
+            jobId,
+            key,
+            originalName: String(req.file.originalname || '').slice(0, 200),
+            contentType:  sniffed.mime,
+            size:         req.file.size,
+            uploadedById: req.user.id,
+          },
+        });
+        await activity.log(tx, req, jobId, 'photo_added', {
+          to: { photoId: p.id, originalName: p.originalName, contentType: p.contentType, size: p.size },
+        });
+        return p;
+      });
+    } catch (e) {
+      await storage.deleteObject(key).catch(() => {}); // no orphan object without a row
+      throw e;
+    }
     res.status(201).json(photoView(photo));
   } catch (err) {
     // Surface object-storage connectivity problems as 503 instead of a generic 500.
@@ -341,10 +374,16 @@ router.delete('/:id/photos/:photoId', requireAuth, async (req, res, next) => {
     await assertJobAccess(req.user, jobId);
     const photo = await prisma.jobPhoto.findUnique({ where: { id: photoId } });
     if (!photo || photo.jobId !== jobId) throw notFound('Photo not found');
-    await prisma.jobPhoto.delete({ where: { id: photo.id } });
+    await prisma.$transaction(async (tx) => {
+      await tx.jobPhoto.delete({ where: { id: photo.id } });
+      await activity.log(tx, req, jobId, 'photo_removed', { from: { photoId: photo.id, originalName: photo.originalName } });
+    });
     await storage.deleteObject(photo.key).catch((e) => console.warn(`[JOBS] could not remove ${photo.key}: ${e.message}`));
     res.json({ success: true });
   } catch (err) { next(err); }
 });
+
+// ── GET /api/jobs/:id/activity — append-only log (no write routes) ───────────
+router.get('/:id/activity', requireAuth, jobActivity);
 
 module.exports = router;

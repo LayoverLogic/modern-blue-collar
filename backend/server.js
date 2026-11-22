@@ -217,6 +217,7 @@ app.use('/api/exports',         require('./routes/exports'));
 app.use('/api/invites',         require('./routes/invites'));
 app.use('/api/communications',  require('./routes/communications'));
 app.use('/api/api-keys',        require('./routes/apiKeys'));
+app.use('/api/activity',        require('./routes/activity').router);
 
 const demoMode = () => process.env.DEMO_MODE === 'true' && !isProduction();
 

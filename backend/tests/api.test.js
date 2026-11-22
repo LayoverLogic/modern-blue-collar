@@ -115,7 +115,7 @@ async function cleanup({ olderThan } = {}) {
   const ownJobs = jobIds.filter((id) => !foreign.includes(id));
 
   await prisma.$transaction(async (tx) => {
-    if (tx.jobActivity) await tx.jobActivity.deleteMany({ where: { jobRef: { in: ownJobs } } });
+    await tx.jobActivity.deleteMany({ where: { jobRef: { in: ownJobs } } });
     await tx.jobPhoto.deleteMany({ where: { jobId: { in: ownJobs } } });
     await tx.jobPart.deleteMany({ where: { jobId: { in: ownJobs } } });
     await tx.quote.deleteMany({ where: { jobId: { in: ownJobs } } });

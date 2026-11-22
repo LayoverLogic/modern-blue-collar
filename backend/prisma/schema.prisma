@@ -222,3 +222,28 @@ model IntegrationToken {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 }
+
+// ─── JobActivity ──────────────────────────────────────────────────────────────
+// Append-only activity log per job (GTM-18). Written by helpers/activity.js in
+// the same transaction as the change; read via GET /api/jobs/:id/activity and
+// GET /api/activity. Migration: 20261121150000_job_activity.
+// jobId has a database FK to Job.id with ON DELETE SET NULL (declared in the
+// migration, deliberately not as a Prisma relation so the Job model is
+// untouched); jobRef keeps the job id after the job is deleted (tombstones).
+// actorUserId / actorApiKeyId have no FK so the row outlives the user / key.
+// Append-only: no update/delete route. type ∈ helpers/activity.js TYPES (DB CHECK).
+model JobActivity {
+  id            Int      @id @default(autoincrement())
+  jobId         Int?
+  jobRef        Int
+  actorUserId   Int?
+  actorApiKeyId Int?
+  type          String
+  from          Json?
+  to            Json?
+  createdAt     DateTime @default(now())
+
+  @@index([jobId, createdAt])
+  @@index([jobRef])
+  @@index([createdAt])
+}
