@@ -5,8 +5,15 @@
  *   NODE_ENV=production  → refuse to boot if JWT_SECRET is missing, shorter than
  *                          32 characters, or one of the values ever published in
  *                          this repo's examples / docs.
- *   anything else        → allowed, with a loud warning. A missing secret gets a
- *                          random per-process secret (sessions end on restart).
+ *   anything else        → a missing secret gets a random per-process secret
+ *                          (sessions end on restart), with a warning. A KNOWN
+ *                          value (published in this repo, or a placeholder such
+ *                          as __GENERATE_ON_FIRST_RUN__) is refused — anyone
+ *                          could forge tokens with it — unless SANDBOX_MODE=true,
+ *                          where it is replaced by a random per-process secret
+ *                          (never used as is). `npm run sandbox` writes a random
+ *                          secret into the env file instead. Short / low-variety
+ *                          secrets only warn outside production.
  *
  * DEMO_MODE policy (RT-23): DEMO_MODE=true with NODE_ENV=production refuses to
  * boot — demo mode advertises demo credentials and seeds default passwords.
@@ -21,7 +28,7 @@ const jwt    = require('jsonwebtoken');
 const MIN_SECRET_LENGTH = 32;
 
 // Values that have appeared in this repo (examples, docs, tests). Never secret.
-const { PUBLISHED_SECRETS } = require('./publishedSecrets');
+const { PUBLISHED_SECRETS, isKnownSecret } = require('./publishedSecrets');
 
 const isProduction = () => process.env.NODE_ENV === 'production';
 
@@ -85,10 +92,21 @@ function checkBootConfig() {
   const prod = isProduction();
 
   const problem = jwtSecretProblem(process.env.JWT_SECRET);
+  let replaceSecret = false;
+  const gen = 'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))"';
   if (problem) {
-    if (prod) fatal.push(`${problem}. Generate one with: node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`);
+    if (prod) fatal.push(`${problem}. ${gen}`);
     else if (!process.env.JWT_SECRET) warnings.push('JWT_SECRET is not set — using a random per-process secret (all sessions end when the server restarts). Set JWT_SECRET to keep sessions across restarts.');
-    else warnings.push(`${problem} — acceptable only because NODE_ENV is not "production". Never deploy this value.`);
+    else if (isKnownSecret(process.env.JWT_SECRET)) {
+      // A public value lets anyone on the network forge a session token —
+      // in development too (the dev server listens beyond localhost).
+      if (process.env.SANDBOX_MODE === 'true') {
+        replaceSecret = true;
+        warnings.push(`${problem} — SANDBOX_MODE=true, so it is replaced by a random per-process secret (sessions end when the server restarts). Run \`npm run sandbox\` (it writes a random secret into the env file) or set JWT_SECRET.`);
+      } else {
+        fatal.push(`${problem} — refused outside production too (anyone could forge tokens). ${gen}, or use SANDBOX_MODE=true to run on a generated per-process secret.`);
+      }
+    } else warnings.push(`${problem} — acceptable only because NODE_ENV is not "production". Never deploy this value.`);
   }
 
   try { jwt.sign({}, 'x'.repeat(32), { expiresIn: jwtExpires() }); } catch (e) {
@@ -102,17 +120,21 @@ function checkBootConfig() {
   if (prod && process.env.SANDBOX_MODE === 'true') {
     warnings.push('SANDBOX_MODE=true in production — Twilio / QuickBooks / Google are disabled.');
   }
-  return { fatal, warnings };
+  return { fatal, warnings, replaceSecret };
 }
 
 /** Print warnings; on fatal problems print them and exit(1). */
 function assertBootConfig({ exit = true, log = console } = {}) {
-  const { fatal, warnings } = checkBootConfig();
+  const { fatal, warnings, replaceSecret } = checkBootConfig();
   for (const w of warnings) log.warn(`[CONFIG] WARNING: ${w}`);
   if (fatal.length) {
     for (const f of fatal) log.error(`[CONFIG] FATAL: ${f}`);
     log.error('[CONFIG] Refusing to start. Fix the configuration above.');
     if (exit) process.exit(1);
+  }
+  if (replaceSecret && !fatal.length) {
+    process.env.JWT_SECRET = crypto.randomBytes(32).toString('hex');
+    process.env.MBC_EPHEMERAL_JWT_SECRET = 'true';
   }
   getJwtSecret();
   return { fatal, warnings };
@@ -120,6 +142,6 @@ function assertBootConfig({ exit = true, log = console } = {}) {
 
 module.exports = {
   MIN_SECRET_LENGTH, PUBLISHED_SECRETS,
-  isProduction, jwtSecretProblem, getJwtSecret, jwtExpires,
+  isProduction, isKnownSecret, jwtSecretProblem, getJwtSecret, jwtExpires,
   signToken, verifyToken, checkBootConfig, assertBootConfig,
 };

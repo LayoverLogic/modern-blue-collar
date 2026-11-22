@@ -361,8 +361,11 @@ try {
 require('./helpers/prisma').$executeRaw`UPDATE "DocumentCounter" SET "prefix" = CASE "type" WHEN 'quote' THEN ${brand.locale.quotePrefix} ELSE ${brand.locale.invoicePrefix} END`
   .catch((e) => console.warn('[BOOT] could not sync document number prefixes:', e.message));
 
-server.listen(PORT, () => {
-  console.log(`[${brand.companyName}] Server running on port ${PORT} | trade=${brand.tradeType}`);
+// HOST: interface to listen on. Unset = all interfaces (Docker / production
+// behind a proxy). `npm run sandbox` defaults it to 127.0.0.1.
+const HOST = String(process.env.HOST || '').trim() || undefined;
+server.listen(PORT, HOST, () => {
+  console.log(`[${brand.companyName}] Server running on ${HOST ? `${HOST}:` : 'port '}${PORT} | trade=${brand.tradeType}`);
 });
 
 module.exports = { app, server };

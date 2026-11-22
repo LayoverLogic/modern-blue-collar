@@ -17,4 +17,12 @@ const PUBLISHED_SECRETS = new Set([
   'your_jwt_secret',
 ]);
 
-module.exports = { PUBLISHED_SECRETS };
+/** True for values that are public knowledge: published in this repo or an obvious placeholder. */
+function isKnownSecret(secret) {
+  if (secret == null) return false;
+  const s = String(secret).trim();
+  if (!s) return false;
+  return PUBLISHED_SECRETS.has(s.toLowerCase()) || /^(placeholder|change[-_ ]?me|your[-_ ]|<.*>$|__.*__$)/i.test(s);
+}
+
+module.exports = { PUBLISHED_SECRETS, isKnownSecret };

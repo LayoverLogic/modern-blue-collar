@@ -930,3 +930,146 @@ test('2c sockets: deactivating, demoting or deleting a user disconnects their li
   assert.equal(await sock.dropped(500), false, 'a name change dropped the socket');
   sock.close();
 });
+
+// ── Published JWT secrets, sandbox env files, loopback binding (2c security) ──
+const jwtLib = require('jsonwebtoken');
+
+test('2c non-production refuses a published / placeholder JWT_SECRET unless SANDBOX_MODE generates one', async () => {
+  const placeholder = '__GENERATE_ON_FIRST_RUN__';
+  const r = spawnSync(process.execPath, ['server.js'], {
+    cwd: BACKEND, encoding: 'utf8', timeout: 20000,
+    env: { PATH: process.env.PATH, ENV_FILE: '/dev/null', NODE_ENV: 'development', JWT_SECRET: placeholder, DATABASE_URL: TEST_DB, PORT: '0', SANDBOX_MODE: 'false' },
+  });
+  assert.equal(r.status, 1, `booted with a published secret:\n${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /published example value — refused outside production too/);
+  for (const known of ['test-secret-key', 'change_this_to_a_random_secret_string_min_32_chars', 'your_jwt_secret_here_please']) {
+    const k = spawnSync(process.execPath, ['server.js'], { cwd: BACKEND, encoding: 'utf8', timeout: 20000, env: { PATH: process.env.PATH, ENV_FILE: '/dev/null', NODE_ENV: 'development', JWT_SECRET: known, DATABASE_URL: TEST_DB, PORT: '0' } });
+    assert.equal(k.status, 1, `${known} accepted`);
+  }
+
+  // SANDBOX_MODE=true: boots on a generated per-process secret — a token forged with the public value is refused
+  const s = await bootServer({ JWT_SECRET: placeholder, NODE_ENV: 'development', SANDBOX_MODE: 'true' });
+  try {
+    assert.ok(s.alive(), s.output());
+    assert.match(s.output(), /replaced by a random per-process secret/);
+    const forged = jwtLib.sign({ id: U.sa.id, email: U.sa.email, role: 'super-admin' }, placeholder, { expiresIn: '1h' });
+    assert.equal((await request(s.base, 'GET', '/api/users', { token: forged })).status, 401, 'token forged with the published secret accepted');
+    const login2 = await request(s.base, 'POST', '/api/auth/login', { body: { email: U.admin.email, password: PASSWORD } });
+    assert.equal(login2.status, 200);
+    assert.equal((await request(s.base, 'GET', '/api/users/me', { token: login2.json.token })).status, 200, 'own tokens still work');
+  } finally { await s.stop(); }
+});
+
+function runScript(args, env, opts = {}) {
+  return spawnSync(process.execPath, args, {
+    cwd: opts.cwd || BACKEND, encoding: 'utf8', timeout: opts.timeout || 120000,
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env },
+  });
+}
+const secretIn = (file) => (/^JWT_SECRET=(.*)$/m.exec(fs.readFileSync(file, 'utf8')) || [])[1];
+
+test('2c sandbox.js writes a random JWT_SECRET into whatever ENV_FILE is used; refuses a known secret from the shell', { timeout: 300000 }, async () => {
+  const envFile = path.join(TMP, '.env.demo.sectest');
+  const example = fs.readFileSync(path.join(BACKEND, '.env.sandbox.example'), 'utf8');
+  assert.match(example, /^JWT_SECRET=__GENERATE_ON_FIRST_RUN__$/m, 'example no longer carries the placeholder (update this test)');
+  fs.writeFileSync(envFile, example.replace(/^DEMO_MODE=true$/m, 'DEMO_MODE=false'));
+  const base = { ENV_FILE: envFile, DATABASE_URL: TEST_DB };
+
+  const r1 = runScript(['scripts/sandbox.js', '--no-start'], base);
+  assert.equal(r1.status, 0, `${r1.stdout}\n${r1.stderr}`);
+  const s1 = secretIn(envFile);
+  assert.match(s1, /^[0-9a-f]{96}$/, `secret not generated: ${s1}`);
+  assert.match(r1.stdout, /Generated a random JWT_SECRET/);
+  const r2 = runScript(['scripts/sandbox.js', '--no-start'], base);
+  assert.equal(r2.status, 0, r2.stderr);
+  assert.equal(secretIn(envFile), s1, 'a real secret was replaced on the second run');
+
+  // a published value in the file is replaced too; a missing line is added
+  fs.writeFileSync(envFile, fs.readFileSync(envFile, 'utf8').replace(/^JWT_SECRET=.*$/m, 'JWT_SECRET="change_this_to_a_random_secret_string_min_32_chars"'));
+  assert.equal(runScript(['scripts/sandbox.js', '--no-start'], base).status, 0);
+  assert.match(secretIn(envFile), /^[0-9a-f]{96}$/);
+  fs.writeFileSync(envFile, fs.readFileSync(envFile, 'utf8').replace(/^JWT_SECRET=.*\n/m, ''));
+  assert.equal(runScript(['scripts/sandbox.js', '--no-start'], base).status, 0);
+  assert.match(secretIn(envFile), /^[0-9a-f]{96}$/);
+
+  // a known secret in the real environment wins over the file → refused
+  const bad = runScript(['scripts/sandbox.js', '--no-start'], { ...base, JWT_SECRET: '__GENERATE_ON_FIRST_RUN__' });
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /JWT_SECRET in your shell environment/);
+  // DEMO_PROSPECT must be a slug or an absolute path outside the repo
+  const rel = runScript(['scripts/sandbox.js', '--no-start'], { ...base, DEMO_PROSPECT: 'prospects/acme.json' });
+  assert.equal(rel.status, 1);
+  assert.match(rel.stderr, /must be an absolute path/);
+  const inRepo = runScript(['scripts/sandbox.js', '--no-start'], { ...base, DEMO_PROSPECT: path.join(BACKEND, 'acme-real.json') });
+  assert.equal(inRepo.status, 1);
+  assert.match(inRepo.stderr, /inside the repository/);
+});
+
+test('2c sandbox.js serves on 127.0.0.1 by default (HOST env to override)', { timeout: 120000 }, async () => {
+  const envFile = path.join(TMP, '.env.demo.hosttest');
+  fs.writeFileSync(envFile, fs.readFileSync(path.join(BACKEND, '.env.sandbox.example'), 'utf8').replace(/^DEMO_MODE=true$/m, 'DEMO_MODE=false'));
+  const port = await freePort();
+  const child = spawn(process.execPath, ['scripts/sandbox.js'], {
+    cwd: BACKEND, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, ENV_FILE: envFile, DATABASE_URL: TEST_DB, PORT: String(port), STORAGE_DRIVER: 'local', LOCAL_STORAGE_DIR: path.join(TMP, 'storage') },
+  });
+  let out = '';
+  child.stdout.on('data', (d) => { out += d; });
+  child.stderr.on('data', (d) => { out += d; });
+  try {
+    const deadline = Date.now() + 60000;
+    let up = false;
+    while (Date.now() < deadline && !up) {
+      try { up = (await request(`http://127.0.0.1:${port}`, 'GET', '/api/health', { ip: '127.0.0.1' })).status === 200; } catch { await sleep(250); }
+    }
+    assert.ok(up, out);
+    assert.match(out, new RegExp(`Server running on 127\\.0\\.0\\.1:${port}`));
+    const ext = Object.values(os.networkInterfaces()).flat().find((i) => i && i.family === 'IPv4' && !i.internal);
+    if (ext) {
+      const reach = await new Promise((resolve) => {
+        const sock = net.connect({ host: ext.address, port }, () => { sock.destroy(); resolve(true); });
+        sock.on('error', () => resolve(false));
+        sock.setTimeout(2000, () => { sock.destroy(); resolve(false); });
+      });
+      assert.equal(reach, false, `sandbox reachable on ${ext.address}`);
+    }
+  } finally {
+    child.kill('SIGTERM');
+    await new Promise((r) => { if (child.exitCode != null) r(); else child.once('exit', r); setTimeout(r, 4000); });
+  }
+});
+
+test('2c seed-demo --print-env: fresh random JWT_SECRET each time; external prospect file by absolute path', () => {
+  const env = { ENV_FILE: '/dev/null', BRAND_TRADE_TYPE: 'plumbing', DATABASE_URL: TEST_DB };
+  const a = path.join(TMP, 'env-a'); const b = path.join(TMP, 'env-b');
+  for (const out of [a, b]) {
+    const r = runScript(['scripts/seed-demo.js', '--prospect', 'ks-plumbing-example', '--print-env', '--out', out], env);
+    assert.equal(r.status, 0, r.stderr);
+  }
+  assert.match(secretIn(a), /^[0-9a-f]{96}$/);
+  assert.notEqual(secretIn(a), secretIn(b));
+  assert.equal(fs.statSync(a).mode & 0o077, 0, 'env file readable by others');
+  assert.match(fs.readFileSync(a, 'utf8'), /^DEMO_PROSPECT=ks-plumbing-example$/m);
+  const parsed = require('dotenv').parse(fs.readFileSync(a, 'utf8'));
+  assert.equal(require('../helpers/publishedSecrets').isKnownSecret(parsed.JWT_SECRET), false);
+
+  // a real prospect lives OUTSIDE the repo and is referenced by absolute path
+  const ext = path.join(TMP, 'prospects', 'acme-real.json');
+  fs.mkdirSync(path.dirname(ext), { recursive: true });
+  const p = JSON.parse(fs.readFileSync(path.join(BACKEND, 'demo', 'prospects', 'ks-plumbing-example.json'), 'utf8'));
+  fs.writeFileSync(ext, JSON.stringify({ ...p, slug: 'acme-real' }));
+  const c = path.join(TMP, 'env-c');
+  const r = runScript(['scripts/seed-demo.js', '--prospect', ext, '--print-env', '--out', c], env);
+  assert.equal(r.status, 0, r.stderr);
+  const pc = require('dotenv').parse(fs.readFileSync(c, 'utf8'));
+  assert.equal(pc.DEMO_PROSPECT, ext);
+  // DEMO_PROSPECT=<absolute path> is accepted by the seeders (dry run: no DB)
+  const dry = runScript(['scripts/seed-demo.js', '--dry-run'], { ...env, DEMO_PROSPECT: ext });
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.match(dry.stdout, /acme-real|Prairie Line/);
+  // ...but not a file inside the repository
+  const inside = runScript(['scripts/seed-demo.js', '--prospect', path.join(BACKEND, 'tests', 'acme-real.json'), '--print-env', '--out', path.join(TMP, 'env-d')], env);
+  assert.equal(inside.status, 1);
+  assert.match(inside.stderr, /inside the repository/);
+  assert.equal(fs.existsSync(path.join(TMP, 'env-d')), false);
+});

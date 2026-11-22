@@ -15,8 +15,21 @@
  *        ENV_FILE=.env.demo.ks-plumbing-example npm run seed:demo -- --reset
  *   6. Check it:  ENV_FILE=.env.demo.ks-plumbing-example npm run demo:check -- --port 3101
  *
+ * Real prospects: keep their file OUTSIDE this (public) repository, e.g.
+ *   ~/mbc-prospects/acme-plumbing.json (copy an example and edit it), then
+ *        node scripts/seed-demo.js --prospect ~/mbc-prospects/acme-plumbing.json --print-env
+ *   The env file then carries DEMO_PROSPECT=<absolute path>; sandbox.js, seed_jobs.js
+ *   and this script read the prospect from there. A prospect path inside the
+ *   repo (other than demo/prospects/) is refused (helpers/prospectPath.js).
+ *
+ * --print-env writes a freshly generated random JWT_SECRET into the env file
+ * (never the example's placeholder), and the sandbox listens on 127.0.0.1 only
+ * (HOST=0.0.0.0 to change that).
+ *
  * Options
- *   --prospect <slug|file.json>  default: $DEMO_PROSPECT or "default"
+ *   --prospect <slug|file.json>  default: $DEMO_PROSPECT or "default". DEMO_PROSPECT may be a
+ *                                slug or an ABSOLUTE path; --prospect may also be relative to
+ *                                the current directory
  *   --locale <US|IE>             override the prospect's locale
  *   --reset                      wipe customers, jobs, quotes, invoices, pricebook, inventory and
  *                                non-super-admin users first (required to switch trade on a DB)
@@ -60,9 +73,16 @@ const demo = require('../demo');
     return;
   }
 
-  const prospectName = arg('prospect', process.env.DEMO_PROSPECT || 'default');
+  const fromArg = arg('prospect', null);
+  let ref;
+  try {
+    ref = require('../helpers/prospectPath').resolveProspectRef(
+      fromArg && fromArg !== true ? fromArg : (process.env.DEMO_PROSPECT || 'default'),
+      fromArg && fromArg !== true ? { cwd: process.cwd() } : {},
+    );
+  } catch (e) { die(e.message); }
   let prospect;
-  try { prospect = demo.loadProspect(prospectName); } catch (e) { die(e.message); }
+  try { prospect = demo.loadProspect(ref.value); } catch (e) { die(e.message); }
 
   let brand;
   try { brand = require('../../brand.config'); } catch (e) { die(e.message); }
@@ -71,11 +91,16 @@ const demo = require('../demo');
     const out = path.resolve(arg('out', path.join(demo.backendDir, `.env.demo.${prospect.slug}`)));
     if (fs.existsSync(out) && !flag('force')) die(`${out} already exists (use --force to overwrite).`);
     const port = arg('port', null);
-    const text = demo.renderProspectEnv({
+    let text = demo.renderProspectEnv({
       prospect, brandTrade: brand.tradeType, port: port === true ? null : port,
       exampleFile: path.join(demo.backendDir, '.env.sandbox.example'),
     });
-    fs.writeFileSync(out, text);
+    // A fresh random secret, never the example's placeholder (anyone could forge tokens with it)
+    const secret = require('crypto').randomBytes(48).toString('hex');
+    text = /^JWT_SECRET=.*$/m.test(text) ? text.replace(/^JWT_SECRET=.*$/m, `JWT_SECRET=${secret}`) : `${text}JWT_SECRET=${secret}\n`;
+    // A prospect file outside the repo is referenced by its absolute path
+    if (ref.kind === 'file') text = text.replace(/^DEMO_PROSPECT=.*$/m, `DEMO_PROSPECT=${JSON.stringify(ref.value)}`);
+    fs.writeFileSync(out, text, { mode: 0o600 });
     log(`wrote ${out}`);
     const rel = path.relative(demo.backendDir, out);
     log(`next: ENV_FILE=${rel.startsWith('..') ? out : rel} npm run sandbox`);
