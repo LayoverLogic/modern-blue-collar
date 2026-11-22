@@ -56,7 +56,7 @@ const { CUSTOMER_TYPES } = require('./validate');
 // field used and every unmapped source column, so a wrong guess is visible at Gate 2.
 const PRESETS = {
   generic: {
-    label: 'Generic staging template (playbook §3 customers.csv + address columns)',
+    label: 'Generic spreadsheet (our customers template)',
     sourceSystem: 'generic',
     dateFormat: 'YYYY-MM-DD',
     fields: {

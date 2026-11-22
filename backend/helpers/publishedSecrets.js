@@ -31,7 +31,10 @@ function isKnownSecret(secret) {
   if (secret == null) return false;
   const s = String(secret).trim();
   if (!s) return false;
-  return PUBLISHED_SECRETS.has(s.toLowerCase()) || /^(placeholder|change[-_ ]?me|your[-_ ]|<.*>$|__.*__$)/i.test(s);
+  if (PUBLISHED_SECRETS.has(s.toLowerCase())) return true;
+  if (/^(placeholder|change[-_ ]?me|your[-_ ]|x{3,}|<.*>$|__.*__$)/i.test(s)) return true;
+  // Low-variety values ("xxxx…", "aaaa…", "1111…") are guessable even when long (N3).
+  return new Set(s).size < 8;
 }
 
 module.exports = { PUBLISHED_SECRETS, isKnownSecret };

@@ -64,7 +64,7 @@
  *        PORT=3121 npm run sandbox:setup
  *   4. Run the walk. By default it starts its own server (node server.js) on
  *      UI_PORT (default 3121) with your DATABASE_URL and restarts it between
- *      segments, because the API rate limiter (200 req / 15 min per IP) would
+ *      segments, because the API rate limiter (anonymous calls: 300 req / 15 min per IP) would
  *      otherwise start returning 429s part-way through:
  *        DATABASE_URL=postgresql://mbc:mbc_sandbox@localhost:5432/mbc_frontend?schema=public \
  *        UI_PORT=3121 npm run test:ui

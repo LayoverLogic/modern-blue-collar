@@ -91,7 +91,7 @@ test('WL-5: unknown trade fails with a clear message naming the variable and the
 test('WL-5: the server refuses to boot on an unknown trade (fail fast, exit 1)', () => {
   const r = spawnSync(process.execPath, ['server.js'], {
     cwd: BACKEND, encoding: 'utf8', timeout: 20000,
-    env: { PATH: process.env.PATH, ENV_FILE: '/dev/null', BRAND_TRADE_TYPE: 'Roofing', JWT_SECRET: 'x'.repeat(40), DATABASE_URL: TEST_DB, PORT: '0' },
+    env: { PATH: process.env.PATH, ENV_FILE: '/dev/null', BRAND_TRADE_TYPE: 'Roofing', JWT_SECRET: require('crypto').randomBytes(32).toString('hex'), DATABASE_URL: TEST_DB, PORT: '0' },
   });
   assert.equal(r.status, 1, `expected exit 1, got ${r.status} (signal ${r.signal})\n${r.stdout}\n${r.stderr}`);
   assert.match(r.stderr, /\[brand\] BRAND_TRADE_TYPE="Roofing" is not a supported trade/);
@@ -614,7 +614,7 @@ test('B3 job types: BRAND_JOB_TYPES overrides the list and is validated (boot re
   }
   const r = spawnSync(process.execPath, ['server.js'], {
     cwd: BACKEND, encoding: 'utf8', timeout: 20000,
-    env: { PATH: process.env.PATH, ENV_FILE: '/dev/null', BRAND_JOB_TYPES: 'Boiler,boiler', JWT_SECRET: 'x'.repeat(40), DATABASE_URL: TEST_DB, PORT: '0' },
+    env: { PATH: process.env.PATH, ENV_FILE: '/dev/null', BRAND_JOB_TYPES: 'Boiler,boiler', JWT_SECRET: require('crypto').randomBytes(32).toString('hex'), DATABASE_URL: TEST_DB, PORT: '0' },
   });
   assert.equal(r.status, 1, r.stdout + r.stderr);
   assert.match(r.stderr, /\[brand\] BRAND_JOB_TYPES=.*twice/);
@@ -872,4 +872,24 @@ dbTest('M4 a US instance with sales tax: seeded documents carry it and demo:chec
   assert.equal(bad.code, 1);
   assert.match(bad.out, /FAIL\s+db\.tax .*only 0 of/);
   assert.equal(run('scripts/seed-demo.js', ['--reset'], { BRAND_TRADE_TYPE: 'electrical' }).code, 0);
+});
+
+// N1 (verifier #2): default state/county and time zone follow BRAND_COUNTRY when unset.
+test('N1: BRAND_COUNTRY=IE defaults to Europe/Dublin and no US state; explicit values still win', () => {
+  const { buildBrand } = require('../helpers/brandValidate');
+  const ie = buildBrand({ BRAND_COUNTRY: 'IE' });
+  assert.equal(ie.timezone, 'Europe/Dublin');
+  assert.equal(ie.defaultState, '');
+  const us = buildBrand({});
+  assert.equal(us.timezone, 'America/Chicago');
+  assert.equal(us.defaultState, 'KS');
+  assert.equal(buildBrand({ BRAND_COUNTRY: 'IE', BRAND_TIMEZONE: 'Europe/London' }).timezone, 'Europe/London');
+});
+
+// N3 (verifier #2): low-variety secrets count as published/placeholder in the sandbox too.
+test('N3: isKnownSecret rejects low-variety and xxx… secrets, accepts random ones', () => {
+  const { isKnownSecret } = require('../helpers/publishedSecrets');
+  assert.equal(isKnownSecret('x'.repeat(40)), true);
+  assert.equal(isKnownSecret('ab'.repeat(30)), true);
+  assert.equal(isKnownSecret(require('crypto').randomBytes(32).toString('hex')), false);
 });

@@ -210,8 +210,8 @@ function normaliseAssetUrl(envName, value) {
   );
 }
 
-function normaliseTimezone(value) {
-  const v = clean(value) || 'America/Chicago';
+function normaliseTimezone(value, fallback = 'America/Chicago') {
+  const v = clean(value) || fallback;
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: v });
   } catch {
@@ -265,7 +265,8 @@ function buildBrand(env = {}) {
     colors,
     logoUrl,
     faviconUrl:     faviconUrl || logoUrl,
-    defaultState:   clean(env.BRAND_DEFAULT_STATE) || 'KS',
+    // Defaults follow BRAND_COUNTRY (N1): US → KS / America/Chicago, IE → no county / Europe/Dublin.
+    defaultState:   clean(env.BRAND_DEFAULT_STATE) || (jobTypesCountry(env) === 'IE' ? '' : 'KS'),
     industryLabel:  clean(env.BRAND_INDUSTRY_LABEL) || INDUSTRY_LABELS[tradeType],
     // BRAND_JOB_TYPES overrides; otherwise the trade's list in the brand
     // country's wording (BRAND_COUNTRY=IE → Irish names, anything else → US).
@@ -273,7 +274,7 @@ function buildBrand(env = {}) {
     jobTypesCountry: jobTypesCountry(env),
     jobTypesCustom: !!parseJobTypes(env.BRAND_JOB_TYPES),
     technicianLabel: clean(env.BRAND_TECH_LABEL) || TECH_LABELS[tradeType],
-    timezone:       normaliseTimezone(env.BRAND_TIMEZONE),
+    timezone:       normaliseTimezone(env.BRAND_TIMEZONE, jobTypesCountry(env) === 'IE' ? 'Europe/Dublin' : 'America/Chicago'),
   };
 }
 

@@ -189,7 +189,7 @@
 
     <div class="card pad" id="lists-card">
       <h3>Export a list (CSV)</h3>
-      <p class="muted small">Opens in Excel, Numbers or Google Sheets. Cells that start with = + - @ get a leading apostrophe so they show as text.</p>
+      <p class="muted small">Opens in Excel, Numbers or Google Sheets. Text cells that start with = + - or @ get a leading apostrophe so a spreadsheet can't treat them as formulas; plain numbers and phone numbers are left as they are.</p>
       <div class="export-buttons" id="list-exports">
         <button class="btn btn-outline" type="button" data-export="customers">Customers</button>
         <button class="btn btn-outline" type="button" data-export="jobs">Jobs</button>
