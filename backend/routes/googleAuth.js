@@ -65,8 +65,9 @@ async function resolveGoogleUser(profile) {
   const emailObj = profile && Array.isArray(profile.emails) ? profile.emails[0] : null;
   const email = emailObj && typeof emailObj.value === 'string' ? emailObj.value.toLowerCase().trim() : '';
   if (!email) return { error: 'Your Google account did not share an email address.' };
-  const verified = profile._json ? profile._json.email_verified : emailObj.verified;
-  if (verified === false || verified === 'false') return { error: 'Your Google email address is not verified.' };
+  // Fail closed: Google must positively assert email_verified (a missing flag is refused too).
+  const verified = profile._json && profile._json.email_verified !== undefined ? profile._json.email_verified : emailObj.verified;
+  if (verified !== true && verified !== 'true') return { error: 'Your Google email address is not verified.' };
 
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {

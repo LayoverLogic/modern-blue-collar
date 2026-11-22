@@ -1,90 +1,75 @@
 /**
- * routes/invoices.js  — Invoice CRUD
+ * routes/invoices.js  — Invoice CRUD + email + from-quote (line items: Phase 2b)
  * status: unpaid | paid | overdue | void
  *
- * Reads: office roles see all; technicians see invoices of their own jobs (RT-21).
- * Writes: BILLING roles only. Amounts must be finite, > 0, at most
- * helpers/validate MONEY_MAX, 2 decimals (RT-11). PATCH/PUT need `version`.
- * Money is still stored as Float — moving to Decimal is a later schema change.
+ * Shared logic: helpers/documentRoutes.js and helpers/documents.js.
+ *
+ *   GET    /api/invoices[?status=]            list (technicians: own jobs, RT-21), with lines
+ *   GET    /api/invoices/:id                  invoice + lines + customer + `print` block + `locked`
+ *   POST   /api/invoices                      { jobId, lines[] | amount, status?, dueDate?, notes?, reverseCharge?, issuedAt? }
+ *   POST   /api/invoices/from-quote/:quoteId  { dueDate?, notes? } → copies lines, totals, currency, reverse charge
+ *   PATCH  /api/invoices/:id                  same fields + version (PUT is an alias)
+ *   DELETE /api/invoices/:id                  only while unpaid and never sent
+ *   POST   /api/invoices/:id/email            { message? } → customer email, logs a communication, sets sentAt
+ * Writes: BILLING roles. Total must be > 0. Locked once sent, or while
+ * paid / overdue / void: then only status changes (paidAt follows status).
  */
 const express = require('express');
 const router  = express.Router();
 const { requireAuth, requireRole } = require('./auth');
-const { optimisticUpdate } = require('../helpers/optimisticUpdate');
 const { BILLING } = require('../helpers/roles');
-const { jobScope, assertJobAccess } = require('../helpers/access');
-const { parseId, badRequest, notFound } = require('../helpers/httpError');
+const { parseId, notFound, conflict } = require('../helpers/httpError');
 const v = require('../helpers/validate');
 const prisma = require('../helpers/prisma');
+const docs = require('../helpers/documents');
+const { getLocale } = require('../helpers/locale');
+const { mountDocumentRoutes, LINES } = require('../helpers/documentRoutes');
 
-const INCLUDE = { job: { include: { customer: true } } };
-
-function invoiceFields(body, { create = false } = {}) {
-  const d = {};
-  if (create || body.amount !== undefined) d.amount = v.money(body.amount, 'amount', { min: 0, exclusive: true });
-  if (body.status !== undefined) d.status = v.oneOf(body.status, v.INVOICE_STATUSES, 'status', { required: true });
-  if (body.dueDate !== undefined) d.dueDate = v.date(body.dueDate, 'dueDate');
-  if (body.notes !== undefined) d.notes = v.str(body.notes, 'notes', { max: 5000 });
-  return d;
+function onStatus(d, current) {
+  if (!d.status) return;
+  const was = current ? current.status : null;
+  if (d.status === 'paid' && was !== 'paid') d.paidAt = new Date();
+  if (d.status !== 'paid' && was === 'paid') d.paidAt = null;
 }
 
-router.get('/', requireAuth, async (req, res, next) => {
+// POST /api/invoices/from-quote/:quoteId — before the shared /:id routes
+router.post('/from-quote/:quoteId', requireAuth, requireRole(...BILLING), async (req, res, next) => {
   try {
-    const where = {};
-    if (typeof req.query.status === 'string' && req.query.status) where.status = req.query.status;
-    const scope = jobScope(req.user);
-    if (Object.keys(scope).length) where.job = scope;
-    const invoices = await prisma.invoice.findMany({ where, include: INCLUDE, orderBy: { createdAt: 'desc' } });
-    res.json(invoices);
-  } catch (e) { next(e); }
-});
-
-router.get('/:id', requireAuth, async (req, res, next) => {
-  try {
-    const inv = await prisma.invoice.findUnique({ where: { id: parseId(req.params.id) }, include: INCLUDE });
-    if (!inv) throw notFound('Invoice not found');
-    await assertJobAccess(req.user, inv.jobId);
-    res.json(inv);
-  } catch (e) { next(e); }
-});
-
-router.post('/', requireAuth, requireRole(...BILLING), async (req, res, next) => {
-  try {
+    const quoteId = parseId(req.params.quoteId, 'quoteId');
     const body = req.body || {};
-    if (body.jobId == null || body.jobId === '') throw badRequest('jobId and amount are required', { code: 'REQUIRED', field: 'jobId' });
-    const jobId = parseId(body.jobId, 'jobId');
-    const d = invoiceFields(body, { create: true });
-    const job = await prisma.job.findUnique({ where: { id: jobId }, select: { id: true } });
-    if (!job) throw badRequest('jobId does not match a job', { code: 'UNKNOWN_JOB', field: 'jobId' });
-    if (d.status === 'paid') d.paidAt = new Date();
-    const inv = await prisma.invoice.create({ data: { jobId, ...d } }); // duplicate per job → P2002 → 409
-    res.status(201).json(inv);
+    const quote = await prisma.quote.findUnique({ where: { id: quoteId }, include: { lines: LINES } });
+    if (!quote) throw notFound('Quote not found');
+    if (quote.status === 'declined') throw conflict('This quote was declined — it cannot be invoiced', { code: 'QUOTE_DECLINED' });
+    docs.assertTotal('invoice', quote.amount);
+    const existing = await prisma.invoice.findUnique({ where: { jobId: quote.jobId }, select: { id: true, number: true } });
+    if (existing) throw conflict(`This job already has invoice ${existing.number}`, { code: 'DUPLICATE', invoiceId: existing.id });
+    const d = { status: 'unpaid' };
+    if (body.dueDate !== undefined) d.dueDate = v.date(body.dueDate, 'dueDate');
+    d.notes = body.notes !== undefined ? v.str(body.notes, 'notes', { max: 5000 }) : quote.notes;
+    const lines = quote.lines.map((l) => ({
+      position: l.position, description: l.description, quantity: String(l.quantity), unitPrice: String(l.unitPrice),
+      taxRateKey: l.taxRateKey, taxRate: String(l.taxRate), lineTotal: String(l.lineTotal), pricebookItemId: l.pricebookItemId,
+    }));
+    const locale = getLocale();
+    const invoice = await prisma.$transaction(async (tx) => {
+      const number = await docs.allocateNumber(tx, 'invoice', locale);
+      return tx.invoice.create({
+        data: {
+          jobId: quote.jobId, number, ...d,
+          amount: String(quote.amount), subtotal: String(quote.subtotal), taxTotal: String(quote.taxTotal),
+          currency: quote.currency, reverseCharge: quote.reverseCharge,
+          ...(lines.length ? { lines: { create: lines } } : {}),
+        },
+        include: { lines: LINES },
+      });
+    }); // the job already has an invoice → P2002 → 409 DUPLICATE
+    res.status(201).json({ ...invoice, fromQuote: { id: quote.id, number: quote.number } });
   } catch (e) { next(e); }
 });
 
-async function updateInvoice(req, res, next) {
-  try {
-    const id = parseId(req.params.id);
-    const body = req.body || {};
-    const d = invoiceFields(body);
-    if (d.status) {
-      const current = await prisma.invoice.findUnique({ where: { id }, select: { status: true } });
-      if (!current) throw notFound('Invoice not found');
-      if (d.status === 'paid' && current.status !== 'paid') d.paidAt = new Date();
-      if (d.status !== 'paid' && current.status === 'paid') d.paidAt = null;
-    }
-    const inv = await optimisticUpdate('invoice', id, { ...d, version: body.version });
-    res.json(inv);
-  } catch (e) { next(e); }
-}
-router.patch('/:id', requireAuth, requireRole(...BILLING), updateInvoice);
-router.put('/:id', requireAuth, requireRole(...BILLING), updateInvoice);
-
-router.delete('/:id', requireAuth, requireRole(...BILLING), async (req, res, next) => {
-  try {
-    await prisma.invoice.delete({ where: { id: parseId(req.params.id) } });
-    res.json({ success: true });
-  } catch (e) { next(e); }
+mountDocumentRoutes(router, {
+  type: 'invoice', model: 'invoice', label: 'Invoice', lineModel: 'invoiceLine', fk: 'invoiceId',
+  statuses: v.INVOICE_STATUSES, onStatus,
 });
 
 module.exports = router;

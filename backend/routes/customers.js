@@ -1,6 +1,8 @@
 /**
  * routes/customers.js
- * Customer CRUD. Default state is driven by brand.config.js (BRAND_DEFAULT_STATE).
+ * Customer CRUD. Address rules and the default state come from the locale
+ * (helpers/locale.js: BRAND_COUNTRY, BRAND_DEFAULT_STATE). New customers get
+ * country = BRAND_COUNTRY unless one is sent.
  *
  * Access (helpers/roles.js, helpers/access.js):
  *   read    office roles: all; technicians: customers on their assigned jobs
@@ -15,13 +17,19 @@ const { requireAuth, requireRole } = require('./auth');
 const { optimisticUpdate } = require('../helpers/optimisticUpdate');
 const { OFFICE, ADMIN } = require('../helpers/roles');
 const { customerScope, assertCustomerAccess } = require('../helpers/access');
-const { parseId, notFound } = require('../helpers/httpError');
+const { parseId, notFound, badRequest } = require('../helpers/httpError');
 const v = require('../helpers/validate');
-const brand = require('../../brand.config');
+const { getLocale, validateAddress } = require('../helpers/locale');
 
 const prisma = require('../helpers/prisma');
 
-/** Validate customer fields present in `body`. `create` makes required ones required. */
+/**
+ * Validate customer fields present in `body`. `create` makes required ones
+ * required. Address rules come from the locale (helpers/locale.js): required
+ * fields per country (none for US — today's behaviour; IE: address line 1,
+ * town, county), ZIP / Eircode format when given. Blank city / zip / state are
+ * stored as null (never a 500 — WL-11).
+ */
 function customerFields(body, { create = false } = {}) {
   const d = {};
   const has = (k) => create || body[k] !== undefined;
@@ -29,11 +37,16 @@ function customerFields(body, { create = false } = {}) {
   if (has('lastName'))  d.lastName  = v.str(body.lastName, 'lastName', { required: true, max: 100 });
   if (has('phone'))     d.phone     = v.str(body.phone, 'phone', { required: true, max: 40 });
   if (body.email !== undefined) d.email = v.email(body.email, 'email');
-  // address/city/zip are NOT NULL columns: blank → '' rather than null
-  for (const k of ['address', 'city', 'zip']) {
-    if (has(k)) d[k] = v.str(body[k], k, { max: k === 'zip' ? 20 : 200, allowNull: false });
+  // address is a NOT NULL column: blank → ''
+  if (has('address')) d.address = v.str(body.address, 'address', { max: 200, allowNull: false });
+  for (const [k, max] of [['addressLine2', 200], ['city', 200], ['state', 50], ['zip', 20], ['company', 200], ['taxNumber', 40]]) {
+    if (body[k] !== undefined) d[k] = v.str(body[k], k, { max });
   }
-  if (body.state !== undefined) d.state = v.str(body.state, 'state', { max: 50, allowNull: false }) || brand.defaultState;
+  if (body.country !== undefined) {
+    const c = v.str(body.country, 'country', { max: 2 });
+    if (c != null && !/^[A-Za-z]{2}$/.test(c)) throw badRequest('country must be a 2-letter ISO country code (e.g. US, IE)', { code: 'INVALID_INPUT', field: 'country' });
+    d.country = c ? c.toUpperCase() : null;
+  }
   if (body.type !== undefined)  d.type  = v.oneOf(body.type, v.CUSTOMER_TYPES, 'type') || 'residential';
   if (body.notes !== undefined) d.notes = v.str(body.notes, 'notes', { max: 5000 });
   return d;
@@ -52,6 +65,7 @@ router.get('/', requireAuth, async (req, res, next) => {
         { lastName:  { contains: search, mode: 'insensitive' } },
         { phone:     { contains: search } },
         { email:     { contains: search, mode: 'insensitive' } },
+        { company:   { contains: search, mode: 'insensitive' } },
       ];
     }
     const customers = await prisma.customer.findMany({
@@ -83,9 +97,12 @@ router.get('/:id', requireAuth, async (req, res, next) => {
 // POST /api/customers
 router.post('/', requireAuth, requireRole(...OFFICE), async (req, res, next) => {
   try {
-    const data = customerFields(req.body || {}, { create: true });
-    if (!data.state) data.state = brand.defaultState;
+    const locale = getLocale();
+    let data = customerFields(req.body || {}, { create: true });
+    if (!data.country) data.country = locale.country;
+    if (!data.state && data.country === locale.country && locale.defaultState) data.state = locale.defaultState;
     if (!data.type) data.type = 'residential';
+    data = validateAddress(data, { create: true }, locale);
     const customer = await prisma.customer.create({ data });
     res.status(201).json(customer);
   } catch (err) { next(err); }
@@ -96,7 +113,12 @@ async function updateCustomer(req, res, next) {
   try {
     const id = parseId(req.params.id);
     const body = req.body || {};
-    const data = customerFields(body);
+    let data = customerFields(body);
+    if (['address', 'city', 'state', 'zip', 'country'].some((k) => k in data)) {
+      const current = await prisma.customer.findUnique({ where: { id }, select: { address: true, city: true, state: true, zip: true, country: true } });
+      if (!current) throw notFound('Customer not found');
+      data = validateAddress(data, { current }, getLocale());
+    }
     const customer = await optimisticUpdate('customer', id, { ...data, version: body.version });
     res.json(customer);
   } catch (err) { next(err); }
