@@ -1,112 +1,136 @@
 # Modern Blue Collar
 
-> **White-label field service management platform for blue-collar trades.**  
-> Supports: Electrical · Plumbing · HVAC · General Contracting
+White-label field service management for small trades businesses: electrical, plumbing, HVAC,
+plumbing & HVAC, and general contracting. One installation per client, branded entirely through
+`BRAND_*` environment variables.
+
+What it does today: customers, jobs with scheduling and dispatch, technician assignment with
+double-booking checks, job photos, a per-job activity history, a trade-specific price book, quotes
+and invoices (a single amount each for now), team roles, API keys, CSV exports, nightly database
+backups, and optional Twilio SMS, Google sign-in and QuickBooks connection.
+
+## Status (2026-11-21)
+
+This is the **sandbox revival** branch (`mbc/sandbox-revival`). It runs locally with no paid services
+and no cloud accounts. It is not deployed anywhere and is not ready for a client yet:
+
+- **The login page and four other pages do not run on this commit** (a quoting SyntaxError, RT-25). The
+  API works; the Frontend rewrite that fixes the pages is in progress. If `npm run test:redteam` reports
+  RT-25 as passing on your checkout, this is fixed.
+- Quotes and invoices hold one amount each (no line items, tax, PDF or email yet). That work is in progress.
+- Security status, with what is enforced, partial and open: [backend/SECURITY_AUDIT.md](backend/SECURITY_AUDIT.md).
 
 ---
 
-## What is this?
+## Quick start: sandbox (no Docker, no internet)
 
-Modern Blue Collar is a production-ready, self-hosted web platform for small field service businesses. It provides:
+Needs **Node 20.19+, 22.12+ or 24+** and a local **PostgreSQL** with a role that can create databases.
+The defaults expect role `mbc`, password `mbc_sandbox` on `localhost:5432`
+(on a Mac: [docs/RUN-ON-MAC.md](docs/RUN-ON-MAC.md) has the exact commands).
 
-- Job scheduling & dispatch board
-- Customer CRM
-- Quoting & invoicing
-- Trade-specific pricebook
-- Team management with role-based access
-- QuickBooks Online sync
-- Twilio SMS notifications
-- Google OAuth team invites
-- Nightly database backups
-- CSV data exports
+```bash
+cd backend
+npm install
+npm run sandbox
+```
 
-The entire platform is **white-labeled via `BRAND_*` environment variables** (read by `brand.config.js`). Swapping it to a new trade or client requires changing only environment variables — no source code edits. Invalid brand settings stop the server at boot.
+`npm run sandbox` copies `.env.sandbox.example` to `backend/.env.sandbox` on first run (and puts a random
+`JWT_SECRET` in it), creates the database if it is missing, applies the migrations, seeds a demo company,
+and starts the server on **http://localhost:3101**. Override anything with real environment variables:
 
----
+```bash
+PORT=3150 DATABASE_URL=postgresql://mbc:mbc_sandbox@localhost:5432/mbc_other?schema=public npm run sandbox
+```
 
-## Running a local demo (Docker — free, no cloud accounts)
+`npm run sandbox:setup` does everything except start the server.
 
-Spin up the whole platform — app, PostgreSQL, S3-compatible storage (MinIO), and
-an email catch-all (Mailpit) — with **no paid services and no real credentials**.
-Requires only Docker + Docker Compose.
+In the sandbox nothing leaves the machine: photos go to `backend/storage/`, emails to `backend/outbox/`
+as `.eml` files, backups to `backend/backups/`, and Twilio, QuickBooks and Google answer
+"disabled in sandbox" (HTTP 503).
+
+### Demo logins
+
+Password for all of them: the `DEFAULT_PASSWORD` / `ADMIN_PASSWORD` in your env file (`demo1234` in the
+example file).
+
+| Email | Role | Sees |
+|---|---|---|
+| `admin@demo.test` | super-admin | everything, including managing admins |
+| `office@demo.test` | admin | everything except managing admins and super-admins |
+| `dispatch@demo.test` | dispatcher | customers, jobs, scheduling, SMS; no pricing, no deletes |
+| `tech1@demo.test`, `tech2@demo.test`, `tech3@demo.test` | technician | only their own jobs and those customers; status, notes and photos |
+
+For a prospect demo the team logins use the prospect's email domain instead of `demo.test`
+(for example `office@prairieline.example`); `admin@demo.test` stays the same.
+
+## Quick start: Docker (Postgres + MinIO + Mailpit)
 
 ```bash
 cp .env.example .env
 docker compose --profile demo up --build
 ```
 
-Then open:
-
-| URL | What |
-|-----|------|
-| http://localhost:3001 | The app — sign in with **admin@demo.test** / **demo1234** |
-| http://localhost:8025 | Mailpit — every outbound email lands here |
-| http://localhost:9001 | MinIO console — uploaded job photos (`minioadmin` / `minioadmin`) |
-
-`--profile demo` + `DEMO_MODE=true` together:
-
-- Seed a demo admin, team, customers, jobs and a pricebook on first boot.
-- **Auth:** local email/password login (the Google button is hidden).
-- **Storage:** job photos upload to MinIO — open any job → **Photos** → **Upload Photo**.
-- **Email:** team-invite emails are caught by Mailpit instead of being sent.
-- **Twilio / QuickBooks:** dormant — SMS is logged to the console, QuickBooks
-  live auth is disabled (the "Connect" path stays visible).
-
-Tear down (and wipe data) with `docker compose --profile demo down -v`.
-
-### Same file, production
-
-The compose file is production-capable by **changing only `.env`** — omit the
-profile so MinIO/Mailpit don't start and the app uses your external services:
-
-```bash
-# in .env: DEMO_MODE=false, real DATABASE_URL, S3_*/SMTP_* → Wasabi + real SMTP,
-#          plus any Google / QuickBooks / Twilio creds you use
-docker compose up -d --build
-```
+App on http://localhost:3001 (same logins), Mailpit (caught emails) on http://localhost:8025, MinIO console
+(uploaded photos) on http://localhost:9001 with `minioadmin` / `minioadmin`. MinIO and Mailpit listen on
+127.0.0.1 only and Postgres is not published. Tear down and wipe with `docker compose --profile demo down -v`.
+The Docker path has not been run by the team (no Docker daemon in the cloud sandbox); the Mac guide covers it.
 
 ---
 
-## Running a local sandbox (no Docker, no paid services, no internet)
+## Tests
 
-Needs Node 20.19+ / 22.12+ and a local PostgreSQL role that can create a database.
+All database suites need `TEST_DATABASE_URL` pointing at a **throwaway** database. They create and delete
+only their own tagged rows, so they can share one database, but never point them at data you want to keep.
 
 ```bash
 cd backend
-npm install
-npm run sandbox        # first run copies .env.sandbox.example → .env.sandbox,
-                       # creates the DB if missing, migrates, seeds demo data, starts
+export TEST_DATABASE_URL="postgresql://mbc:mbc_sandbox@localhost:5432/mbc_test?schema=public"
+npm test                  # Prisma-level suite; the DB must exist and its name must contain "test"
+npm run test:redteam      # security / abuse tests (RT-3 needs Chrome)
+npm run test:backend      # API contract tests
+npm run test:activity     # job activity log
+npm run test:whitelabel   # brand switching, demo seed, demo:check (creates <db>_wl; needs CREATEDB)
+DATABASE_URL="$TEST_DATABASE_URL" npm run test:platform   # storage / mail / backup drivers
 ```
 
-Open http://localhost:3101 and sign in with **admin@demo.test** / **demo1234**.
-Edit `backend/.env.sandbox` (gitignored) for the DB URL / port, or override with
-real env vars (`PORT=3150 DATABASE_URL=... npm run sandbox`).
-`npm run sandbox:setup` does everything except start the server.
-
-Sandbox drivers (all chosen by env, defaults keep the Docker/production behaviour):
-
-| Concern | Env | Sandbox value | Where it goes |
-|---|---|---|---|
-| Job photos | `STORAGE_DRIVER` | `local` | `backend/storage/` (`LOCAL_STORAGE_DIR`) |
-| Email | `MAIL_DRIVER` | `outbox` | `.eml` + `.json` in `backend/outbox/` (`MAIL_OUTBOX_DIR`) |
-| DB backups | `BACKUP_DRIVER` | `local` | `pg_dump` → `backend/backups/*.sql.gz` (`BACKUP_DIR`) |
-| Twilio / QuickBooks / Google | `SANDBOX_MODE` | `true` | inert: 503 "disabled in sandbox", SMS logged only |
-
-**Prisma 7 note.** The Prisma client is Rust-free (WASM + `pg` driver adapter,
-one shared client in `backend/helpers/prisma.js`). The Prisma 7 CLI still wants
-to download a native schema engine from `binaries.prisma.sh`, so:
-`npm install` runs `scripts/prisma-generate.js` (generate needs no binary), and
-migrations run with `npm run migrate:deploy` (`scripts/migrate-deploy.mjs`, Prisma's
-own schema engine compiled to WASM — same `_prisma_migrations` table as the CLI).
-Creating *new* migrations (`prisma migrate dev`) still needs the native engine,
-i.e. a machine that can reach `binaries.prisma.sh`.
-
-Tests: `npm test` (API suite — **it deletes all customers/jobs in the target DB**)
-and `npm run test:platform` (sandbox drivers, no server needed).
+Results on 2026-11-21 and what each suite proves: [backend/SECURITY_AUDIT.md §1](backend/SECURITY_AUDIT.md).
+`npm run test:ui` is a headless-Chrome walk of every page that saves screenshots; see [SETUP.md](SETUP.md#5-tests).
 
 ---
 
-## Supported Trade Types
+## Demo for a prospect
+
+```bash
+cd backend
+node scripts/seed-demo.js --list
+node scripts/seed-demo.js --prospect ks-plumbing-example --print-env      # writes .env.demo.ks-plumbing-example
+ENV_FILE=.env.demo.ks-plumbing-example npm run sandbox                      # own DB, seeded, started
+ENV_FILE=.env.demo.ks-plumbing-example npm run seed:demo -- --reset         # fresh dates before each demo
+ENV_FILE=.env.demo.ks-plumbing-example npm run demo:check -- --port 3101 --headless
+```
+
+Prospect files live in `backend/demo/prospects/`: a generic US `default`, a fictional Kansas plumber and a
+fictional Irish heating firm. All demo people, emails and phone numbers are fictional. `demo:check` exits
+non-zero if a prospect would see client names, "undefined", $0 amounts, wrong-trade jobs or a stale calendar.
+**Run it before every demo.** Details: [SETUP.md → Demo per prospect](SETUP.md#demo-per-prospect-seeddemo-democheck).
+
+## White-label in 60 seconds
+
+Set these in the env file the instance uses (`backend/.env.sandbox`, `backend/.env`, a `.env.demo.<slug>`
+file, or the repo-root `.env` for Docker) and restart:
+
+```ini
+BRAND_COMPANY_NAME=Apex Plumbing LLC
+BRAND_TRADE_TYPE=plumbing
+BRAND_COLOR_PRIMARY="#1565c0"
+BRAND_DEFAULT_STATE=TX
+BRAND_TIMEZONE=America/Chicago
+```
+
+No source file changes. A bad value (unknown trade, malformed colour, unknown time zone) stops the server at
+boot with a message naming the variable. Labels, job types, colours and the price book filter follow the trade.
+`BRAND_LOGO_URL` / `BRAND_FAVICON_URL` are validated but not yet returned by `/api/brand`, so pages do not show a
+logo yet (WL-7). Full list: [SETUP.md → White-label](SETUP.md#white-label).
 
 | Trade | `BRAND_TRADE_TYPE` |
 |-------|--------------------|
@@ -116,81 +140,36 @@ and `npm run test:platform` (sandbox drivers, no server needed).
 | Plumbing & HVAC | `plumbing-hvac` |
 | General Contracting | `contracting` |
 
-Each trade gets trade-specific job type lists, a technician label, a colour palette and a
-trade-correct starter pricebook (`npm run seed:prices`). The value is case-insensitive
-(`HVAC`, `Plumbing & HVAC` work); anything else stops the server at boot.
+Case-insensitive; `HVAC`, `Plumbing & HVAC`, `General Contracting` and `GC` are accepted. Each trade has its own
+job types, technician label, colour palette and starter price book (`npm run seed:prices`).
 
 ---
 
-## Quick Start
+## Documentation
 
-```bash
-git clone https://github.com/AlexJ2804/modern-blue-collar.git
-cd modern-blue-collar/backend
-npm install
-cp .env.example .env   # edit with your values
-npm run migrate
-npm run generate
-npm run seed:admin
-npm run seed:prices
-npm run dev
-```
+| Document | For |
+|---|---|
+| [SETUP.md](SETUP.md) | Local setup in detail, environment variable reference, tests, white-label, demo tooling, troubleshooting |
+| [docs/RUN-ON-MAC.md](docs/RUN-ON-MAC.md) | Running the sandbox on a Mac (Apple silicon), creating migrations, prospect demos |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | Deploying for a client (owned by Platform; being rewritten in Phase 2c) |
+| [backend/SECURITY_AUDIT.md](backend/SECURITY_AUDIT.md) | Security status with file and test references |
+| [docs/legal/](docs/legal/README.md) | Draft privacy notice, terms of use and DPA templates (for counsel) |
+| [LICENSE-PROPOSAL.md](LICENSE-PROPOSAL.md) | The licence decision for Paul |
 
-Then open http://localhost:3001.
+## Tech stack
 
-See **[SETUP.md](SETUP.md)** for the full local development guide.  
-See **[DEPLOYMENT.md](DEPLOYMENT.md)** for production deployment (VPS, Railway, Render, Fly.io).
-
----
-
-## White-Label in 60 Seconds
-
-Edit `.env`:
-
-```ini
-BRAND_COMPANY_NAME=Apex Plumbing LLC
-BRAND_TRADE_TYPE=plumbing
-BRAND_COLOR_PRIMARY="#1565c0"
-BRAND_LOGO_URL=https://cdn.example.com/apex-logo.svg
-BRAND_DEFAULT_STATE=TX
-BRAND_TIMEZONE=America/Chicago
-```
-
-That's it. No other files need to change. Full variable list: SETUP.md → **White-label**.
-
-### Sales demos per prospect
-
-```bash
-cd backend
-node scripts/seed-demo.js --prospect ks-plumbing-example --print-env   # writes .env.demo.<slug>
-ENV_FILE=.env.demo.ks-plumbing-example npm run sandbox
-ENV_FILE=.env.demo.ks-plumbing-example npm run demo:check -- --port 3101 --headless
-```
-
-Prospect files live in `backend/demo/prospects/` (generic US `default`, a fictional Kansas
-plumber, a fictional Irish heating firm). Demo data is trade-correct, dated relative to today,
-and uses only fictional names, reserved email domains and fictional phone ranges.
-`demo:check` exits non-zero if a prospect would see client names, "undefined", $0 amounts,
-wrong-trade jobs or a stale calendar. See SETUP.md → **Demo per prospect**.
-
-Tests for this: `npm run test:whitelabel`.
-
----
-
-## Tech Stack
-
-- **Backend:** Node.js / Express
-- **Database:** PostgreSQL via Prisma ORM
-- **Frontend:** Vanilla HTML/JS/CSS (no framework dependency)
-- **Auth:** JWT email/password + Google OAuth (Passport.js)
-- **SMS:** Twilio
-- **Accounting:** QuickBooks Online API
-- **Object storage:** AWS S3 SDK — MinIO locally, Wasabi / S3 in production
-- **Scheduler:** node-cron
-- **Local demo stack:** Docker Compose (PostgreSQL · MinIO · Mailpit)
-
----
+- Node.js / Express, vanilla HTML/JS/CSS pages in `backend/public/`
+- PostgreSQL through Prisma 7 (Rust-free client with the `pg` driver adapter; migrations applied by Prisma's
+  schema engine compiled to WebAssembly, `npm run migrate:deploy`)
+- Socket.io for "who is viewing this job"
+- Storage: local disk or any S3-compatible store (MinIO in the Docker demo)
+- Email: outbox folder, Mailpit, or any SMTP server
+- Optional: Twilio SMS, Google sign-in (Passport), QuickBooks Online OAuth (invoice sync is a stub)
+- node-cron for the nightly backup
 
 ## License
 
 MIT
+
+The README and `backend/package.json` say MIT, which does not fit a commercial product. This is under review and
+unchanged for now: see [LICENSE-PROPOSAL.md](LICENSE-PROPOSAL.md).
