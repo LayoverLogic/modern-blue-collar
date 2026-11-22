@@ -71,6 +71,9 @@
     "license": "MIT",
     "overrides": {
         "qs": "^6.16.2",
-        "effect": "^3.22.5"
+        "effect": "^3.22.5",
+        "nodemon": {
+            "minimatch": "^11.0.1"
+        }
     }
 }
