@@ -1,12 +1,15 @@
 # Run MBC on your Mac (Apple silicon)
 
-For Alex's Mac mini. Written 2026-11-21 against `mbc/sandbox-revival` at `6d63a31`. Two ways to run it:
+For Alex's Mac mini. Written 2026-11-21 against `mbc/sandbox-revival` at `6d63a31`, updated for `0cc0953` and
+backend fix round B4. Two ways to run it:
 **(1) no Docker** (fastest, recommended) or **(3) Docker Desktop** (closest to how a client server will run).
 Section 2 is the migration drift check (do it once on the Mac, the team cannot), section 4 builds a branded demo
 for a prospect, section 5 switches brand, trade or country, section 6 points at the first real-server test,
 section 7 is troubleshooting.
 
-> **Before you show anyone:** every page loads and `demo:check --headless` says `READY` on `6d63a31`. Since Frontend
+> **Before you show anyone:** every page loads and `demo:check --headless` says `READY` after B4, both on the US
+> default sandbox and on an Irish one made with only `BRAND_COUNTRY=IE` (Irish towns, Eircodes, VAT on every
+> document). Since Frontend
 > F3 the account screens (forgot / reset password, accept-invite, change password, Team-page deactivate / role /
 > reset) and Settings (customer import, export everything, Xero, QuickBooks) are in the app (see 1.4).
 
@@ -141,7 +144,8 @@ for s in test test:redteam test:backend test:activity test:documents test:integr
 done
 ```
 
-Expected on `6d63a31`: 69, 48, 36, 18, 21, 19, 25, 43, 22 tests, all passing (about 3 minutes in total).
+Expected after fix round B4: 69, 48, 45, 18, 22, 21, 25, 48, 23 tests (in the order of the loop), all passing
+(about 3½ minutes in total).
 
 The UI walk needs its own sandbox database and Chrome:
 
@@ -151,8 +155,9 @@ DATABASE_URL=postgresql://mbc:mbc_sandbox@localhost:5432/mbc_ui_sandbox?schema=p
   UI_OUT_DIR=~/mbc-ui UI_FINAL_DIR=~/mbc-ui/final npm run test:ui
 ```
 
-On `6d63a31` it ended with `FAILED` on step "7. Invite a team member" (the walk expected the old Google invite
-link); since Frontend F3 the walk expects the accept-invite link and ends with exit 0. The PNGs in `~/mbc-ui/final` are good screenshots for a deck.
+After B4 it ends with `FAILED` on one step, "6g. Reverse charge": the walk gives the US demo sales tax and makes a
+reverse-charge invoice, which the server now refuses (reverse charge is for VAT only). Add `BRAND_REVERSE_CHARGE=true`
+to the walk's command to see the flow pass in full until the walk is updated. The PNGs in `~/mbc-ui/final` are good screenshots for a deck.
 
 ---
 

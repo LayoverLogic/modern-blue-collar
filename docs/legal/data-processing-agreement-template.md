@@ -119,8 +119,8 @@ processor; Art. 27 EU representative; whether an Irish entity should contract wi
 **10 business days** give the Client a complete export of Client Data: the System's "export everything" archive (a
 CSV file for every table, all stored photos, and a manifest with checksums), and on request a full database dump.
 Password hashes, API keys and integration access tokens are security credentials, not Client Data, and are not
-exported. **[Product: the export exists in the code on 6d63a31 (`GET /api/exports/all`, admin only) but has no
-button yet; until it does, the Provider runs it for the Client.]**
+exported. **[Product: the export is in the software (`GET /api/exports/all`, admin only; since Frontend F3 also
+Settings → Data → Export everything).]**
 
 9.2 The Provider will then delete Client Data, including the Instance's database and file storage, **within 30
 days**, and give a written certificate of deletion. Copies in rolling backups are deleted as those backups expire,
@@ -189,18 +189,18 @@ Signed for the Provider: ____________________ Name / title / date
 
 ## Annex 2 — Technical and organisational measures
 
-State only what is true on the day of signature. Items marked **gap** are not in place on 6d63a31: either fix them
+State only what is true on the day of signature. Items marked **gap** are not in place on 0cc0953 + fix round B4: either fix them
 before signature or leave them out. Items marked **confirm per Instance** depend on how the server was provisioned.
 Source: `backend/SECURITY_AUDIT.md`.
 
-| Measure | Status on 6d63a31 |
+| Measure | Status on 0cc0953 + B4 |
 |---|---|
 | Separate Instance per client (own server, database, file storage and secrets); no shared database | In place by deployment design (the software is single-tenant) |
 | Encryption in transit (HTTPS/TLS) | Provided by the reverse proxy on each server (provisioning checklist) — **confirm per Instance** |
 | Encryption at rest | Depends on the hosting/storage provider — **state per provider in Annex 3**. QuickBooks tokens are additionally encrypted by the application (AES-256-GCM) |
 | Role-based access control: administrator, office/dispatcher, field; field staff see only their assigned jobs and those customers (or, if the Client chooses, read the whole schedule but change only their own jobs) | In place, tested. **Confirm per Instance** (`TECH_VISIBILITY`) |
-| Passwords stored as bcrypt hashes, minimum length 10; temporary passwords must be changed at first sign-in; optional Google sign-in limited to invited users / allow-listed domains with verified emails | In place, tested (server side; the change-password and accept-invite screens are pending) |
-| Password reset by single-use, time-limited emailed link; no account enumeration | In place, tested (server side; the reset page is pending) |
+| Passwords stored as bcrypt hashes, minimum length 10; temporary passwords must be changed at first sign-in; optional Google sign-in limited to invited users / allow-listed domains with verified emails | In place, tested (the change-password screen exists since F3) |
+| Password reset by single-use, time-limited emailed link; no account enumeration | In place, tested (the reset page exists since F3) |
 | Sign-in rate limiting on failed attempts; sessions expire (default 8 h); password change / reset and deactivation revoke all sessions; deactivated users lose access immediately | In place, tested |
 | Multi-factor authentication for staff | **Gap** (available only through Google sign-in if the Client's Google accounts enforce it) |
 | API keys: hashed, read or read/write scope, revoked with their creator | In place, tested |
@@ -217,7 +217,7 @@ Source: `backend/SECURITY_AUDIT.md`.
 | Administrative access to servers: SSH keys only; 2FA on all provider accounts | Process (provisioning checklist) — **confirm** |
 | Personnel confidentiality; least access | §4 |
 | Incident response and breach log | compliance.md §5.3 runbook |
-| Vulnerability management: dependency audit before each release | Process; 0 production advisories on 6d63a31 |
+| Vulnerability management: dependency audit before each release | Process; 0 advisories (production and dev) on B4 |
 
 ## Annex 3 — Sub-processors
 

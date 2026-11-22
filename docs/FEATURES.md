@@ -1,7 +1,8 @@
 # MBC features — what is real today
 
 Plain list for sales and marketing. Checked against the code and by running it on 2026-11-21
-(`mbc/sandbox-revival` at `6d63a31`). Nothing here has run for a paying client yet.
+(`mbc/sandbox-revival` at `6d63a31`; rows touched by fix round B4 re-checked on `0cc0953` + B4). Nothing here has
+run for a paying client yet.
 
 **Status key**
 - **Working in sandbox** — built and tested end to end on the team's local sandbox (no paid services).
@@ -31,7 +32,7 @@ screens).
 | **Quotes, invoices, money** | | |
 | Price book per trade, with starter prices | Working in sandbox | Starter prices are 2026 US ballparks; client edits them |
 | Price book import from CSV | Working in sandbox | Pricebook → Import CSV. Dry run first, then import |
-| Quotes and invoices with line items, discounts and tax | Working in sandbox | US sales tax or Irish VAT rates (incl. 13.5 % / 23 %), reverse charge; exact decimal money; numbered Q-0001 / INV-0001 |
+| Quotes and invoices with line items, discounts and tax | Working in sandbox | US sales tax or Irish VAT rates (incl. 13.5 % / 23 %), reverse charge for VAT (not offered with US sales tax); exact decimal money; numbered Q-0001 / INV-0001 |
 | Several quotes and invoices per job; invoice from a quote | Working in sandbox | One live invoice per quote |
 | Sent quotes and invoices are locked | Working in sandbox | Only the status can change after sending |
 | Print / save as PDF | Working in sandbox | Browser print, A4 or Letter; "VAT Invoice" title for Irish VAT invoices |
@@ -54,14 +55,14 @@ screens).
 | Deactivate a leaver, change a role, admin password reset | Working in sandbox | Team page. Deactivation cuts access immediately |
 | Sign in with Google | Built, not yet tested live | Invited people or the client's own domain only; hidden in the sandbox |
 | Two-factor sign-in (MFA) | Not built | Only through Google accounts that enforce it |
-| API keys for integrations | Working in sandbox | Read or read/write; stop working when their creator leaves |
+| API keys for integrations | Working in sandbox | Read or read/write, plus an "export" scope for the export-everything zip; stop working when their creator leaves |
 | **Texts** | | |
 | Appointment confirmation texts (Twilio) | Built, not yet tested live | Office staff only, to customer numbers on record. No "reply STOP" line yet: needed before US use |
 | **White-label** | | |
 | Client's name, logo, colours, labels set by configuration only | Working in sandbox | No code changes per client; bad settings stop the server at start-up |
 | Five trades: electrical, plumbing, HVAC, plumbing & HVAC, general contracting | Working in sandbox | Own job types, labels, colours and starter price book each |
 | United States and Ireland (currency, tax, addresses, phone and date formats) | Working in sandbox | Other countries (UK, Canada…) not built |
-| Branded demo per prospect, with a pre-demo safety check | Working in sandbox | Prospect details kept outside the code repository |
+| Branded demo per prospect, with a pre-demo safety check | Working in sandbox | Prospect details kept outside the code repository. Demo data follows the country (US or Irish addresses, phones, tax on every quote and invoice); the check fails on untaxed documents or foreign addresses |
 | Languages other than English | Not built | |
 | **Hosting and safety** | | |
 | One private server per client (no shared database) | Built, not yet tested live | Set-up script, automatic HTTPS, firewall, one-command updates with rollback. Never run on a real server yet |

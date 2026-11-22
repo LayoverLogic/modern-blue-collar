@@ -209,10 +209,13 @@ docker compose exec app npm run restore -- latest-remote --database restore_dril
 ```
 
 The restore:
+- first prints the target: `[restore] target: database "restore_drill" on postgres:5432 — …` (check the name
+  before it goes on; `npm run backup:run` prints the database it backs up the same way)
 - downloads the set
 - checks each file's sha256 against the manifest
 - decrypts the files. The GCM tag is checked **before** anything is used
-- refuses a non-empty target database unless you pass `--force`
+- refuses a non-empty target database (or a non-empty photo directory) unless you pass `--force` — every check
+  runs before it creates or writes anything, so a refused restore leaves no empty database behind
 - restores with `psql --single-transaction` and prints per-table row counts next to the manifest's
 
 If a row count differs, the database was being written to while the backup ran. To drill the photo

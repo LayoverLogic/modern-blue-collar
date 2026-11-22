@@ -84,8 +84,8 @@ We do not sell personal information, use it for advertising, or make decisions a
   form. New staff choose their own password from an invitation link, or receive a temporary password that must be
   changed at first sign-in. A forgotten password is reset through a single-use link sent to the staff member's email
   address, valid for {{RESET_LINK_MINUTES, default "30 minutes"}}. Changing or resetting a password signs the person
-  out on every device **[Product: the invitation, reset and change-password screens are pending on 6d63a31 —
-  see docs/legal/README.md before publishing]**; and/or
+  out on every device **[Product: the invitation, reset and change-password screens exist since Frontend F3
+  (0cc0953); the instance needs working email for the links — see docs/legal/README.md before publishing]**; and/or
 - [IF GOOGLE SIGN-IN ENABLED] **Google sign-in**, available only to people we have invited (or, if we have enabled
   it, to accounts on our own email domain {{GOOGLE_ALLOWED_DOMAINS}}). Google tells the system your name and email
   address; it does not give the system your Google password.

@@ -14,13 +14,17 @@ Online invoice push and payment sync, nightly encrypted backups with a tested re
 The one-page honest matrix (what works, what is built but not tried live, what is not built) is
 [docs/FEATURES.md](docs/FEATURES.md).
 
-## Status (2026-11-21, `6d63a31`)
+## Status (2026-11-21)
 
 This is the **sandbox revival** branch (`mbc/sandbox-revival`). It runs locally with no paid services and no
 cloud accounts. It is **not deployed anywhere**:
 
-- Every test suite passes, the UI walk included. Security status, with what is enforced,
-  partial and open: [backend/SECURITY_AUDIT.md](backend/SECURITY_AUDIT.md).
+- Every test suite passes (counts below, [Tests](#tests)). The UI walk has one step (6g, reverse charge on a US
+  sales-tax demo) that now expects something the server refuses on purpose; it passes with
+  `BRAND_REVERSE_CHARGE=true` until the walk is updated ([SECURITY_AUDIT §1.1](backend/SECURITY_AUDIT.md#11-ui-walk)).
+  Security status, with what is enforced, partial and open: [backend/SECURITY_AUDIT.md](backend/SECURITY_AUDIT.md). The findings of the first
+  independent verification (rate limit on sign-in, demo data per country with tax, technician data scope,
+  published test secret, restore / sandbox safety) were fixed in fix round B4.
 - **Account and data screens are in the app** (Frontend F3): the password-reset and accept-invite pages
   (`reset-password.html`, `accept-invite.html`, linked from the emails), "Forgot password?" on the sign-in page,
   Change password (menu under your name) and the forced "choose a new password" screen (`change-password.html`),
@@ -44,8 +48,8 @@ npm install
 npm run sandbox
 ```
 
-`npm run sandbox` copies `.env.sandbox.example` to `backend/.env.sandbox` on first run (and writes a random
-`JWT_SECRET` into it), creates the database if it is missing, applies the migrations, seeds a demo company
+`npm run sandbox` copies `.env.sandbox.example` to `backend/.env.sandbox` on first run (mode 0600, and writes a
+random `JWT_SECRET` into it), creates the database if it is missing, applies the migrations, seeds a demo company
 (idempotent) and starts the server on **http://localhost:3101**, listening on `127.0.0.1` only.
 `HOST=0.0.0.0 npm run sandbox` makes it reachable from other devices on your network (only on a network you
 control: the demo login is shown on the login page). Override anything with real environment variables:
@@ -53,6 +57,9 @@ control: the demo login is shown on the login page). Override anything with real
 ```bash
 PORT=3150 DATABASE_URL=postgresql://mbc:mbc_sandbox@localhost:5432/mbc_other?schema=public npm run sandbox
 ```
+
+A localhost `APP_URL` (the address in emailed links) follows `PORT` (here `http://localhost:3150`); an `APP_URL`
+set in your shell, or a non-local one in the env file, is used as is.
 
 `npm run sandbox:setup` does everything except start the server.
 
@@ -76,7 +83,8 @@ For a prospect demo the team logins use the prospect's email domain instead of `
 (for example `office@prairieline.example`); `admin@demo.test` stays the same.
 
 Ten failed sign-ins for one email from one address lock that email out from that address for 15 minutes
-(successful sign-ins never count). Restarting the server clears it.
+(successful sign-ins never count). Restarting the server clears it. Page loads and successful sign-ins do not
+count towards the general per-address limit either, so a whole office behind one address can always sign in.
 
 ## Quick start: Docker (Postgres + MinIO + Mailpit)
 
@@ -102,16 +110,16 @@ one database, but never point them at data you want to keep.
 ```bash
 cd backend
 export TEST_DATABASE_URL="postgresql://mbc:mbc_sandbox@localhost:5432/mbc_test?schema=public"
-createdb -h localhost -U mbc mbc_test      # npm test needs it to exist
+PGPASSWORD=mbc_sandbox createdb -h localhost -U mbc mbc_test      # npm test needs it to exist
 npm test                    # Prisma-level suite (69)
 npm run test:redteam        # security / abuse tests (48; RT-3 needs Chrome)
-npm run test:backend        # API contract, CSP in a real browser (36; needs Chrome and pg_dump)
+npm run test:backend        # API contract, CSP in a real browser (45; needs Chrome and pg_dump)
 npm run test:activity       # job activity log (18)
-npm run test:documents      # line items, tax, Decimal money, numbering, locking, email (21)
-npm run test:integrations   # import, exports, Xero, QuickBooks against a local stub (19)
+npm run test:documents      # line items, tax, Decimal money, numbering, locking, email (22)
+npm run test:integrations   # import, exports, Xero, QuickBooks against a local stub (21)
 npm run test:accounts       # passwords, reset, leavers, login limiter, invites, multi-document jobs (25)
-npm run test:whitelabel     # brand switching, demo seed, demo:check (43; creates <db>_wl, needs CREATEDB)
-npm run test:platform       # storage, mail, backup + restore round trips, migration splitter (22)
+npm run test:whitelabel     # brand switching, demo seed, demo:check (48; creates <db>_wl, needs CREATEDB)
+npm run test:platform       # storage, mail, backup + restore round trips, migration splitter (23)
 ```
 
 `npm run test:ui` is a headless-Chrome walk of every page × role × viewport plus the main flows by clicking,
@@ -137,10 +145,12 @@ ENV_FILE=.env.demo.acme-plumbing npm run demo:check -- --port 3102 --headless
 
 `--print-env` writes `backend/.env.demo.<slug>` (gitignored, mode 0600) with the prospect's brand, its own
 database `mbc_demo_<slug>`, a fresh random `JWT_SECRET` and the absolute path of the prospect file. The examples
-in `backend/demo/prospects/` (a generic US `default`, a fictional Kansas plumber, a fictional Irish heating firm
-in EUR with VAT) can be used by slug. All demo people, emails and phone numbers are fictional. `demo:check` exits
-non-zero if a prospect would see client names (denylist), "undefined", $0 amounts, wrong totals or currency,
-wrong-trade jobs or a stale calendar. **Run it before every demo.** Details:
+in `backend/demo/prospects/` (a generic `default` that follows the instance's `BRAND_COUNTRY`: Anytown, KS in the
+US, Fingal towns with Eircodes in Ireland; a fictional Kansas plumber; a fictional Irish heating firm in EUR with
+VAT) can be used by slug. Seeded quotes and invoices have line items taxed at the brand's rate. All demo people,
+emails and phone numbers are fictional (stored in E.164, like real ones). `demo:check` exits non-zero if a
+prospect would see client names (denylist), "undefined", $0 amounts, wrong totals or currency, untaxed documents
+on a taxed brand, addresses of another country, wrong-trade jobs or a stale calendar. **Run it before every demo.** Details:
 [SETUP.md → Demo per prospect](SETUP.md#demo-per-prospect-seeddemo-democheck).
 
 ## White-label in 60 seconds
@@ -178,7 +188,8 @@ All admin-only; full detail in [SETUP.md §7](SETUP.md#7-import-export-and-accou
 
 - **Exports:** CSV of customers, jobs, quotes, invoices (one row per document or per line), and
   `GET /api/exports/all`: a zip of every table plus the photos, a manifest and `SHA256SUMS` (the "leave with
-  everything" export; password hashes and keys are never included).
+  everything" export; password hashes and keys are never included). An API key needs the `export` (or `write`)
+  scope for the zip; `read` is enough for the single CSV exports.
 - **Customer import:** `POST /api/imports/customers` from a generic CSV, Housecall Pro or Jobber, dry run by
   default with a full report, merge-candidate review, batch commit and undo; also a command-line tool
   (`scripts/import-customers.js`). Jobs import is not built.

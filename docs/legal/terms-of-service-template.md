@@ -34,7 +34,8 @@ create accounts for anyone else or share yours.
 the email address we invited. If you forget your password, use "Forgot password" to get a single-use reset link by
 email. Keep your password secret and tell {{ADMIN_CONTACT}} at once if you think someone else has used your account;
 changing your password signs you out on every device. **[Product: the invitation, "Forgot password" and
-change-password screens are pending on 6d63a31 — see docs/legal/README.md before publishing.]**
+change-password screens exist since Frontend F3 (0cc0953); the instance needs working email — see
+docs/legal/README.md before publishing.]**
 
 2.3 What you can see and do depends on the role we give you (for example administrator, office/dispatcher or
 {{TECHNICIAN_LABEL}}). [IF TECH_VISIBILITY=own] Field roles see only the jobs assigned to them. [IF

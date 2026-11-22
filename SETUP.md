@@ -4,9 +4,9 @@ How to run Modern Blue Collar locally, what every environment variable does, how
 white-labelling, prospect demos and import / export work. For a Mac, the short path is
 [docs/RUN-ON-MAC.md](docs/RUN-ON-MAC.md). For a client server see [DEPLOYMENT.md](DEPLOYMENT.md).
 
-Current state of the code: [README.md → Status](README.md#status-2026-11-21-6d63a31),
+Current state of the code: [README.md → Status](README.md#status-2026-11-21),
 [docs/FEATURES.md](docs/FEATURES.md) and [backend/SECURITY_AUDIT.md](backend/SECURITY_AUDIT.md).
-Written against `mbc/sandbox-revival` at `6d63a31`.
+Written against `mbc/sandbox-revival` at `0cc0953` plus backend fix round B4 (Verifier #1 findings).
 
 ---
 
@@ -34,13 +34,17 @@ npm run sandbox
 
 What `npm run sandbox` does (`backend/scripts/sandbox.js`):
 
-1. Uses `ENV_FILE` if set, else `backend/.env.sandbox` (copied from `.env.sandbox.example` the first time). In
-   whichever file it uses, an empty, placeholder or published `JWT_SECRET` is replaced by a random one (so
-   sessions survive restarts). A known secret set in your shell is refused.
+1. Uses `ENV_FILE` if set, else `backend/.env.sandbox` (copied from `.env.sandbox.example` the first time, mode
+   0600). In whichever file it uses, an empty, placeholder or published `JWT_SECRET` is replaced by a random one
+   (so sessions survive restarts), and a file that group / others can read is made private (0600). A known secret
+   set in your shell is refused. Unless `APP_URL` is set in your shell, a localhost `APP_URL` whose port differs
+   from `PORT` becomes `http://localhost:<PORT>` (so `PORT=3150 npm run sandbox` emails links to :3150); a
+   non-local `APP_URL` (a tunnel) is kept.
 2. Creates the database named in `DATABASE_URL` if it does not exist.
 3. Applies migrations (`npm run migrate:deploy`).
 4. If `DEMO_MODE=true`: seeds the super-admin, the trade's price book, and the demo team, customers, jobs,
-   quotes, invoices and activity for `DEMO_PROSPECT` (idempotent).
+   quotes, invoices and activity for `DEMO_PROSPECT` (idempotent; it also rewrites demo phone numbers seeded
+   before E.164 storage).
 5. Starts `node server.js` on `HOST` (default **`127.0.0.1`**) and `PORT` (skip with `npm run sandbox:setup`).
 
 Open http://localhost:3101 (`PORT` in the env file). Logins are in [README.md → Demo logins](README.md#demo-logins).
@@ -143,13 +147,13 @@ scratch databases next to it), so they can share one database in any order.
 |---|---|---|---|
 | `npm test` | Prisma-level suite (auth helpers, CRUD, locking, price book, role guards) | 69 | DB must exist; refuses if equal to `DATABASE_URL` (`ALLOW_DESTRUCTIVE_TESTS=1` allows a name without `test`) |
 | `npm run test:redteam` | Security and abuse tests, one per Red Team finding | 48 | RT-3 needs Chrome |
-| `npm run test:backend` | API contract (Google gate, QuickBooks state, roles, CORS, CSP in a real browser, TECH_VISIBILITY, phones, sockets, secrets, sandbox binding) | 36 | Chrome; RT-30 needs `pg_dump` |
+| `npm run test:backend` | API contract (Google gate, QuickBooks state, roles, CORS, CSP in a real browser, TECH_VISIBILITY, phones, sockets, secrets incl. the repo-wide published-secret scan, sandbox binding / env-file mode / APP_URL, rate-limit exemptions, presence scope, NODE_ENV) | 45 | Chrome; RT-30 needs `pg_dump` |
 | `npm run test:activity` | Job and document activity log | 18 | |
-| `npm run test:documents` | Line items, tax, Decimal totals, numbering, locking, email, addresses, migration on old data | 21 | creates/drops `<db>_mig_<run>` |
-| `npm run test:integrations` | Customer import, exports, export-everything, Xero, QuickBooks (local stub) | 19 | |
+| `npm run test:documents` | Line items, tax, Decimal totals, numbering, locking, email, addresses, migration on old data, reverse charge availability | 22 | creates/drops `<db>_mig_<run>` |
+| `npm run test:integrations` | Customer import, exports, export-everything (+ API-key export scope), CSV escaping, Xero, QuickBooks (local stub) | 21 | |
 | `npm run test:accounts` | Password change / reset / forgot, temporary passwords, leavers, login limiter, invites, several documents per job, customer company, price book import, due dates | 25 | |
-| `npm run test:whitelabel` | Brand validation, per-trade/country seeds, demo guard, `--print-env`, denylist, job types, demo:check | 43 | creates `<db>_wl` (keep with `WL_KEEP_DB=1`) |
-| `npm run test:platform` | Storage, mail, integration kill-switches, backup + restore round trips (plain, encrypted, photos, S3 stub, heartbeat), migration splitter | 22 | backup tests need `pg_dump`, restore tests `psql` + `tar`; skipped without them |
+| `npm run test:whitelabel` | Brand validation, per-trade/country seeds (locale from `BRAND_COUNTRY`, taxed lines, E.164), demo guard, `--print-env`, denylist, job types, demo:check (tax, addresses) | 48 | creates `<db>_wl` (keep with `WL_KEEP_DB=1`) |
+| `npm run test:platform` | Storage, mail, integration kill-switches, backup + restore round trips (plain, encrypted, photos, S3 stub, heartbeat), migration splitter, restore / backup target line | 23 | backup tests need `pg_dump`, restore tests `psql` + `tar`; skipped without them |
 | `npm run test:ui` | Headless-Chrome walk: every page × role × viewport, main flows by clicking, XSS payloads, final screenshots | – | a **sandbox** database (not `TEST_DATABASE_URL`), Chrome; exits 1 on any failure (`UI_REPORT_ONLY=1` for inspection) |
 
 ```bash
@@ -165,9 +169,7 @@ For `test:ui`: `DATABASE_URL=<sandbox db> PORT=3121 npm run sandbox:setup`, then
 `DATABASE_URL=<same> UI_PORT=3121 UI_OUT_DIR=/tmp/mbc-ui npm run test:ui`. It starts and restarts its own server.
 The header of `backend/tests/ui/walk.js` lists all options.
 
-Results on 2026-11-21 (`6d63a31`): every suite above passes in full. `test:ui`: 78/78 page captures clean, XSS all
-pass, main flow 25/26 — step 7 (invite) failed because the walk expected a Google sign-in link. Since Frontend F3 the
-walk expects the `accept-invite.html` link and passes.
+Results on 2026-11-21 (`0cc0953` + fix round B4): every suite above passes in full (counts in the table). `test:ui` (US sandbox, the walk's default `UI_TAX_RATES` sales tax): 102 / 102 page captures clean, XSS all pass, main flow 53 / 54 — step **6g** (reverse-charge print view) fails because it creates a reverse-charge invoice on a US sales-tax brand, which the server now refuses by design (GAP-16, 400 `REVERSE_CHARGE_UNAVAILABLE`). With `BRAND_REVERSE_CHARGE=true` the flow is 54 / 54. The walk (Frontend-owned) needs to gate 6g on `locale.reverseChargeAvailable`.
 
 ---
 
@@ -218,7 +220,7 @@ the code's defaults when the variable is unset **or empty** (except where noted)
 | `LOGIN_MAX_PER_IP` | `50` | Failed sign-ins (and failed Google code exchanges) per IP per 15 min |
 | `RESET_RATE_MAX` | `20` | Forgot / reset / invite-link requests per IP per 15 min |
 | `RATE_LIMIT_USER_MAX` | `1000` | Other API requests per signed-in user or API key per 15 min |
-| `RATE_LIMIT_IP_MAX` | `300` | Anonymous API requests per IP per 15 min |
+| `RATE_LIMIT_IP_MAX` | `300` | Anonymous API requests per IP per 15 min. Not counted: `GET /api/brand` (every page loads it before sign-in) and the sign-in, Google code exchange, forgot / reset and invite routes, which have the stricter limiters above — so page loads and successful sign-ins of a whole office behind one IP never lock anyone out |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_CALLBACK_URL` | (unset = Google off) | Google sign-in. Callback: `<APP_URL>/api/auth/google/callback`. The button shows only when all three are real and `SANDBOX_MODE` is not true |
 | `GOOGLE_ALLOWED_DOMAINS` | (unset = nobody) | Domains whose unknown Google users may be auto-created as technicians. Everyone else must be invited first |
 
@@ -228,7 +230,11 @@ All limiter counters are in memory and reset when the server restarts.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `TECH_VISIBILITY` | `own` | `own`: technicians see only their own jobs and those customers. `all`: they may read every job and customer (not other jobs' quotes, invoices or communications); they still change only their own jobs. Unknown values → `own` with a warning |
+| `TECH_VISIBILITY` | `own` | `own`: technicians see only their own jobs and those customers — and "who is viewing this job" presence only on those jobs. `all`: they may read every job and customer (not other jobs' quotes, invoices or communications); they still change only their own jobs. Unknown values → `own` with a warning |
+
+Whatever the setting, technicians never see price book **cost** (dispatchers neither: cost is for admin roles,
+who set prices), and `GET /api/users/technicians` gives a technician only the other technicians' names (no
+admins, no emails or phones).
 
 ### Database, backups and restore
 
@@ -254,6 +260,21 @@ The nightly backup runs at 03:00 in `BRAND_TIMEZONE`. `npm run backup:run` runs 
 lists sets, `npm run restore -- latest --database <scratch db>` restores one (header of `scripts/restore.mjs`;
 restore drill and disaster recovery: [DEPLOYMENT.md §5](DEPLOYMENT.md)). Photos are in the set only with
 `STORAGE_DRIVER=local`.
+
+Both commands first print **which database** they act on and where `DATABASE_URL` came from (the shell, or an env
+file — remember `backend/.env` wins over `backend/.env.sandbox`, §1): `[backup:run] database "mbc_sandbox" on
+localhost:5432 (DATABASE_URL from .env.sandbox)`, `[restore] target: database "restore_drill" on …`. Check it
+before you go on. `restore` runs every check before it writes or creates anything; a refused restore leaves no
+empty database behind.
+
+**Restoring in the sandbox:** with `STORAGE_DRIVER=local` the photos go to `LOCAL_STORAGE_DIR`
+(`backend/storage/`), which already holds the sandbox's photos, so a plain restore is refused ("Uploads directory …
+is not empty"). Give the photos an empty place, or skip them:
+
+```bash
+npm run restore -- latest --database restore_drill --uploads-dir /tmp/restore-photos   # DB + photos
+npm run restore -- latest --database restore_drill --no-uploads                         # DB only
+```
 
 ### Storage (job photos)
 
@@ -333,18 +354,24 @@ template; `backend/.env.example` and `backend/.env.sandbox.example` still list i
 ## 7. Import, export and accounting
 
 Every route below is admin / super-admin only. Committing an import needs a signed-in person (an API key gets 403).
-**None of these has a screen on this commit** (the Settings → Data page is in progress on the Frontend branch); use
-the API with a session token, as in §3.
+The screens: **Settings → Data** (customer import wizard, export everything, Xero export, list exports),
+**Settings → QuickBooks** (connect, sync payments; "Push to QuickBooks" on each invoice) and **Pricebook → Import
+CSV**. The API below does the same with a session token (§3) or an API key.
 
 ### Exports (`/api/exports`)
 
 | Endpoint | What |
 |---|---|
 | `GET /customers`, `/jobs`, `/quotes`, `/invoices` | CSV; `?view=lines` on quotes and invoices gives one row per line. Customers, jobs and invoices also have Export buttons on their pages |
-| `GET /all[?photos=false]` | `<Company>_export_<date>.zip`: one CSV per table, the photos, `manifest.json` (row counts, sha256 per file) and `SHA256SUMS` (`sha256sum -c SHA256SUMS`). Never contains password hashes, API keys, integration tokens or auth tokens. This is the "export everything" a client gets on exit |
+| `GET /all[?photos=false]` | `<Company>_export_<date>.zip`: one CSV per table, the photos, `manifest.json` (row counts, sha256 per file) and `SHA256SUMS` (`sha256sum -c SHA256SUMS`). Never contains password hashes, API keys, integration tokens or auth tokens. This is the "export everything" a client gets on exit. **API keys** need the `export` scope (or `write`) besides `read`: a read-only reporting key gets 403 `SCOPE_REQUIRED` |
 | `GET /xero-invoices?from=YYYY-MM-DD&to=YYYY-MM-DD[&status=…][&dateFormat=…]` | Xero's sales-invoice import CSV, one row per line, tax-exclusive amounts, dates by brand country, void invoices excluded. Choose "tax exclusive" in Xero's import dialog; confirm `XERO_TAX_TYPES` names first |
 
-Cells starting with `=`, `+`, `-`, `@`, tab or CR are prefixed so spreadsheets treat them as text.
+Cells starting with `=`, `+`, `-`, `@`, tab or CR are prefixed with `'` so spreadsheets treat them as text —
+except values that can only be numbers: `+` followed by digits and spaces (E.164 phones such as `+353 87 123 4567`)
+and negative amounts (`-12.50`). Those contain no function name, reference or DDE target, so a spreadsheet cannot
+run anything from them (Apache Superset exempts negative numbers the same way; LibreOffice Calc reads them as a
+number / text, while `=1+1` stays a formula). Excel may show a `+1…` phone as a number; format the column as text
+if you need the `+`.
 
 ### Customer import (`/api/imports`, `scripts/import-customers.js`)
 
@@ -406,6 +433,7 @@ edits.** `brand.config.js` (repo root) is a thin wrapper over `backend/helpers/b
 | `BRAND_TAX_LABEL` | `Sales tax` (US), `VAT` (IE) | |
 | `BRAND_TAX_NUMBER` | blank | The company's own tax / VAT number, printed on documents |
 | `BRAND_QUOTE_PREFIX`, `BRAND_INVOICE_PREFIX` | `Q-`, `INV-` | Document numbers `Q-0001`, `INV-0001` |
+| `BRAND_REVERSE_CHARGE` | on for IE with tax rates (or when `BRAND_RCT_NOTE` is set), off for US | `true` / `false`. Offers the reverse-charge option on quotes and invoices; `/api/brand` → `locale.reverseChargeAvailable`. When off, `reverseCharge: true` is refused (400 `REVERSE_CHARGE_UNAVAILABLE`); US sales tax has no reverse charge. `true` without `BRAND_TAX_RATES` stops the boot |
 | `BRAND_RCT_NOTE` | a **placeholder** | Reverse-charge wording on documents. The default is flagged as a placeholder on screen and never printed or emailed; set the client's accountant-approved wording |
 
 Trade palettes when no colour is set: electrical yellow `#f5a623`, plumbing blue `#1e6fd9`,
@@ -437,9 +465,10 @@ Install, Boiler Install, Heat Pump Repair, Boiler Repair, Radiators / Pipework, 
 Demo data comes from `backend/demo/`:
 
 ```
-demo/prospects/<slug>.json        default (generic "Anytown", US), ks-plumbing-example, ie-heating-example (EUR, VAT)
+demo/prospects/<slug>.json        default (generic, follows BRAND_COUNTRY), ks-plumbing-example (US), ie-heating-example (IE, EUR, VAT)
 demo/fixtures/trades/<trade>.json pricebook, inventory and ≥ 30 job templates per trade (+ Irish variants)
-demo/fixtures/locales/US.json, IE.json   names, streets, phone / postcode formats, invoice terms
+demo/fixtures/locales/US.json, IE.json   names, streets, phone / postcode formats, invoice terms, defaultArea
+                                         (US: Anytown / Springfield / Riverside; IE: Swords, Malahide, Balbriggan, Co. Dublin)
 ```
 
 **Real prospects live outside the repository** (it is public):
@@ -461,9 +490,16 @@ ENV_FILE=.env.demo.acme-heating npm run demo:check -- --port 3102 --headless
   a slug or an absolute path. A prospect file inside the repo other than `demo/prospects/` is refused.
 - Without `--port` the file keeps `PORT=3101`, the same as the main sandbox. Give each prospect its own port.
 - Its `DATABASE_URL` assumes role `mbc` / `mbc_sandbox` on `localhost:5432`.
+- **Country:** the demo locale is `--locale`, else the prospect's `locale`, else `BRAND_COUNTRY`. A prospect without
+  `locale` and `area` (like `default`) gets the instance's country. A prospect (or `--locale`) for another country
+  than `BRAND_COUNTRY` is refused (exit 2) — an Irish instance never gets Anytown, KS addresses, and the reverse.
+  A prospect with an `area` must name its `locale`.
 
 What the seed guarantees: job types from the brand's list (country wording); price book items for the trade;
-quote / invoice totals are the sum of real price book lines (> 0) in the instance currency; dates relative to
+quotes / invoices with line items from the price book (> 0), taxed at the brand's default rate (the first
+non-zero rate if the default is 0 %; no tax when the brand has no rates), totals = subtotal + tax, in the instance
+currency; addresses in the country's shape (US state + ZIP, IE county + Eircode-shaped code); phones stored in
+E.164, like the API stores them; dates relative to
 **today in `BRAND_TIMEZONE`** (finished work with paid / unpaid / overdue invoices, three jobs today, the next days
 booked, pending quotes); Irish titles and notes for IE; fictional people only — reserved domains (`demo.test`,
 `*.example`, `example.com`), US `555-01xx` numbers, Irish ComReg drama ranges; deterministic for a given day.
@@ -475,12 +511,15 @@ Safety: `seed:demo` refuses a database whose name lacks `demo`, `sandbox`, `test
 
 `demo:check` prints PASS / WARN / FAIL per check and exits 1 on any FAIL (`--strict`: also on WARN): client names
 (denylist), `undefined`/`NaN` text, job types and trade, wording for the country, amounts > 0, totals = subtotal +
-tax, one currency, another trade's price book items, real email domains, stale calendar, due dates, activity
-trails; with `--port`, `/api/brand`, every list endpoint, currency symbols and Recent Jobs order; with
+tax, tax present (`db.tax`: FAIL when the brand has non-zero tax rates and fewer than half of the documents carry
+tax), addresses vs `BRAND_COUNTRY` (`db.addresses`: postcode shape, US state / Irish county, country), phones not
+in E.164 (WARN), one currency, another trade's price book items, real email domains, stale calendar, due dates,
+activity trails; with `--port`, `/api/brand`, every list endpoint, currency symbols and Recent Jobs order; with
 `--headless`, the main pages as admin plus `today.html` and `job.html` as a technician (`--tech-email`) in Chrome
 (JS errors, "undefined" on screen, client names, "$" on a non-USD page); `--shots <dir>` saves a PNG per page.
-Verified 2026-11-21 on the default sandbox and an IE prospect kept outside the repo: `33 pass · 1 warn · 0 fail →
-READY` (the WARN is the missing denylist).
+Verified 2026-11-21 after B4 with `--port --headless`: the default US sandbox `34 pass · 1 warn · 0 fail → READY`,
+an Irish sandbox made with only `BRAND_COUNTRY=IE` `35 pass · 1 warn · 0 fail → READY` (db.tax 12 of 12 carry VAT,
+db.addresses IE-shaped); the WARN is the missing denylist.
 
 **Denylist:** the real list of client names lives in `backend/demo/denylist.local.txt` (**gitignored**) or in any
 file named by `DEMO_DENYLIST_FILE`. `backend/demo/denylist.example.txt` shows the format.
