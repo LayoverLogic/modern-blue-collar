@@ -1,9 +1,11 @@
 # DRAFT — not legal advice — for review by counsel (Paul Mikols / KS Emerald)
 
-> **Template status.** v4.0 draft, 2026-11-21. Written for the MBC white-label platform at
-> `mbc/sandbox-revival` 808631f. It replaces the earlier v3 policy, which was one client's own policy, named
-> providers that are no longer used (DigitalOcean, Wasabi) and claimed things the template does not do
-> (Google-only sign-in with no stored passwords, audit logging of all user actions, encrypted backups).
+> **Template status.** v4.1 draft, 2026-11-21. Written for the MBC white-label platform at
+> `mbc/sandbox-revival` 808631f, claims re-checked against 6d63a31. It replaces the earlier v3 policy, which was
+> one client's own policy, named providers that are no longer used (DigitalOcean, Wasabi) and claimed things the
+> template does not do (Google-only sign-in with no stored passwords, audit logging of all user actions).
+> v4.1: password sign-in with reset by email, Google sign-in, the activity record now covers quotes and invoices,
+> encrypted backups including photos, quote / invoice emails, the optional accounting link.
 >
 > **How to use it.** This is the notice a *client* (the trades business, the controller) publishes for its own
 > customers and staff. It is not KS Emerald's own policy.
@@ -46,10 +48,10 @@ We use a job-management system to run our business. It is operated for us by {{P
 | Contact details | name, phone number, email address, service address (street, town/city, {{STATE_OR_COUNTY}}, {{ZIP_OR_EIRCODE}}), residential or commercial | you, or the person who booked the work |
 | Job and service records | what the job is, notes, scheduled date and time, status, which {{TECHNICIAN_LABEL}} was assigned | you and our staff |
 | Photos | photos of the work and the property taken by our staff | our staff |
-| Quotes and invoices | amounts, status, due and paid dates | us |
+| Quotes and invoices | items, quantities, prices, tax, totals, document numbers, status, due and paid dates | us |
 | Communications | a record of calls, emails, texts and notes with you (subject, content, from/to) | you and our staff |
-| **Users only:** account details | name, work email, phone, role, sign-in credentials | the user and our managers |
-| **Users only:** job history | which jobs a user created, changed or was assigned, and when | the system |
+| **Users only:** account details | name, work email, phone, role, password (stored only as a one-way hash), when they last signed in | the user and our managers |
+| **Users only:** activity history | which jobs, quotes and invoices a user created or changed, and when | the system |
 
 We do **not** collect or store payment-card or bank-account details in the job-management system. Please do not
 send them to us by text or email; if they reach us by accident we delete them {{WITHIN_30_DAYS}}.
@@ -78,12 +80,18 @@ We do not sell personal information, use it for advertising, or make decisions a
 
 {{CLIENT_TRADING_NAME}} staff sign in with:
 
-- an **email address and password**. Passwords are stored only as a one-way cryptographic hash, never in readable form; and/or
+- an **email address and password**. Passwords are stored only as a one-way cryptographic hash, never in readable
+  form. New staff choose their own password from an invitation link, or receive a temporary password that must be
+  changed at first sign-in. A forgotten password is reset through a single-use link sent to the staff member's email
+  address, valid for {{RESET_LINK_MINUTES, default "30 minutes"}}. Changing or resetting a password signs the person
+  out on every device **[Product: the invitation, reset and change-password screens are pending on 6d63a31 —
+  see docs/legal/README.md before publishing]**; and/or
 - [IF GOOGLE SIGN-IN ENABLED] **Google sign-in**, available only to people we have invited (or, if we have enabled
   it, to accounts on our own email domain {{GOOGLE_ALLOWED_DOMAINS}}). Google tells the system your name and email
   address; it does not give the system your Google password.
 
-A signed-in session lasts up to {{SESSION_LENGTH, default "8 hours"}}. Accounts of people who leave are deactivated.
+A signed-in session lasts up to {{SESSION_LENGTH, default "8 hours"}}. Accounts of people who leave are deactivated,
+which ends their access at once.
 
 ## 6. Who we share it with
 
@@ -95,10 +103,10 @@ A signed-in session lasts up to {{SESSION_LENGTH, default "8 hours"}}. Accounts 
   |---|---|---|
   | {{HOSTING_PROVIDER}} | servers and database | {{REGION}} |
   | {{STORAGE_PROVIDER}} | photos and backups | {{REGION}} |
-  | {{EMAIL_PROVIDER}} | system emails (staff invitations) | {{REGION}} |
+  | {{EMAIL_PROVIDER}} | system emails: staff invitations and password-reset links, and quotes and invoices we email to you | {{REGION}} |
   | [IF SMS ENABLED] {{SMS_PROVIDER}} | appointment texts | {{REGION}} |
   | [IF GOOGLE SIGN-IN ENABLED] Google | staff sign-in | {{REGION}} |
-  | [IF ACCOUNTING LINK ENABLED] {{ACCOUNTING_PROVIDER}} | accounting | {{REGION}} |
+  | [IF ACCOUNTING LINK ENABLED] {{ACCOUNTING_PROVIDER, e.g. "Intuit QuickBooks" or "Xero"}} | our accounting: your name, contact and billing address, and the invoices we send you | {{REGION}} |
 
 - Our accountant and professional advisers, and authorities where the law requires it.
 - Anyone else only with your agreement.
@@ -117,7 +125,7 @@ outside the European Economic Area we rely on {{TRANSFER_MECHANISM, e.g. "the EU
 | Communications log | {{RETENTION_COMMS}} |
 | Photos | {{RETENTION_PHOTOS}} |
 | Staff accounts | deactivated when the person leaves; deleted {{RETENTION_STAFF}} later |
-| Record of changes to jobs | as long as the job record, and {{RETENTION_ACTIVITY}} after a job is deleted |
+| Record of changes to jobs, quotes and invoices | as long as the job record, and {{RETENTION_ACTIVITY}} after a job is deleted |
 | Backups | rolling, up to {{BACKUP_RETENTION, e.g. "35 days"}}; deleted data disappears from backups within that time |
 
 These periods are applied by us on request to our software provider; the system does not delete records automatically.
@@ -125,12 +133,19 @@ These periods are applied by us on request to our software provider; the system 
 ## 8. How we protect it
 
 - The system is a separate installation for {{CLIENT_TRADING_NAME}} only, with its own database; no other business's data is held in it.
-- Staff only see what their role needs. Field staff see only the jobs assigned to them and the customers on those jobs.
-- Each change to a **job** (status, assignment, schedule, notes, photos, deletion) is recorded with who made it and when.
-- Passwords are hashed; sign-in attempts are rate-limited; sessions expire.
+- Staff only see what their role needs. [IF TECH_VISIBILITY=own] Field staff see only the jobs assigned to them and
+  the customers on those jobs. [IF TECH_VISIBILITY=all] Field staff can see the schedule, jobs and customer
+  details, but not the quotes, invoices or messages of jobs that are not theirs, and can change only their own jobs.
+- Each change to a **job** (status, assignment, schedule, notes, photos, deletion), and the creation and status
+  changes of **quotes and invoices**, is recorded with who made it and when.
+- Passwords are hashed; repeated failed sign-ins are blocked for a time; sessions expire; changing a password signs
+  the person out everywhere.
 - Connections to the system are encrypted (HTTPS). **[provisioning: confirm TLS is configured on the instance before publishing.]**
-- Data is backed up {{BACKUP_FREQUENCY, e.g. "nightly"}} to {{BACKUP_LOCATION}}. **[do not say "encrypted backups" until GTM-16 is closed.]**
-- The system does not load advertising or analytics trackers.
+- Data, including photos, is backed up {{BACKUP_FREQUENCY, e.g. "nightly"}} to {{BACKUP_LOCATION}}, and backups are
+  encrypted before they leave the server. **[provisioning: confirm `BACKUP_ENCRYPTION_KEY` is set and photos are
+  stored on the server (`STORAGE_DRIVER=local`) or the photo bucket is backed up; otherwise remove "including
+  photos" / "encrypted".]**
+- The system does not load advertising or analytics trackers, or any script from another website.
 
 No system is perfectly secure. If a breach affects your information and the law requires it, we will tell you
 and the relevant authority.

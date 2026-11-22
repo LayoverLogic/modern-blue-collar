@@ -38,7 +38,7 @@ for clients.
 | VPS | OVHcloud VPS-1 (2 vCore / 4 GB / 40 GB), US region for US clients, EU region for Irish clients | Any provider with Ubuntu 24.04 LTS works. Turn on the provider's daily backup/snapshot |
 | Backup bucket | Cloudflare R2 (EU jurisdiction for Irish clients) or Backblaze B2 | Use a **different provider from the VPS**, so one outage or account problem can't take out both copies |
 | Photo bucket (optional) | Same provider, a **separate bucket and a separate token** | Or use `STORAGE_DRIVER=local`: photos then sit on the VPS and are included in every backup set |
-| SMTP | Amazon SES (`eu-west-1` for Irish clients) or Postmark | Used for team invites and sign-in links |
+| SMTP | Amazon SES (`eu-west-1` for Irish clients) or Postmark | Used for team invites, password-reset links, and quotes / invoices staff email to customers |
 | Uptime | UptimeRobot free tier | §8 |
 | Backup heartbeat | Healthchecks.io free tier | §8 |
 
@@ -128,7 +128,9 @@ Photo buckets use the same endpoint style with the `S3_*` variables (`S3_ENDPOIN
    ```bash
    docker compose exec app node seed_superadmin.js
    ```
-   Send the password by a separate channel. The owner changes it at first sign-in.
+   Send the password by a separate channel. The server makes the owner change it at first sign-in (every other
+   call answers 403 `PASSWORD_CHANGE_REQUIRED`). On `6d63a31` there is no change-password screen yet, so do it
+   with the API as in `SETUP.md` §3 until the Frontend screen lands.
 8. Then work through the go-live checklist in §9.
 
 After you edit `deploy/clients/<slug>.env`, re-run `sudo deploy/provision.sh deploy/clients/<slug>.env`

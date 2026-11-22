@@ -2,7 +2,8 @@
 
 # Legal templates and the product facts behind them
 
-Drafted 2026-11-21 against `mbc/sandbox-revival` at `808631f`. Background and open questions:
+Drafted 2026-11-21 against `mbc/sandbox-revival` at `808631f`; claims re-checked against `6d63a31` the same day
+(accounts, encrypted backups, export-everything, QuickBooks / Xero merged). Background and open questions:
 `/home/claude/mbc-team/gtm/implementation/compliance.md`. Security detail: `backend/SECURITY_AUDIT.md`.
 
 | File | What it is | Who signs / publishes |
@@ -18,39 +19,46 @@ public sub-processor page. The licence question is in [`../../LICENSE-PROPOSAL.m
 
 Every product statement in the templates is listed below with the code that supports it. If you add or reword a
 statement, add a row. If a row's status changes (a gap is fixed, or a feature is removed), update the templates in
-the same change. Re-check the whole table before each client signs.
+the same change. Re-check the whole table before each client signs, and **confirm per instance** every row marked
+so (it depends on how that server was set up, not on the code).
 
 ## Claim → feature map
 
-| Claim (template § ) | Supported by | Status on 808631f |
+| Claim (template § ) | Supported by | Status on 6d63a31 |
 |---|---|---|
-| Staff sign in with email + password; passwords stored as one-way hashes (PP §5, ToS §2.2, DPA A2) | `routes/auth.js` login; bcrypt in `routes/users.js`, `seed_superadmin.js` | True |
-| Google sign-in only for invited users or allow-listed domains; Google password not shared (PP §5, ToS §2.2, DPA A2) | `routes/googleAuth.js` `resolveGoogleUser`, `GOOGLE_ALLOWED_DOMAINS`; OAuth scopes `profile`, `email` | True when Google is configured. Invited users get an unusable random password, so **for them Google is the only way in**; there is no password set/reset flow |
-| No MFA claim is made (DPA A2 lists it as a gap) | – | MFA not built |
-| Sessions last up to `JWT_EXPIRES` (default 8 h) (PP §5) | `helpers/security.js` `jwtExpires` | True |
-| Deactivated accounts stop working immediately, including open sessions (ToS §2.4, DPA A2) | `routes/auth.js` `userFromToken` re-reads the user | True, tested (redteam RT-5a/b/c) |
-| Access by role; field staff see only their assigned jobs and those customers (PP §8, ToS §2.3, DPA A2) | `helpers/roles.js`, `helpers/access.js`, route guards | True, tested (redteam RT-8, RT-21; backend RT-21) |
-| Each change to a **job** is recorded with who and when; records cannot be edited through the System (PP §8, ToS §5, DPA A1/A2) | `helpers/activity.js`, `routes/jobs.js`, `routes/activity.js`, migration `20261121150000_job_activity` | True for jobs, tested (activity suite). **Not** for customers, quotes, invoices, users or sign-ins — do not widen the claim. Entries can be removed by direct database access (needed for erasure) |
-| Job change history is kept after a job is deleted (PP §7, DPA A1) | tombstone entries, `jobRef` | True; this means erasure requests need a database-level step (DPA §10.1) |
-| Separate installation per client; no other business's data in it (PP §8, DPA A2) | Single-tenant code (no Company model) + one server/DB/storage per client in the hosting plan | True only if provisioning follows `gtm/implementation/provisioning-checklist.md`. The code itself would mix clients if two were pointed at one database |
-| Sign-in attempts are rate-limited (PP §8, DPA A2) | `server.js` `authLimiter` (20 / 15 min / IP) | True, tested. Per process, in memory |
-| HTTPS (PP §8, DPA A2) | Not in the app; reverse proxy (Caddy) per hosting plan | **Confirm per instance** |
-| Backups nightly; rolling retention (PP §7–8, DPA §9.2, A2) | `backup.js` cron 03:00, `BACKUP_KEEP` (default 30 local copies) | Nightly dump true. Retention beyond the local 30 copies, encryption and photo backup are **not** in the code (GTM-16). Do not say "encrypted backups" |
+| Staff sign in with email + password; passwords stored as one-way hashes (PP §5, ToS §2.2, DPA A2) | `routes/auth.js` login; bcrypt in `helpers/authTokens.js`, `seed_superadmin.js` | True, tested |
+| Passwords at least 10 characters (PP §5 if stated, DPA A2) | `helpers/authTokens.js` `PASSWORD_MIN_LENGTH` (default 10, never below 8) | True, tested (accounts suite). Configurable per instance: state the instance's value |
+| New staff set their own password from an invitation link, or get a temporary password they must change at first sign-in (PP §5, ToS §2.1–2.2) | `routes/invites.js` (accept-invite link, 7 days, single use), `routes/users.js` + `routes/auth.js` (`mustChangePassword` gate) | Server side true, tested. **The accept-invite page and the change-password screen are not in the code on 6d63a31** (Frontend in progress). Do not publish until they are |
+| Forgotten passwords are reset by an emailed single-use link (PP §5, ToS §2.2, DPA A2) | `routes/auth.js` forgot / reset, `helpers/authTokens.js` (30 min, sha256 stored, rate-limited, no account enumeration) | Server side true, tested. **The reset page and "Forgot password" link are not in the code on 6d63a31.** Needs working email on the instance |
+| A password change or reset signs the person out everywhere (PP §5 if stated, DPA A2) | `User.sessionVersion`, `routes/auth.js` | True, tested |
+| Google sign-in only for invited users or allow-listed domains, with a verified Google email; Google password not shared (PP §5, ToS §2.2, DPA A2) | `routes/googleAuth.js` `resolveGoogleUser`, `GOOGLE_ALLOWED_DOMAINS`; OAuth scopes `profile`, `email` | True when Google is configured (tested with a stubbed profile; **not yet used against Google**). Shown only when configured and not in sandbox mode |
+| No MFA claim is made (DPA A2 lists it as a gap) | – | MFA not built (only via Google accounts that enforce it) |
+| Sessions last up to `JWT_EXPIRES` (default 8 h) (PP §5) | `helpers/security.js` | True. Logging out discards the session in the browser only; it stays valid until expiry. Do not claim "logout ends the session on the server" |
+| Deactivated accounts stop working immediately, including open sessions and live connections (ToS §2.4, DPA A2) | `routes/auth.js` re-reads the user; `sessionVersion`; socket disconnect in `server.js` | True, tested (redteam RT-5a/b/c, accounts `leavers…`, backend `2c sockets…`). **No Team-page button yet** (API only on 6d63a31) |
+| Access by role; field staff see only their assigned jobs and those customers (PP §8, ToS §2.3, DPA A2) | `helpers/roles.js`, `helpers/access.js`, route guards | True, tested, **when `TECH_VISIBILITY=own`** (the default). With `TECH_VISIBILITY=all` field staff can read every job and customer (not other jobs' quotes, invoices or communications). **Confirm per instance** and use the matching wording (both are in the templates) |
+| Changes to **jobs**, and the creation and status changes of **quotes and invoices**, are recorded with who and when; records cannot be edited through the System (PP §8, ToS §5, DPA A1/A2) | `helpers/activity.js`, `routes/jobs.js`, `helpers/documentRoutes.js`, `routes/activity.js`, migration `20261121150000_job_activity` | True, tested (activity suite). **Not** recorded: edits to draft quote/invoice lines, deletes of drafts, customer changes, price book, users, roles, sign-ins, exports, imports. Do not widen the claim. Entries can be removed by direct database access (needed for erasure) |
+| Job change history is kept after a job is deleted (PP §7, DPA A1) | tombstone entries, `jobRef` | True; erasure requests need a database-level step (DPA §10.1) |
+| Separate installation per client; no other business's data in it (PP §8, DPA A2) | Single-tenant code (no Company model) + one server/DB/storage per client (`DEPLOYMENT.md`) | True only if provisioning follows `DEPLOYMENT.md`. The code itself would mix clients if two were pointed at one database |
+| Sign-in attempts are rate-limited (PP §8, DPA A2) | `server.js` login limiters: failed attempts only, 10 per IP + email and 50 per IP per 15 min | True, tested. Per process, in memory (reset by a restart) |
+| HTTPS (PP §8, DPA A2) | Not in the app; Caddy with Let's Encrypt in `docker-compose.prod.yml` | **Confirm per instance.** Not yet run on a real server (`DEPLOYMENT.md` §10) |
+| Backups nightly, encrypted, including photos; rolling retention (PP §7–8, DPA §9.2, A2) | `backup.js` (03:00, AES-256-GCM when `BACKUP_ENCRYPTION_KEY` is set, photo archive when `STORAGE_DRIVER=local`), `scripts/restore.mjs`, bucket lifecycle rule (35 days, `DEPLOYMENT.md` §2) | True in code, tested (platform backup/restore suite). Encryption is optional in the code: provision.sh generates the key. **Confirm per instance** that the key is set, photos are local (or the photo bucket has its own backup), and the restore drill was done. Monthly long-term copies are manual |
 | No payment-card or bank details stored (PP §3, DPA A1) | No such fields in `prisma/schema.prisma`; payments not built | True by design; relies on staff not typing them into notes (ToS §3) |
-| Photos stored as taken, including embedded metadata (PP §3, DPA A1) | `routes/jobs.js` stores the uploaded bytes; no EXIF stripping | True. Stripping location metadata would be a small product improvement |
+| Photos stored as taken, including embedded metadata such as location (PP §3, DPA A1) | `routes/jobs.js` stores the uploaded bytes; no EXIF stripping | True (DOC-4). Stripping location metadata would be a small product improvement |
 | Uploads are image files only (ToS §3, DPA A2) | `helpers/imageSniff.js`, `routes/jobs.js` | True, tested (redteam RT-20a/b) |
-| No advertising or analytics trackers; no third-party scripts (PP §8–9) | CSP `default-src 'self'`, `script-src 'self' 'unsafe-inline'`, `connect-src 'self'` in `server.js`; pages load nothing external | True on this commit (`npm run test:ui` also records external hosts). Re-check if a map or font CDN is added |
-| Local storage keeps staff signed in; short-lived cookies only during Google / QuickBooks sign-in (PP §9) | `localStorage.token` in `public/*.html`; `mbc_google_state`, `mbc_qbo_state` HttpOnly cookies (`helpers/cookies.js`) | True. If the cookie-based session from the Kraft port lands, rewrite PP §9 |
-| System emails are staff invitations (PP §6) | `routes/invites.js` is the only caller of `helpers/mailer.js` | True. If quote/invoice email is added (GTM-9), add "quotes and invoices you asked us to email" |
-| Appointment texts only if SMS is enabled, to customer numbers on record (PP §4, §6, ToS §3) | `routes/sms.js` (office roles only; recipient must be a customer number; Twilio inert unless configured) | True, tested (redteam RT-16, backend RT-16). **The text has no STOP / opt-out line** — needed before US SMS use (TCPA / 10DLC, compliance.md §9) |
-| Export of client data on exit (DPA §9.1) | `routes/exports.js`: customers, jobs, invoices CSV (admin only) | Partial. Quotes, communications, photos and change history are not exported by the System; the Provider exports them from the database and storage. Export-everything is backlog (GTM-20) |
-| Data-subject access/correction/erasure handled by the client in the System, the rest by the Provider (PP §10, DPA §10.1) | View/edit screens; admin deletes for customers, jobs, communications | Partial. Customer delete is refused (409) while jobs or communications reference the customer; erasure is an ordered manual delete. No "anonymise customer" action, no retention purge |
+| No advertising or analytics trackers; no third-party scripts (PP §8–9) | CSP `script-src 'self'`, `style-src 'self'`, `connect-src 'self'` (+ same-host websocket) in `server.js`; pages load nothing external | True, tested (backend CSP browser test; `test:ui` records external hosts). An external `BRAND_LOGO_URL` host is the only allowed outside image source. Re-check if a map or font CDN is added |
+| Local storage keeps staff signed in; short-lived cookies only during Google / QuickBooks sign-in (PP §9) | `localStorage.token` in `public/js/api.js`; `mbc_google_state`, `mbc_qbo_state` HttpOnly cookies (`helpers/cookies.js`) | True |
+| System emails: staff invitations, password-reset links, and quotes / invoices staff choose to email to a customer (PP §6, DPA A1) | `routes/invites.js`, `routes/auth.js`, `routes/users.js`, `helpers/documentRoutes.js` → `helpers/mailer.js` | True. Customer emails are sent only when a staff member presses Send; each is logged on the customer's timeline |
+| Appointment texts only if SMS is enabled, to customer numbers on record (PP §4, §6, ToS §3) | `routes/sms.js` (office roles only; recipient must be a customer number; Twilio inert unless configured) | True, tested (redteam RT-16, backend RT-16). **The text has no STOP / opt-out line** (DOC-5) — needed before US SMS use (TCPA / 10DLC). Not yet used against Twilio |
+| Export of all client data on exit, including photos (DPA §9.1) | `routes/exports.js` `GET /api/exports/all`: every table as CSV, the photos, manifest and checksums (admin only); plus CSV exports per list | True, tested (integrations suite). **API only on 6d63a31** (no button yet). Password hashes, API keys and integration tokens are deliberately left out |
+| Data-subject access / correction / erasure handled by the client in the System, the rest by the Provider (PP §10, DPA §10.1) | View/edit screens; admin deletes for customers, jobs, communications | Partial. Customer delete is refused (409) while jobs or communications reference the customer; erasure is an ordered manual delete. No per-person export, no "anonymise customer" action, no retention purge |
 | Retention periods applied on request, not automatically (PP §7) | – | True: no automated retention in the code |
-| QuickBooks tokens encrypted by the application (DPA A2) | `helpers/secretBox.js` AES-256-GCM | True, tested (backend PLAT-4) |
+| QuickBooks tokens encrypted by the application (DPA A2) | `helpers/secretBox.js` AES-256-GCM | True, tested (backend PLAT-4, integrations) |
+| Customer and invoice details are sent to the client's QuickBooks company only when staff push an invoice (PP §6 accounting row, DPA A1, §7.4) | `helpers/qbo.js`, `routes/quickbooks.js` (`POST /sync-invoice/:id`, payment sync) | Code true, tested against a local stub only; **not yet used against Intuit**. The client's own QuickBooks account (DPA §7.4) |
 | API keys hashed, scoped, revoked with their creator (ToS §4, DPA A2) | `middleware/apiKeyAuth.js` | True, tested (redteam RT-4, RT-22) |
-| Sub-processors listed per client; DigitalOcean and Wasabi not used (PP §6, DPA A3) | Hosting plan (`gtm/GTM-PLAN.md` §6) | **Placeholder.** The code still names `WASABI_*` variables for S3-compatible backup storage; that is a variable name, not a provider choice |
-| Breach notice to the client within 48 hours (DPA §6.1) | Process: compliance.md §5.3 runbook | Contract commitment; no product feature. No alerting in the code (GTM-12) |
+| Sub-processors listed per client; DigitalOcean and Wasabi not used (PP §6, DPA A3) | Hosting plan (`DEPLOYMENT.md` §1: VPS, R2 / B2, SES / Postmark, UptimeRobot, Healthchecks.io) | **Placeholder.** Fill per client from the provisioning record. `WASABI_*` survive only as legacy variable names |
+| Breach notice to the client within 48 hours (DPA §6.1) | Process: compliance.md §5.3 runbook | Contract commitment; no product feature. Uptime / backup monitoring is external (`DEPLOYMENT.md` §8) |
 | Staff confidentiality (DPA §4) | Process | Contract commitment |
+| Dependency audit before each release (DPA A2) | `npm audit --omit=dev` | 0 production advisories on 6d63a31 |
 
 ## Placeholders used
 

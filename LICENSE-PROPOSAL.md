@@ -2,6 +2,7 @@
 
 **DRAFT — not legal advice — for review by counsel (Paul Mikols / KS Emerald).** 2026-11-21. Finding GTM-13.
 Nothing in this change alters the current licence fields; this page only sets out the decision.
+Facts in §1 re-checked on `mbc/sandbox-revival` at `6d63a31`: unchanged.
 
 ## 1. Where things stand
 
@@ -67,3 +68,11 @@ header in new source files. Do not mass-edit existing files for this.
 Not affected: third-party dependencies keep their own licences (mostly MIT/Apache-2.0/ISC). A proprietary product can
 use them; keep their notices, which `node_modules` already does. If Option A is chosen, run a licence check of the
 production dependencies (for example `npx license-checker --production --summary`) before the first client contract.
+
+A first pass from `backend/package-lock.json` on `6d63a31` (production packages, by their declared licence): MIT 239,
+Apache-2.0 122, ISC 26, BSD-3-Clause 5, BSD-2-Clause 2, Unlicense 2, and one each of MIT-0, 0BSD, BlueOak-1.0.0 and
+"MIT and ISC"; four packages declare no licence in the lockfile (`busboy`, `streamsearch`, `passport-strategy` say
+MIT in their own `package.json`; `pause` has no licence field). One is **EPL-2.0** (`elkjs`, pulled in by
+`prisma` → `@prisma/studio-core`: it ships with Prisma Studio, a developer tool inside the `prisma` CLI package,
+which the build needs for `prisma generate`; the running app does not load it). Counsel should confirm that is
+acceptable for a proprietary product.

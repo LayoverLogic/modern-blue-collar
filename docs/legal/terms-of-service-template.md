@@ -1,6 +1,7 @@
 # DRAFT — not legal advice — for review by counsel (Paul Mikols / KS Emerald)
 
-> **Template status.** v4.0 draft, 2026-11-21, for the MBC white-label platform at `mbc/sandbox-revival` 808631f.
+> **Template status.** v4.1 draft, 2026-11-21, for the MBC white-label platform at `mbc/sandbox-revival` 808631f,
+> claims re-checked against 6d63a31 (password set-up and reset by email, activity records for quotes and invoices).
 >
 > **What this is.** The *terms of use* that a client's staff accept to use that client's MBC instance
 > ("the System"). It sits under two other documents that this file does not replace:
@@ -25,16 +26,20 @@ These terms apply to everyone who is given an account on the job-management syst
 
 ## 2. Accounts
 
-2.1 Accounts are created by a {{CLIENT_TRADING_NAME}} administrator. You may not create accounts for anyone else
-or share yours.
+2.1 Accounts are created by a {{CLIENT_TRADING_NAME}} administrator, who either sends you an invitation link to
+choose your own password or gives you a temporary password that you must change when you first sign in. You may not
+create accounts for anyone else or share yours.
 
 2.2 You sign in with your email address and password, or [IF GOOGLE SIGN-IN ENABLED] with the Google account for
-the email address we invited. Keep your password secret and tell {{ADMIN_CONTACT}} at once if you think someone
-else has used your account.
+the email address we invited. If you forget your password, use "Forgot password" to get a single-use reset link by
+email. Keep your password secret and tell {{ADMIN_CONTACT}} at once if you think someone else has used your account;
+changing your password signs you out on every device. **[Product: the invitation, "Forgot password" and
+change-password screens are pending on 6d63a31 — see docs/legal/README.md before publishing.]**
 
 2.3 What you can see and do depends on the role we give you (for example administrator, office/dispatcher or
-{{TECHNICIAN_LABEL}}). Field roles see only the jobs assigned to them. Do not try to reach information or functions
-your role does not give you.
+{{TECHNICIAN_LABEL}}). [IF TECH_VISIBILITY=own] Field roles see only the jobs assigned to them. [IF
+TECH_VISIBILITY=all] Field roles can see the whole schedule but change only the jobs assigned to them. Do not try to
+reach information or functions your role does not give you.
 
 2.4 We may change your role or deactivate your account at any time, for example when you leave. A deactivated
 account stops working immediately, including any open session.
@@ -62,7 +67,8 @@ Keys are shown once; store them as secrets and revoke any key you think is expos
 ## 5. Records of activity
 
 The System records who created, changed, assigned, rescheduled, added notes or photos to, or deleted each job, and
-when. These records cannot be edited through the System. {{CLIENT_TRADING_NAME}} may use them to run the business,
+who created each quote and invoice or changed its status, and when. These records cannot be edited through the
+System. {{CLIENT_TRADING_NAME}} may use them to run the business,
 resolve disputes and investigate misuse. How your personal information is handled is described in our Privacy
 Notice: {{PRIVACY_NOTICE_LINK}}.
 

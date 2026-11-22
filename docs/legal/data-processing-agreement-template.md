@@ -1,8 +1,10 @@
 # DRAFT — not legal advice — for review by counsel (Paul Mikols / KS Emerald)
 
-> **Template status.** v0.1 draft, 2026-11-21. Structure follows GDPR Art. 28(3) and the positions in
+> **Template status.** v0.2 draft, 2026-11-21. Structure follows GDPR Art. 28(3) and the positions in
 > `/home/claude/mbc-team/gtm/implementation/compliance.md` §3–§7. Product statements in Annex 2 describe
-> `mbc/sandbox-revival` at 808631f and are mapped in `docs/legal/README.md`; re-check them before each signature.
+> `mbc/sandbox-revival` at 6d63a31 and are mapped in `docs/legal/README.md`; re-check them before each signature.
+> v0.2: full export from the System (§9.1), encrypted backups with photos, password reset and session revocation,
+> activity records for quotes and invoices, accounting integration data.
 >
 > **Use.** Annex to the MSA with **every** client: mandatory for EU/Irish clients, good practice for US clients
 > (for a US-only client counsel may cut the GDPR-specific clauses; keep §6 breach notice and §9 return/deletion).
@@ -114,10 +116,11 @@ processor; Art. 27 EU representative; whether an Irish entity should contract wi
 ## 9. Return and deletion — Art. 28(3)(g)
 
 9.1 On termination, and on the Client's written request within {{30}} days of it, the Provider will within
-**10 business days** give the Client a complete export of Client Data: CSV exports of customers, jobs and invoices
-from the System, plus a full database dump and the stored photo files. **[Product: the System's own export screen
-covers customers, jobs and invoices only (GTM-20); the full export is produced by the Provider from the database
-and file storage.]**
+**10 business days** give the Client a complete export of Client Data: the System's "export everything" archive (a
+CSV file for every table, all stored photos, and a manifest with checksums), and on request a full database dump.
+Password hashes, API keys and integration access tokens are security credentials, not Client Data, and are not
+exported. **[Product: the export exists in the code on 6d63a31 (`GET /api/exports/all`, admin only) but has no
+button yet; until it does, the Provider runs it for the Client.]**
 
 9.2 The Provider will then delete Client Data, including the Instance's database and file storage, **within 30
 days**, and give a written certificate of deletion. Copies in rolling backups are deleted as those backups expire,
@@ -176,42 +179,45 @@ Signed for the Provider: ____________________ Name / title / date
 | Data Subjects | (a) the Client's customers and their contacts; (b) the Client's staff and contractors who use the System |
 | Customer data | first and last name; email; phone; service address (street, city/town, state/county, ZIP/Eircode); residential/commercial type; notes |
 | Service data | job title, description, notes, type, priority, status, scheduled date/time, assigned staff member; photos of the work/property (stored as uploaded, including any embedded metadata such as location); parts used |
-| Financial data | quote and invoice amounts, status, due and paid dates. **No payment-card or bank-account data** |
+| Financial data | quote and invoice numbers, line items (description, quantity, unit price, tax rate), totals, tax, currency, status, issue / sent / due / paid dates; customer company and tax number for business customers. **No payment-card or bank-account data** |
 | Communications | log of calls, emails, texts and notes: type, direction, subject, body, from/to |
-| Staff data | name, email, phone, role, active flag, password hash, API keys created (hash only), job change history naming the staff member |
-| Change history | for each job: what changed, from/to values, who (staff member or API key) and when; kept after a job is deleted |
-| Integration data | if the Client connects QuickBooks: OAuth tokens (encrypted) and company id |
+| Staff data | name, email, phone, role, active flag, password hash, temporary-password flag, last sign-in time, single-use invitation / reset links (hash only), API keys created (hash only), change history naming the staff member |
+| Change history | for each job: what changed, from/to values, who (staff member or API key) and when; also the creation and status changes of its quotes and invoices; kept after a job is deleted |
+| Integration data | if the Client connects QuickBooks: OAuth tokens (encrypted), company id, and links between MBC and QuickBooks customer / invoice / payment ids; customer and invoice details are sent to the Client's QuickBooks company when staff push an invoice. Imported records keep their source system and id |
 | Special categories | None intended. The Client instructs its staff not to record them |
 | Frequency | Continuous |
 
 ## Annex 2 — Technical and organisational measures
 
-State only what is true on the day of signature. Items marked **gap** are not in place on 808631f: either fix them
-before signature or leave them out. Source: `backend/SECURITY_AUDIT.md`.
+State only what is true on the day of signature. Items marked **gap** are not in place on 6d63a31: either fix them
+before signature or leave them out. Items marked **confirm per Instance** depend on how the server was provisioned.
+Source: `backend/SECURITY_AUDIT.md`.
 
-| Measure | Status on 808631f |
+| Measure | Status on 6d63a31 |
 |---|---|
 | Separate Instance per client (own server, database, file storage and secrets); no shared database | In place by deployment design (the software is single-tenant) |
 | Encryption in transit (HTTPS/TLS) | Provided by the reverse proxy on each server (provisioning checklist) — **confirm per Instance** |
 | Encryption at rest | Depends on the hosting/storage provider — **state per provider in Annex 3**. QuickBooks tokens are additionally encrypted by the application (AES-256-GCM) |
-| Role-based access control: administrator, office/dispatcher, field; field staff see only their assigned jobs and those customers | In place, tested |
-| Passwords stored as bcrypt hashes; optional Google sign-in limited to invited users / allow-listed domains | In place, tested |
-| Sign-in rate limiting; sessions expire (default 8 h); deactivated users lose access immediately | In place, tested |
+| Role-based access control: administrator, office/dispatcher, field; field staff see only their assigned jobs and those customers (or, if the Client chooses, read the whole schedule but change only their own jobs) | In place, tested. **Confirm per Instance** (`TECH_VISIBILITY`) |
+| Passwords stored as bcrypt hashes, minimum length 10; temporary passwords must be changed at first sign-in; optional Google sign-in limited to invited users / allow-listed domains with verified emails | In place, tested (server side; the change-password and accept-invite screens are pending) |
+| Password reset by single-use, time-limited emailed link; no account enumeration | In place, tested (server side; the reset page is pending) |
+| Sign-in rate limiting on failed attempts; sessions expire (default 8 h); password change / reset and deactivation revoke all sessions; deactivated users lose access immediately | In place, tested |
 | Multi-factor authentication for staff | **Gap** (available only through Google sign-in if the Client's Google accounts enforce it) |
 | API keys: hashed, read or read/write scope, revoked with their creator | In place, tested |
-| Job change history (append-only, names the actor) | In place for **jobs only** — not customers, invoices, users or sign-ins |
+| Change history (append-only, names the actor) | In place for **jobs**, and for the creation and status changes of **quotes and invoices** — not customers, price book, users, roles or sign-ins |
 | Optimistic locking against lost updates (jobs, customers, quotes, invoices) | In place, tested |
 | Upload restrictions (images only, 10 MB, type checked from file content) | In place, tested |
-| Security headers incl. Content-Security-Policy | In place, but the policy allows inline scripts (**partial**) |
-| Nightly database backup | In place (`pg_dump`, gzip) |
-| Backups encrypted before upload | **Gap** (GTM-16) |
-| Photos included in backups | **Gap** (GTM-16) |
-| Tested restore procedure | **Gap** until the restore drill in the provisioning checklist is done per Instance |
-| Uptime and backup monitoring | **Gap** in the software; external monitor per provisioning checklist |
+| Security headers incl. a strict Content-Security-Policy (no inline or third-party scripts) | In place, tested |
+| Nightly database backup, off-site to a separate provider | In place (`pg_dump`, gzip, S3-compatible upload; a failed upload fails the backup). **Confirm per Instance** |
+| Backups encrypted (AES-256-GCM) before they leave the server; key held off-server by the Provider | In place in the software; the key is generated at provisioning. **Confirm per Instance** |
+| Photos included in backups | In place when photos are stored on the server (the default); with a separate photo bucket, that bucket's own versioning applies. **Confirm per Instance** |
+| Tested restore procedure | Restore tool tested in the software (checksums, decryption, row counts); **confirm per Instance** that the restore drill (`DEPLOYMENT.md` §5) was done |
+| Full data export on request or exit | In place in the software (§9.1) |
+| Uptime and backup monitoring | External: uptime monitor and backup heartbeat (`DEPLOYMENT.md` §8). **Confirm per Instance** |
 | Administrative access to servers: SSH keys only; 2FA on all provider accounts | Process (provisioning checklist) — **confirm** |
 | Personnel confidentiality; least access | §4 |
 | Incident response and breach log | compliance.md §5.3 runbook |
-| Vulnerability management: dependency audit before each release | Process; 3 high advisories open in the QuickBooks dependency chain (PLAT-7) |
+| Vulnerability management: dependency audit before each release | Process; 0 production advisories on 6d63a31 |
 
 ## Annex 3 — Sub-processors
 
@@ -221,7 +227,7 @@ before signature or leave them out. Source: `backend/SECURITY_AUDIT.md`.
 |---|---|---|---|
 | {{HOSTING_PROVIDER}} | Server, database, provider snapshots | {{REGION}} | {{BASIS}} |
 | {{OBJECT_STORAGE_PROVIDER}} | Photo storage, off-site backups | {{REGION}} | {{BASIS}} |
-| {{EMAIL_PROVIDER}} | System email (staff invitations) | {{REGION}} | {{BASIS}} |
+| {{EMAIL_PROVIDER}} | System email (staff invitations, password-reset links, quotes / invoices sent to customers) | {{REGION}} | {{BASIS}} |
 | [IF ENABLED] {{SMS_PROVIDER}} | Appointment texts | {{REGION}} | {{BASIS}} |
 | [IF ENABLED] {{IDENTITY_PROVIDER, e.g. Google}} | Staff sign-in | {{REGION}} | {{BASIS}} |
 
